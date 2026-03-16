@@ -1,0 +1,28 @@
+{
+  "instrument": "GOLD",
+  "timeframe": "M15",
+  "timestamp": "2026-03-04T20:39:59.930004",
+  "performance": {
+    "initial_capital": 10000.0,
+    "final_capital": 10000.0,
+    "total_pnl": 0.0,
+    "total_return_pct": 0.0
+  },
+  "trades": {
+    "total": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0.0
+  },
+  "pnl": {
+    "avg_win": 0.0,
+    "avg_loss": 0.0,
+    "profit_factor": 0.0
+  },
+  "risk": {
+    "max_drawdown": 0.0,
+    "max_drawdown_pct": 0.0,
+    "sharpe_ratio": 0.0
+  },
+  "trades_sample": []
+}

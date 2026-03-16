@@ -1,0 +1,220 @@
+# Zone Strategy Configuration
+# Production-ready configuration following Section 21 of specification
+
+strategy:
+  name: "Zone-Based Intraday Strategy"
+  version: "2.0"
+  
+  # Instruments
+  symbols:
+    - GOLD  # XAUUSD
+    - US100  # NAS100
+  
+  # Timeframe hierarchy (Section 5)
+  timeframes:
+    macro: H4      # Major structure
+    bias: H1       # Directional map
+    zone: M15      # Active trade map
+    trigger: M5    # Execution timing
+  
+  # Risk parameters (Section 19)
+  risk:
+    gold:
+      risk_per_idea_pct: 0.0100          # 1.0% per trade idea
+      daily_soft_loss_limit_pct: 0.0150  # -1.5% soft limit
+      daily_hard_loss_limit_pct: 0.0200  # -2.0% hard stop
+    
+    us100:
+      risk_per_idea_pct: 0.0075           # 0.75% per trade idea
+      daily_soft_loss_limit_pct: 0.0150   # -1.5% soft limit
+      daily_hard_loss_limit_pct: 0.0200   # -2.0% hard stop
+    
+    max_entries_per_idea: 2               # Maximum 2 entries per setup
+    entry_split: [0.4, 0.6]               # Entry 1: 40%, Entry 2: 60%
+  
+  # Zone configuration (Section 9)
+  zones:
+    gold:
+      h4_width_atr_fraction: 0.35
+      h1_width_atr_fraction: 0.25
+      m15_width_atr_fraction: 0.18
+      strong_zone_threshold: 4.0
+      merge_threshold_atr_fraction: 0.10
+      max_touch_count: 5
+      atr_period: 14
+    
+    us100:
+      h4_width_atr_fraction: 0.30
+      h1_width_atr_fraction: 0.22
+      m15_width_atr_fraction: 0.16
+      strong_zone_threshold: 3.5
+      merge_threshold_atr_fraction: 0.10
+      max_touch_count: 5
+      atr_period: 14
+  
+  # Directional bias (Section 11)
+  bias:
+    ema_fast: 20
+    ema_slow: 50
+    use_slope_confirmation: false
+    use_structure_confirmation: false
+  
+  # Stop loss configuration (Section 15)
+  stop_loss:
+    stop_buffer_atr_fraction: 0.20    # 0.20 * ATR(M5)
+    use_m5_atr: true
+    use_m15_atr: false
+    catastrophic_stop_enabled: false
+  
+  # Take profit configuration (Section 16)
+  take_profit:
+    min_rr_for_trade: 1.5              # Minimum 1.5:1 reward-to-risk
+    preferred_rr: 2.0                  # Preferred 2:1
+    use_partial_exits: true
+    tp1_exit_pct: 0.5                  # Exit 50% at TP1
+    tp2_exit_pct: 0.5                  # Exit 50% at TP2
+    use_trailing_stop: false
+  
+  # Trade scoring (Section 17)
+  scoring:
+    min_trade_score_normal: 65         # Normal mode minimum
+    min_trade_score_conservative: 72   # Conservative mode
+    min_trade_score_neutral_bias: 75   # Neutral bias mode
+    
+    weights:
+      bias_alignment: 20
+      zone_quality: 20
+      trigger_quality: 15
+      room_to_target: 15
+      volatility_quality: 10
+      session_quality: 10
+      spread_quality: 5
+      news_safety: 5
+  
+  # Filters (Section 18, 8, 7)
+  filters:
+    # Spread filter (Section 18)
+    max_spread_atr_fraction: 0.12      # Max spread = 0.12 * ATR(M5)
+    
+    # News filter (Section 8)
+    news_block_before_minutes: 15
+    news_block_after_minutes: 15
+    news_strict_mode: false             # If true: 30 min before/after
+    
+    # Session quality (Section 7)
+    session_scores:
+      gold:
+        london: 1.0
+        london_us_overlap: 1.0
+        us_active: 1.0
+        asia: 0.75
+        rollover: 0.25
+        thin: 0.0
+      
+      us100:
+        us_pre_open: 0.75
+        us_cash_open: 1.0
+        us_active_first_3h: 1.0
+        us_active: 0.75
+        lunch: 0.5
+        post_close: 0.25
+        other: 0.0
+    
+    min_session_score: 0.75             # Minimum session quality to trade
+    block_zero_score_sessions: true
+  
+  # High-impact events to block (Section 8.1)
+  high_impact_events:
+    - NFP
+    - CPI
+    - FOMC
+    - Fed Rate Decision
+    - Powell Speech
+    - PPI
+    - GDP
+    - Retail Sales
+    - Core CPI
+    - Core PCE
+    - Unemployment Rate
+    - PMI
+    - ISM Manufacturing
+    - Consumer Confidence
+  
+  # Backtesting configuration (Section 24)
+  backtest:
+    min_train_months: 12
+    validation_months: 6
+    oos_months: 6
+    use_walk_forward: true
+    
+    # Realistic assumptions
+    assumptions:
+      gold_spread_pips: 0.3
+      us100_spread_points: 1.5
+      slippage_pips: 0.1
+      commission_per_lot: 0.0
+    
+    # Required metrics
+    metrics:
+      - total_return
+      - max_drawdown
+      - profit_factor
+      - win_rate
+      - avg_win_loss_ratio
+      - expectancy
+      - longest_losing_streak
+      - trade_count
+      - sharpe_ratio
+      - sortino_ratio
+      - calmar_ratio
+      - mae_mfe_analysis
+  
+  # Live execution (Section 25)
+  live:
+    enable_kill_switch: true
+    max_simultaneous_ideas: 3
+    max_correlated_exposure_pct: 0.03   # Max 3% correlated risk
+    stale_data_timeout_seconds: 60
+    broker_api_error_threshold: 5        # Max errors before shutdown
+    order_retry_attempts: 3
+    order_timeout_seconds: 30
+    
+    # Safety controls
+    safety:
+      require_data_freshness: true
+      require_spread_check: true
+      require_order_confirmation: true
+      require_position_verification: true
+      reject_duplicate_ideas: true
+  
+  # Logging (Section 26)
+  logging:
+    log_every_bar: false
+    log_every_evaluation: true
+    log_every_trade: true
+    log_exit_reasons: true
+    log_score_breakdown: true
+    
+    exit_reasons:
+      - stop_loss
+      - take_profit_1
+      - take_profit_2
+      - manual_flatten
+      - daily_limit_shutdown
+      - news_exit
+      - stale_data_exit
+      - catastrophic_stop
+      - invalidation
+
+# Non-negotiable rules (Section 28)
+non_negotiable_rules:
+  - "Never use M5 alone as the market map"
+  - "Never place SL inside the active zone"
+  - "Never add after invalidation"
+  - "Never exceed hard risk per idea"
+  - "Never exceed daily hard loss limit"
+  - "Never trade with stale or uncertain data"
+  - "Never ignore spread expansion"
+  - "Never remove the room-to-target filter"
+  - "Never force trades in blocked news windows"
+  - "Never let live behavior differ from backtest assumptions"

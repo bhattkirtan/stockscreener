@@ -1,0 +1,733 @@
+{
+  "updated_at": "2026-03-16T09:56:21.432964",
+  "total_headlines": 90,
+  "sources": [
+    "Reuters",
+    "CNBC",
+    "MarketWatch",
+    "BBC",
+    "AP"
+  ],
+  "headlines": [
+    {
+      "article_id": "9b8448e6347c0529",
+      "published_at": "2026-03-16T08:50:20",
+      "source": "CNBC",
+      "title": "'We will remember': Trump warns countries to help secure Strait of Hormuz as shipping stalls",
+      "description": "Trump's comments come after he called on several countries to send warships so as to secure the critical waterway",
+      "url": "https://www.cnbc.com/2026/03/16/trump-demands-allies-secure-strait-of-hormuz-oil-iran.html"
+    },
+    {
+      "article_id": "deaf83998b36f6b2",
+      "published_at": "2026-03-16T08:48:00",
+      "source": "MarketWatch",
+      "title": "UniCredit $40 billion offer for Germany\u2019s number-two bank comes with unusual twist \u2014 it expects to fail",
+      "description": "UniCredit\u2019s bid to buy Germany\u2019s second-largest bank took another step forward on Monday after it said will launch a bid at a 4% premium.",
+      "url": "https://www.marketwatch.com/story/unicredit-40-billion-offer-for-germanys-number-two-bank-comes-with-unusual-twist-it-expects-to-fail-f765e37e?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "e259a99f76f7d789",
+      "published_at": "2026-03-16T08:36:34",
+      "source": "CNBC",
+      "title": "Price caps, taking the stairs, and short-sleeved shirts: How countries are coping with the Iran war energy shock",
+      "description": "Some countries have imposed price caps and released oil stockpiles to maintain energy supplies, while others are trying to reduce consumption.",
+      "url": "https://www.cnbc.com/2026/03/15/price-caps-and-stairs-how-nations-are-coping-with-the-iran-oil-shock.html"
+    },
+    {
+      "article_id": "3fc9a7b5a2844b14",
+      "published_at": "2026-03-16T08:30:34",
+      "source": "BBC",
+      "title": "Alcohol-free beer and pet grooming used to measure inflation",
+      "description": "Houmous and motorhomes are also added to the basket of goods and services used to chart the rising cost of living.",
+      "url": "https://www.bbc.com/news/articles/c8eg3g4lklno?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "3fc9a7b5a2844b14",
+      "published_at": "2026-03-16T08:30:34",
+      "source": "BBC",
+      "title": "Alcohol-free beer and pet grooming used to measure inflation",
+      "description": "Houmous and motorhomes are also added to the basket of goods and services used to chart the rising cost of living.",
+      "url": "https://www.bbc.com/news/articles/c8eg3g4lklno?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "7c12aac82507e0c4",
+      "published_at": "2026-03-16T08:11:56",
+      "source": "CNBC",
+      "title": "UniCredit to strengthen stake in Commerzbank to 30% laying groundwork for potential takeover",
+      "description": "UniCredit launched a voluntary takeover offer for Commerzbank on Monday.",
+      "url": "https://www.cnbc.com/2026/03/16/unicredit-strengthens-stake-commerzbank-takeover.html"
+    },
+    {
+      "article_id": "b51f3e076fa0d924",
+      "published_at": "2026-03-16T08:06:47",
+      "source": "CNBC",
+      "title": "UAE\u2019s Fujairah oil trading hub targeted by a drone attack, causing large fire",
+      "description": "It comes after a separate drone strike at Fujairah on Saturday, underlining the vulnerability of the UAE's only export route that bypasses the Strait of Hormuz.",
+      "url": "https://www.cnbc.com/2026/03/16/uae-fujairah-oil-hub-drone-fire-iran-war-us-israel-middle-east.html"
+    },
+    {
+      "article_id": "7e4e30a96533bab7",
+      "published_at": "2026-03-16T08:02:00",
+      "source": "MarketWatch",
+      "title": "Nicolas Cage just bought a new 2-unit luxury condo for $6.5 million in a coveted Manhattan building",
+      "description": "Hollywood star Nicolas Cage has reportedly snapped up a sprawling two-bedroom condo in the heart of Manhattan for $6.5 million\u2014and took out a $4.55 million mortgage for the deal.",
+      "url": "https://www.marketwatch.com/story/nicolas-cage-just-bought-a-new-2-unit-luxury-condo-for-6-5-million-in-a-coveted-manhattan-building-139d15a6?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "3ef4029efaaab6ba",
+      "published_at": "2026-03-16T07:57:00",
+      "source": "MarketWatch",
+      "title": "Billionaire Google founder Sergey Brin reportedly buys $51 million Miami mansion from LVMH CEO",
+      "description": "Google co-founder Sergey Brin seems to be on a real estate buying spree, picking up a Florida megamansion after recently buying two other homes totaling $92 million.",
+      "url": "https://www.marketwatch.com/story/billionaire-google-founder-sergey-brin-reportedly-buys-51-million-miami-mansion-from-lvmh-ceo-e6447e8e?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "75c64681e54d536d",
+      "published_at": "2026-03-16T07:39:38",
+      "source": "CNBC",
+      "title": "Big Tech purchases of carbon credits explode amid AI race, with Microsoft leading the way",
+      "description": "Carbon credit purchases by Amazon, Google, Meta and Microsoft skyrocketed in 2023, based on tracked purchases.",
+      "url": "https://www.cnbc.com/2026/03/16/microsoft-carbon-credits-ai-tech-google-meta.html"
+    },
+    {
+      "article_id": "ac11d0dfe65d32e1",
+      "published_at": "2026-03-16T07:21:04",
+      "source": "BBC",
+      "title": "Starmer to set out support plan for heating oil costs",
+      "description": "Households have faced a sharp rise in the cost of heating oil since the outbreak of the US-Israeli war with Iran.",
+      "url": "https://www.bbc.com/news/articles/cp9mgpzn901o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "ac11d0dfe65d32e1",
+      "published_at": "2026-03-16T07:21:04",
+      "source": "BBC",
+      "title": "Starmer to set out support plan for heating oil costs",
+      "description": "Households have faced a sharp rise in the cost of heating oil since the outbreak of the US-Israeli war with Iran.",
+      "url": "https://www.bbc.com/news/articles/cp9mgpzn901o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "9402d135213dc072",
+      "published_at": "2026-03-16T06:57:59",
+      "source": "CNBC",
+      "title": "Op-ed: Why my interview with Russia's ambassador to the U.K. reflected a stark global picture",
+      "description": "While Andrey Kelin was a gracious host, I realized I'd heard his answers to my questions many times before.",
+      "url": "https://www.cnbc.com/2026/03/16/russian-ambassador-to-uk-andrey-kelin-iran-crimea-ukraine.html"
+    },
+    {
+      "article_id": "93f26f75f9a8282a",
+      "published_at": "2026-03-16T06:54:31",
+      "source": "CNBC",
+      "title": "Crude prices top $100 as Trump says U.S. may hit Iran's oil hub again 'just for fun'",
+      "description": "The U.S. strikes on Kharg Island and Trump's threat to hit Iran's oil infrastructure mark a major escalation in the war, according to JPMorgan.",
+      "url": "https://www.cnbc.com/2026/03/15/oil-prices-today-iran-war.html"
+    },
+    {
+      "article_id": "7aa86af8e488d9d1",
+      "published_at": "2026-03-16T06:12:28",
+      "source": "CNBC",
+      "title": "Ships stranded at Hormuz, energy crunch at home: How India\u2019s U.S.-Israel tilt is testing ties with Iran",
+      "description": "India\u2019s U.S.-Israel tilt is costing it leverage with Iran just as its ships struggle to get safe passage through the Strait of Hormuz.",
+      "url": "https://www.cnbc.com/2026/03/16/india-us-israel-relationship-iran-war-testing-ties.html"
+    },
+    {
+      "article_id": "da45402b74735f13",
+      "published_at": "2026-03-16T05:23:17",
+      "source": "BBC",
+      "title": "Steelworks costing \u00a31.3m a day to run",
+      "description": "The government spent \u00a3377m to keep British Steel's Scunthorpe site operating, according to a report.",
+      "url": "https://www.bbc.com/news/articles/c0mge7lzr32o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "cca7a59c023fa1b6",
+      "published_at": "2026-03-16T05:18:29",
+      "source": "BBC",
+      "title": "Funding change ends school holiday food vouchers",
+      "description": "The local authority said it was a \"difficult decision\" but other support would still be available",
+      "url": "https://www.bbc.com/news/articles/cm287wg3nr2o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "7c8b277de5d8fe83",
+      "published_at": "2026-03-16T05:11:06",
+      "source": "CNBC",
+      "title": "Holiday spending, export demand drive China\u2019s economic momentum as Iran war headwinds loom",
+      "description": "Beijing tamped down its GDP growth target this year to a range of 4.5% to 5%, the least ambitious goal on record going back to the early 1990s.",
+      "url": "https://www.cnbc.com/2026/03/16/china-data-today-retail-sales-property-industrial-production.html"
+    },
+    {
+      "article_id": "90239e10aa28b252",
+      "published_at": "2026-03-16T05:02:59",
+      "source": "CNBC",
+      "title": "China talks up oil sufficiency as Trump seeks Beijing's help on securing Hormuz energy route",
+      "description": "The statistics bureau said that China's energy supply is \"relatively strong,\" while announcing an uptick in domestic production.",
+      "url": "https://www.cnbc.com/2026/03/16/china-oil-reserves-trump-iran-war-hormuz.html"
+    },
+    {
+      "article_id": "104ef093d7d2f00e",
+      "published_at": "2026-03-16T03:31:50",
+      "source": "BBC",
+      "title": "Firms to be paid to hire unemployed young people",
+      "description": "Payments of \u00a33,000 for each 18-24 year old given a job are among proposals to tackle youth unemployment being announced later.",
+      "url": "https://www.bbc.com/news/articles/cz9qdpzqnl2o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "e0cee37714641e57",
+      "published_at": "2026-03-16T03:16:51",
+      "source": "CNBC",
+      "title": "Trump signals possible delay to Beijing summit as U.S. pressures China to help reopen Strait of Hormuz",
+      "description": "The remarks came as Treasury Secretary Scott Bessent met his Chinese counterpart He Lifeng in Paris, paving the way for the summit scheduled for late March.",
+      "url": "https://www.cnbc.com/2026/03/16/trump-possible-delay-beijing-summit-china-iran-strait-of-hormuz-.html"
+    },
+    {
+      "article_id": "2127f96dd6eb8e56",
+      "published_at": "2026-03-16T02:07:00",
+      "source": "MarketWatch",
+      "title": "U.S. stock futures, oil prices bounce around as investors weigh developments in Iran conflict",
+      "description": "U.S. stock-index futures reversed early losses on Sunday as the market braced for more volatility in oil prices this week, with the conflict with Iran threatening to escalate further.",
+      "url": "https://www.marketwatch.com/story/u-s-stock-futures-dip-oil-climbs-again-as-investors-brace-for-escalation-of-iran-conflict-6034ee1e?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "32f62ee408516216",
+      "published_at": "2026-03-15T23:50:47",
+      "source": "CNBC",
+      "title": "Why the private equity crunch is not a prelude to the next big economic crisis",
+      "description": "Everybody is clueless, and when you are clueless, you are scared.",
+      "url": "https://www.cnbc.com/2026/03/15/cramer-the-private-equity-crunch-is-not-a-prelude-to-the-next-crisis.html"
+    },
+    {
+      "article_id": "3e3455537734578f",
+      "published_at": "2026-03-15T23:06:14",
+      "source": "BBC",
+      "title": "Ukraine's urgent fight on the financial frontline",
+      "description": "The war-torn country is battling to secure crucial funding from the IMF and EU, as well as putting up taxes.",
+      "url": "https://www.bbc.com/news/articles/c20jyngz7ygo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "3cdf832d9c30ad13",
+      "published_at": "2026-03-15T20:40:46",
+      "source": "CNBC",
+      "title": "Trump weighing options to strike Iran's critical oil hub, UN Ambassador Waltz says",
+      "description": "Israel says it has killed two senior Iranian intelligence officials as oil loading reportedly resumes in the UAE's Fujairah port following a fire.",
+      "url": "https://www.cnbc.com/2026/03/15/iran-war.html"
+    },
+    {
+      "article_id": "f1090ddf7587a761",
+      "published_at": "2026-03-15T20:37:47",
+      "source": "CNBC",
+      "title": "Senate Democrats oppose SAVE America Act as Republicans prepare for floor vote. What to know",
+      "description": "Senate Democrats remain opposed to SAVE America Act as Republicans prepare for floor vote this week. Here's what to know.",
+      "url": "https://www.cnbc.com/2026/03/15/trump-save-america-act-senate-2026-elections.html"
+    },
+    {
+      "article_id": "9363e87d925a65cc",
+      "published_at": "2026-03-15T20:09:45",
+      "source": "CNBC",
+      "title": "Democrats blast FCC Chair Carr's broadcast license threats as anti-First Amendment, 'totalitarian'",
+      "description": "Carr on Saturday\u00a0blasted broadcasters\u00a0shortly after President\u00a0Donald Trump\u00a0called reports that Iran struck five U.S. tanker planes \"fake news.\"",
+      "url": "https://www.cnbc.com/2026/03/15/trump-iran-war-fcc-carr-broadcast-license.html"
+    },
+    {
+      "article_id": "222d75c941801140",
+      "published_at": "2026-03-15T19:11:00",
+      "source": "MarketWatch",
+      "title": "It was unthinkable a couple of weeks ago, but could the next move by the Fed be a rate hike?",
+      "description": "With fuel prices soaring since the start of the war with Iran, a question has surfaced that was almost unimaginable a few weeks ago.",
+      "url": "https://www.marketwatch.com/story/it-was-unthinkable-a-couple-of-weeks-ago-but-could-the-next-move-by-the-fed-be-a-rate-hike-dc5e1edb?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "70b6ace196759517",
+      "published_at": "2026-03-15T19:08:33",
+      "source": "BBC",
+      "title": "Starmer speaks to Trump about importance of reopening Strait of Hormuz",
+      "description": "The leaders discussed the need to \"end the disruption to global shipping\", No 10 says.",
+      "url": "https://www.bbc.com/news/articles/cj0dlvl086eo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "db5bce9298c64300",
+      "published_at": "2026-03-15T18:54:00",
+      "source": "MarketWatch",
+      "title": "The financial sector is sending some spooky technical signals about the stock market",
+      "description": "Broken trendlines and a looming \u2018death cross\u2019 pattern bode badly for the financial sector, and therefore the rest of the stock market.",
+      "url": "https://www.marketwatch.com/story/the-financial-sector-is-sending-some-spooky-technical-signals-about-the-stock-market-683d1343?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "d9089c61b68da07a",
+      "published_at": "2026-03-15T18:45:00",
+      "source": "MarketWatch",
+      "title": "Nvidia\u2019s big GTC event is on deck, and the company faces a very high bar this year",
+      "description": "Nvidia \u201cis having a harder time moving the needle\u201d these days, one analyst notes.",
+      "url": "https://www.marketwatch.com/story/nvidias-big-gtc-event-is-on-deck-and-the-company-faces-a-very-high-bar-this-year-8927e906?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "de995293e70f871f",
+      "published_at": "2026-03-15T18:41:00",
+      "source": "MarketWatch",
+      "title": "\u2018It\u2019s all about oil\u2019: FedEx\u2019s transportation costs will be key to this week\u2019s earnings",
+      "description": "With results due this week from FedEx and retail names like Lululemon and Macy\u2019s, we\u2019ll likely hear more about consumers\u2019 attitudes, as gas prices and shipping costs spike and the conflict widens in t",
+      "url": "https://www.marketwatch.com/story/its-all-about-oil-as-fedex-kicks-off-earnings-this-week-f11d6b48?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "2beacf79acfb4ccd",
+      "published_at": "2026-03-15T18:18:00",
+      "source": "MarketWatch",
+      "title": "Individual investors are chasing oil\u2019s surge amid Iran conflict; institutions are thinking about what comes next",
+      "description": "A popular oil fund pulled in $1 billion from investors in 9 days, while an ETF that tracks the S&amp;P 500 shed $12.6 billion",
+      "url": "https://www.marketwatch.com/story/individual-investors-are-chasing-oils-iran-conflict-surge-institutions-are-thinking-what-comes-next-1b3dda7b?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "1c5e03a3dad2da61",
+      "published_at": "2026-03-15T18:17:46",
+      "source": "CNBC",
+      "title": "Why the United Arab Emirates is a target for Iran's aggression",
+      "description": "Iran is looking to test a state that has positioned itself as the Gulf's safest bridge between East and West \u2014 and the future of the region.",
+      "url": "https://www.cnbc.com/2026/03/15/iran-us-war-uae-target-aggression.html"
+    },
+    {
+      "article_id": "a9a51f99cad78e0e",
+      "published_at": "2026-03-15T18:14:00",
+      "source": "MarketWatch",
+      "title": "Panic is slowly gripping the stock market. Expect the selling to pick up this week.",
+      "description": "Options traders are signaling trouble, and systematic funds are expected to cut their exposure to U.S. stocks.",
+      "url": "https://www.marketwatch.com/story/panic-is-slowly-gripping-the-stock-market-expect-the-selling-to-pick-up-next-week-dc422e90?mod=mw_rss_topstories"
+    },
+    {
+      "article_id": "2effefa137810852",
+      "published_at": "2026-03-15T12:54:01",
+      "source": "CNBC",
+      "title": "Gen Z feels alone in their struggles\u2014here's what they 'most need to hear' from adults, says Harvard psychologist",
+      "description": "We tend to leave out the \"messy middle\" when we tell stories, says Alexis Redding, a developmental psychologist at Harvard. But \"there's a better way to help.\"",
+      "url": "https://www.cnbc.com/2026/03/15/gen-z-feels-alone-in-their-struggles-what-they-need-to-hear-harvard-psychologist.html"
+    },
+    {
+      "article_id": "cd571758e30b3cb9",
+      "published_at": "2026-03-15T12:30:01",
+      "source": "CNBC",
+      "title": "These women pursued a skilled trade \u2014 here's what they told us about their experience in a male-dominated world",
+      "description": "The skilled trades can offer opportunities for employment growth and higher salaries, potentially narrowing the gender wage gap.",
+      "url": "https://www.cnbc.com/2026/03/15/more-women-are-pursuing-the-skilled-trades-here-are-their-stories.html"
+    },
+    {
+      "article_id": "33aa971f194d688a",
+      "published_at": "2026-03-15T12:00:01",
+      "source": "CNBC",
+      "title": "36-year-old moved from Chicago to Spain, works 16 hours a week and is semi-retired: 'You get one life. Live it right'",
+      "description": "Gigi Gonzalez moved from Chicago to Valencia, Spain, in 2025. It's transformed her work-life balance, finances and more.",
+      "url": "https://www.cnbc.com/2026/03/15/36-year-old-works-16-hours-a-week-lives-semi-retired-in-spain.html"
+    },
+    {
+      "article_id": "f1d21edad5254676",
+      "published_at": "2026-03-15T11:41:03",
+      "source": "CNBC",
+      "title": "Global week ahead: Price pressure in the pipeline",
+      "description": "Keeping inflation under control becomes a critical task for central banks.",
+      "url": "https://www.cnbc.com/2026/03/15/global-week-ahead-price-pressure-in-the-pipeline.html"
+    },
+    {
+      "article_id": "b9c6c0ff739f2af7",
+      "published_at": "2026-03-15T10:42:38",
+      "source": "BBC",
+      "title": "We will intervene on energy bills if necessary, says Miliband",
+      "description": "Oil and gas prices have surged due to the US-Israel war in Iran, with fears over the cost of living.",
+      "url": "https://www.bbc.com/news/articles/cj4z7zr4kd8o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "2b47fc8baf359a0c",
+      "published_at": "2026-03-15T10:42:17",
+      "source": "CNBC",
+      "title": "Top Wall Street analysts are bullish on these 3 dividend-paying energy stocks",
+      "description": "TipRanks discusses three\u00a0dividend-paying stocks, including Chord Energy and EOG Resources, that are highlighted by\u00a0Wall Street's top pros.",
+      "url": "https://www.cnbc.com/2026/03/15/top-wall-street-analysts-are-bullish-on-these-3-dividend-paying-energy-stocks.html"
+    },
+    {
+      "article_id": "468d81d876480e1b",
+      "published_at": "2026-03-15T09:52:21",
+      "source": "BBC",
+      "title": "How the Iran war may affect your money and bills",
+      "description": "The conflict in the Middle East could raise the cost of petrol, household energy bills and even food.",
+      "url": "https://www.bbc.com/news/articles/c2e4ygndjpwo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "468d81d876480e1b",
+      "published_at": "2026-03-15T09:52:21",
+      "source": "BBC",
+      "title": "How the Iran war may affect your money and bills",
+      "description": "The conflict in the Middle East could raise the cost of petrol, household energy bills and even food.",
+      "url": "https://www.bbc.com/news/articles/c2e4ygndjpwo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "7a0dd76114609ffc",
+      "published_at": "2026-03-14T23:51:10",
+      "source": "BBC",
+      "title": "Banknotes, beavers and a very British backlash",
+      "description": "Politicians are furious Churchill will be replaced on banknotes. The RSPCA wants rats and pigeons to feature.",
+      "url": "https://www.bbc.com/news/articles/cy03zy1lr8go?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "7a0dd76114609ffc",
+      "published_at": "2026-03-14T23:51:10",
+      "source": "BBC",
+      "title": "Banknotes, beavers and a very British backlash",
+      "description": "Politicians are furious Churchill will be replaced on banknotes. The RSPCA wants rats and pigeons to feature.",
+      "url": "https://www.bbc.com/news/articles/cy03zy1lr8go?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "9ce822ff5ce3f0da",
+      "published_at": "2026-03-14T23:01:31",
+      "source": "BBC",
+      "title": "'Gruesome' war bets fuel calls for crackdown on prediction markets",
+      "description": "Predictions markets have hosted millions of dollars of bets related to the war in Iran.",
+      "url": "https://www.bbc.com/news/articles/cjwz8051y0lo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "c0272f78c52762a1",
+      "published_at": "2026-03-14T21:53:36",
+      "source": "CNBC",
+      "title": "Trump fundraising pitch features U.S. soldiers killed in Iran war",
+      "description": "The email solicitation to benefit Trump\u2019s PAC also offers donors \u201cprivate national security briefings.\u201d",
+      "url": "https://www.cnbc.com/2026/03/14/trump-iran-war-fundraising-us-soldiers.html"
+    },
+    {
+      "article_id": "f2e448b4a2874d2a",
+      "published_at": "2026-03-14T20:29:38",
+      "source": "CNBC",
+      "title": "Fertitta in weekend deal talks to acquire Caesars, while billionaire Carl Icahn waits in the wings",
+      "description": "The deal, if it gets done, would not be finalized until early April and is not expected to close until 2027.",
+      "url": "https://www.cnbc.com/2026/03/14/fertitta-caesars-talks-casino-acquisition.html"
+    },
+    {
+      "article_id": "653849485b64c9f0",
+      "published_at": "2026-03-14T19:33:34",
+      "source": "BBC",
+      "title": "Trump urges UK and other nations to send warships to Strait of Hormuz",
+      "description": "The US president says he hopes China, France, Japan and South Korea will also send ships to defend the key oil shipping route.",
+      "url": "https://www.bbc.com/news/articles/cd039n9vj3vo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "0f207d1668d3a23e",
+      "published_at": "2026-03-14T14:00:01",
+      "source": "CNBC",
+      "title": "Bitcoin beat the S&P 500, Nasdaq Composite and gold since the start of the Iran war",
+      "description": "ProShares' Simeon Hyman is highlighting a bullish bitcoin trend.",
+      "url": "https://www.cnbc.com/2026/03/14/bitcoin-outperforms-sp-500-nasdaq-gold-since-the-start-of-iran-war.html"
+    },
+    {
+      "article_id": "50106938830af84b",
+      "published_at": "2026-03-14T13:42:44",
+      "source": "CNBC",
+      "title": "Kalshi co-founder Luana Lopes Lara on the biggest prediction markets risks she has ever taken",
+      "description": "Luana Lopes Lara, co-founder of prediction markets startup Kalshi, tells CNBC about the biggest bets she ever made on the way to billionaire status.",
+      "url": "https://www.cnbc.com/2026/03/14/kalshi-prediction-markets-bet-luana-lopes-lara.html"
+    },
+    {
+      "article_id": "f192f10850125296",
+      "published_at": "2026-03-14T13:27:41",
+      "source": "CNBC",
+      "title": "As New York Mayor Zohran Mamdani faces $7 billion budget hole, free parking may be history",
+      "description": "New York City Mayor Zohran Mamdani is facing a $7 billion budget hole, and the free parking NYC residents have taken for granted may be a revenue opportunity.",
+      "url": "https://www.cnbc.com/2026/03/14/mayor-zohran-mamdani-new-york-budget-deficit-parking-tax.html"
+    },
+    {
+      "article_id": "80c458045f8203fb",
+      "published_at": "2026-03-14T12:30:01",
+      "source": "CNBC",
+      "title": "Older women set to inherit most of $54 trillion in \u2018great wealth transfer\u2019 to widowed spouses",
+      "description": "Because females have longer life expectancies, most of the spousal transfer of assets due to death is expected to go to women. Advisors say they should prepare.",
+      "url": "https://www.cnbc.com/2026/03/14/great-wealth-transfer-widowed-spouses.html"
+    },
+    {
+      "article_id": "01dbdd58f1d74bd1",
+      "published_at": "2026-03-14T12:07:11",
+      "source": "CNBC",
+      "title": "The biggest release of emergency oil stockpiles in history was announced. Why crude may keep rising",
+      "description": "Oil prices have surged more than 17% since the International Energy Agency announced the largest release of crude stockpiles in its 50-year history.",
+      "url": "https://www.cnbc.com/2026/03/14/iran-war-iea-oil-stockpile-spr-strait-hormuz.html"
+    },
+    {
+      "article_id": "a74c82d2c029d075",
+      "published_at": "2026-03-14T10:00:01",
+      "source": "CNBC",
+      "title": "A Paramount-Warner Bros. movie slate could rule the 2027 box office, but is it sustainable?",
+      "description": "Paramount CEO David Ellison has said he wants to make 30 movies a year and has franchises like Godzilla-Kong, Superman and Sonic the Hedgehog to lean on.",
+      "url": "https://www.cnbc.com/2026/03/14/paramount-wbd-2027-movie-slate.html"
+    },
+    {
+      "article_id": "e8bb99b54d96e144",
+      "published_at": "2026-03-14T02:49:14",
+      "source": "BBC",
+      "title": "Chancellor to offer support over rising heating oil costs",
+      "description": "Rachel Reeves says the Treasury is also looking at \"different options\" to help households most vulnerable to soaring energy bills.",
+      "url": "https://www.bbc.com/news/articles/cvg3y9dpvxgo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "2bbe8d008bae0210",
+      "published_at": "2026-03-13T23:02:15",
+      "source": "BBC",
+      "title": "She spent 16 hours on Instagram in a day. It's up to a jury to decide if Meta is to blame",
+      "description": "A landmark lawsuit will set the stage for thousands of people who say social media platforms are intentionally addictive.",
+      "url": "https://www.bbc.com/news/articles/c0mg3zd7xwpo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "0801b160c1b195a6",
+      "published_at": "2026-03-13T21:42:19",
+      "source": "BBC",
+      "title": "We're not profiteering on fuel. But my staff still face abuse",
+      "description": "Independent retailer Goran Raven says the higher oil price is \"horrific\" for him as well as his customers.",
+      "url": "https://www.bbc.com/news/articles/c626mdvn6d5o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "b68ae47cfad6061d",
+      "published_at": "2026-03-13T20:28:26",
+      "source": "BBC",
+      "title": "Judge says 'no evidence' to justify Federal Reserve probe",
+      "description": "Jeanine Pirro said she would appeal the ruling, which blocks the subpoenas she issued to the central bank.",
+      "url": "https://www.bbc.com/news/articles/cwy6z25y7z0o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "77a3944028ef5c0b",
+      "published_at": "2026-03-13T17:48:09",
+      "source": "CNBC",
+      "title": "IRS paper check changes trigger tax refund delays for more than 830,000 filers",
+      "description": "Many filers could see tax refund delays amid the IRS shift away from paper checks. Here's what to know if you receive a CP53E notice.",
+      "url": "https://www.cnbc.com/2026/03/13/tax-refund-delays.html"
+    },
+    {
+      "article_id": "7c62fbbb0128c1ba",
+      "published_at": "2026-03-13T16:42:49",
+      "source": "BBC",
+      "title": "Petrol retailers in row with government over 'rip off' accusations",
+      "description": "They briefly threatened to pull out of a government meeting, accusing ministers of using \"inflammatory language\" over rising fuel prices.",
+      "url": "https://www.bbc.com/news/articles/crk83e2g65no?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "3d895bd0506d2962",
+      "published_at": "2026-03-13T16:26:42",
+      "source": "BBC",
+      "title": "UK economy flatlines in January as people cut back on eating out",
+      "description": "Analysts had been expecting 0.2% growth for the UK economy at the beginning of the year.",
+      "url": "https://www.bbc.com/news/articles/c75e06e0kd7o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "0794fea3f83b3d8c",
+      "published_at": "2026-03-13T16:16:00",
+      "source": "BBC",
+      "title": "New US trade probe targets EU, Canada, UK over forced labour",
+      "description": "The US said it would examine whether countries are effectively blocking goods made with \"forced labour\".",
+      "url": "https://www.bbc.com/news/articles/cgrzvdqze5xo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "fac72493bd9988a4",
+      "published_at": "2026-03-13T15:38:02",
+      "source": "BBC",
+      "title": "US easing of Russia oil sanctions draws criticism",
+      "description": "Leaders in Europe and Canada have pushed back against Washington's move to allow Russia to sell stranded oil.",
+      "url": "https://www.bbc.com/news/articles/clyzj3g3pygo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "ac50ee62f6d40cea",
+      "published_at": "2026-03-13T15:07:39",
+      "source": "BBC",
+      "title": "Why has Trump eased sanctions on Russian oil - and will it help Putin?",
+      "description": "The US said easing sanctions on Russian oil would provide only a limited financial boost to Putin.",
+      "url": "https://www.bbc.com/news/articles/cm2871wyz9ko?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "fd281ecdcfa153fb",
+      "published_at": "2026-03-13T10:28:03",
+      "source": "BBC",
+      "title": "What on earth is going on with the oil price?",
+      "description": "Oil price moves have made headlines since the Iran conflict started - but why have there been such sharp swings?",
+      "url": "https://www.bbc.com/news/articles/ce3g49w5zxwo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "838bc2031d467715",
+      "published_at": "2026-03-13T09:58:28",
+      "source": "BBC",
+      "title": "Dharshini David: Economy on shaky ground even before Iran war",
+      "description": "The government's hopes that 2026 would be the year when growth picks up are at risk of being scuppered.",
+      "url": "https://www.bbc.com/news/articles/cn0z7971r4zo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "f920255b24ad37e0",
+      "published_at": "2026-03-13T09:56:07",
+      "source": "BBC",
+      "title": "'My hotel bill is \u00a312,000': British holidaymakers stranded by Iran war",
+      "description": "Flights are restricted due to the conflict leaving people stuck running up bills for rooms and food.",
+      "url": "https://www.bbc.com/news/articles/czj1lr10vdko?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "c59e6c61cffe790e",
+      "published_at": "2026-03-13T08:12:06",
+      "source": "BBC",
+      "title": "Post Office scandal 'has taken 21 years of my life'",
+      "description": "Seema Misra calls for accountability as a report by MPs raises concerns about ongoing delays.",
+      "url": "https://www.bbc.com/news/articles/c626mrzmv26o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "0fa3d911066ad5e3",
+      "published_at": "2026-03-13T06:54:01",
+      "source": "BBC",
+      "title": "PwC planning to increase the number of graduates it takes on",
+      "description": "Last year the consultancy cut its graduate intake, but UK boss Marco Amitrano says it is still worth getting a degree.",
+      "url": "https://www.bbc.com/news/articles/c86ynz9xy72o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "cc72923baa32c200",
+      "published_at": "2026-03-13T05:21:01",
+      "source": "BBC",
+      "title": "Can Ukraine's war-torn wheatfields be cleansed?",
+      "description": "Researchers take 8,000 soil samples from battlefields to see if it is safe to grow crops.",
+      "url": "https://www.bbc.com/news/articles/cly2e3jzeyko?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "304e6162910cfe0a",
+      "published_at": "2026-03-13T02:15:44",
+      "source": "BBC",
+      "title": "KPop Demon Hunters to return as Netflix announces sequel",
+      "description": "The sequel brings back the co-directors of the first film, which was a smash-hit for the streaming service.",
+      "url": "https://www.bbc.com/news/articles/c2k8wvzgqk7o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "9484a3affb8826ba",
+      "published_at": "2026-03-13T00:16:03",
+      "source": "BBC",
+      "title": "Qantas agrees to pay $74m over Covid-19 travel voucher refunds",
+      "description": "The case relates to cancelled flights during the pandemic, for which customers were given credits instead of cash.",
+      "url": "https://www.bbc.com/news/articles/c8xyk8lwr1jo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "6881dee5378d11fe",
+      "published_at": "2026-03-12T23:03:14",
+      "source": "BBC",
+      "title": "Can plastic-eating fungi help clean up nappy waste?",
+      "description": "Cost and convenience have made disposable nappies dominant - can start-ups compete?",
+      "url": "https://www.bbc.com/news/articles/cvg3wg0yrp5o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "6d59acc413b9a99d",
+      "published_at": "2026-03-12T17:07:54",
+      "source": "BBC",
+      "title": "Pottery firm Denby to appoint administrators",
+      "description": "The famous company said rising costs had \"squeezed the business financially\".",
+      "url": "https://www.bbc.com/news/articles/cm287ylyydjo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "e930dbfdccdc581c",
+      "published_at": "2026-03-12T16:08:08",
+      "source": "BBC",
+      "title": "Jo Malone sued for using her own name in collaboration with Zara",
+      "description": "The perfumier sold the rights to her name in 1999 but has previously said she regretted the move.",
+      "url": "https://www.bbc.com/news/articles/cly09j2542no?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "b4b20e712415670c",
+      "published_at": "2026-03-11T23:02:54",
+      "source": "BBC",
+      "title": "A small US grocer is calling out the lower prices at big chains",
+      "description": "It is 'impossible for us to compete', says the boss of a New York grocery store.",
+      "url": "https://www.bbc.com/news/articles/cr57g1ddqmdo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "4b93b1546a5318ce",
+      "published_at": "2026-03-11T09:49:39",
+      "source": "BBC",
+      "title": "The Aldi-style disruptors who could be about to shake up the vets market",
+      "description": "As pet owners complain of rising prices, independent practices want to take on the big chains.",
+      "url": "https://www.bbc.com/news/articles/cj6dw3r09x0o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "972ab8ec8526c4b7",
+      "published_at": "2026-03-09T23:01:38",
+      "source": "BBC",
+      "title": "GPS jamming: The invisible battle in the Middle East",
+      "description": "GPS jamming has made navigation hazardous in the Gulf, spurring efforts to develop alternatives.",
+      "url": "https://www.bbc.com/news/articles/c3ewwlx9e1xo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "e52e8f1b20e88ec5",
+      "published_at": "2026-03-08T23:17:54",
+      "source": "BBC",
+      "title": "Spain's migrants welcome amnesty: 'It will help us in every way'",
+      "description": "Madrid cites humanitarian and economic reasons to give undocumented workers legal status.",
+      "url": "https://www.bbc.com/news/articles/crk8rdz5131o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "9f2765181170111a",
+      "published_at": "2026-03-05T23:05:51",
+      "source": "BBC",
+      "title": "Can snacks help you sleep?",
+      "description": "Chocolates, bars, gummies and drinks promise to help you sleep, but is the science behind them sound?",
+      "url": "https://www.bbc.com/news/articles/cd6znvjvw3wo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "a3d32608c23660dc",
+      "published_at": "2026-03-04T23:04:26",
+      "source": "BBC",
+      "title": "We have more privacy controls yet less privacy than ever",
+      "description": "Has online privacy become  \"a luxury not a right\" for us all in 2026?",
+      "url": "https://www.bbc.com/news/articles/c4gj39zk1k0o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "68cbff7b0ae0d0d1",
+      "published_at": "2026-03-03T04:45:46",
+      "source": "BBC",
+      "title": "Know when to fold them: the tech inspired by origami",
+      "description": "Origami techniques can add strength to structures without adding bulk.",
+      "url": "https://www.bbc.com/news/articles/c9v0e4n8kw0o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "036275fb587bd291",
+      "published_at": "2026-03-02T05:47:00",
+      "source": "BBC",
+      "title": "Deepfake attack: 'Many people could have been cheated'",
+      "description": "The boss of the Bombay Stock Exchange was recently targeted in what is a growing global problem.",
+      "url": "https://www.bbc.com/news/articles/c0j59vydxj9o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "cbcf688c61f04760",
+      "published_at": "2026-02-26T23:03:10",
+      "source": "BBC",
+      "title": "Why you can't get a signal at festivals and sports matches",
+      "description": "Connecting up music and sports events to the internet is a massive undertaking.",
+      "url": "https://www.bbc.com/news/articles/c3rzq8d24y9o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "80ea3f8c63fb2176",
+      "published_at": "2026-02-25T23:06:33",
+      "source": "BBC",
+      "title": "The family-owned soda firm that still uses returnable glass bottles",
+      "description": "Soft drinks company Twig's Beverage has a loyal following for its old-fashioned approach.",
+      "url": "https://www.bbc.com/news/articles/cdjm289ye4mo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "e8fafdb1c6a99ccb",
+      "published_at": "2026-01-11T00:26:18",
+      "source": "BBC",
+      "title": "The real impact of roadworks on the country - and why they're set to get worse",
+      "description": "There is a fine balance between the benefits of improved infrastructure, versus the cost of disruption. Does the country have it right?",
+      "url": "https://www.bbc.com/news/articles/c23e3d1r17go?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "710ee4dab48ca404",
+      "published_at": "2025-12-21T23:03:12",
+      "source": "BBC",
+      "title": "Why the railways often seem to be in such chaos over Christmas",
+      "description": "Parts of Britain\u2019s rail network will close for engineering work over the festive period - but is that the right time to do it?",
+      "url": "https://www.bbc.com/news/articles/czdg795m5epo?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "8804bc3643333d07",
+      "published_at": "2025-11-29T14:14:47",
+      "source": "BBC",
+      "title": "Budget 2025: What's the best and worst that could happen for Labour?",
+      "description": "Three days in, after a tax U-turn and partial climbdown on workers' rights, Laura Kuenssberg looks at what impact Budget week might have.",
+      "url": "https://www.bbc.com/news/articles/cqlk5gd3kv9o?at_medium=RSS&at_campaign=rss"
+    },
+    {
+      "article_id": "7444ea8ed1573394",
+      "published_at": "2025-11-24T23:00:03",
+      "source": "BBC",
+      "title": "Has Britain's budget watchdog become too all-powerful?",
+      "description": "Ahead of this week's Budget, some have accused the Office for Budget Responsibility of being a \"straitjacket on growth\"",
+      "url": "https://www.bbc.com/news/articles/clyx9n5p7v7o?at_medium=RSS&at_campaign=rss"
+    }
+  ]
+}

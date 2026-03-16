@@ -1,0 +1,546 @@
+openapi: 3.0.3
+info:
+  title: Capital.com Trading Service API
+  description: |
+    Backend service for managing trading positions on Capital.com via TradingView webhooks and manual control.
+    
+    ## Features
+    - Create, update, and close positions
+    - Get current market prices
+    - Retrieve historical price data
+    - View top market movers (risers/fallers)
+    - Webhook endpoint for TradingView alerts
+    
+    ## Authentication
+    All endpoints (except health check) require an API key in the request body under the `key` field.
+    
+    ## Base URL
+    Production: `https://us-central1-double-venture-442318-k8.cloudfunctions.net/capitalComService`
+    
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@example.com
+
+servers:
+  - url: https://us-central1-double-venture-442318-k8.cloudfunctions.net/capitalComService
+    description: Production server (Google Cloud Run)
+
+tags:
+  - name: Positions
+    description: Trading position management
+  - name: Market Data
+    description: Market prices and historical data
+  - name: Analytics
+    description: Market analysis and movers
+
+paths:
+  /get_positions:
+    get:
+      tags:
+        - Positions
+      summary: Get all open positions
+      description: Retrieve all currently open trading positions from Capital.com account
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionsResponse'
+        '401':
+          description: Unauthorized - Invalid API credentials
+        '429':
+          description: Rate limit exceeded
+
+  /create_position:
+    post:
+      tags:
+        - Positions
+      summary: Create or manage a trading position
+      description: |
+        TradingView webhook endpoint - creates new positions, updates stop loss, or closes positions.
+        
+        ### Actions:
+        - `entry` - Create new position (closes opposite direction first)
+        - `update-sl` - Update stop loss for existing position
+        - `exit` - Close existing position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePositionRequest'
+            examples:
+              entry:
+                summary: Create new BUY position
+                value:
+                  key: "IuMfu0djI6ocgxgcbbQEdg"
+                  action: "entry"
+                  epic: "SILVER"
+                  direction: "BUY"
+                  stopLevel: 85.5
+                  fibLevel1: 87.0
+                  fibLevel2: 88.0
+                  fibLevel3: 89.0
+                  size1: 100
+                  size2: 60
+                  size3: 40
+                  inTradeTime: true
+              updateSL:
+                summary: Update stop loss
+                value:
+                  key: "IuMfu0djI6ocgxgcbbQEdg"
+                  action: "update-sl"
+                  epic: "SILVER"
+                  stopLevel: 86.0
+                  inTradeTime: true
+              exit:
+                summary: Close position
+                value:
+                  key: "IuMfu0djI6ocgxgcbbQEdg"
+                  action: "exit"
+                  epic: "SILVER"
+                  inTradeTime: true
+      responses:
+        '200':
+          description: Position created/updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePositionResponse'
+        '400':
+          description: Bad request - Missing required fields or invalid action
+        '401':
+          description: Unauthorized - Invalid API key
+        '429':
+          description: Rate limit exceeded
+
+  /updte_position:
+    post:
+      tags:
+        - Positions
+      summary: Update stop loss for position
+      description: Update the stop loss level for an existing position by epic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - key
+                - epic
+                - stopLevel
+                - action
+              properties:
+                key:
+                  type: string
+                  description: API authentication key
+                epic:
+                  type: string
+                  description: Market epic (e.g., SILVER, GOLD, EURUSD)
+                stopLevel:
+                  type: number
+                  description: New stop loss price level
+                action:
+                  type: string
+                  enum: [update-sl]
+                  description: Must be "update-sl"
+      responses:
+        '200':
+          description: Stop loss updated successfully
+        '400':
+          description: Invalid action or missing fields
+        '401':
+          description: Unauthorized
+
+  /close_position/{dealId}:
+    delete:
+      tags:
+        - Positions
+      summary: Close a specific position
+      description: Close an open position using its deal ID
+      parameters:
+        - name: dealId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The deal ID of the position to close
+          example: "006011e7-0055-311e-0000-0000812f6c4e"
+      responses:
+        '200':
+          description: Position closed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dealReference:
+                    type: string
+                    description: Reference ID of the closed position
+        '404':
+          description: Position not found
+        '429':
+          description: Rate limit exceeded
+
+  /market/{epic}:
+    get:
+      tags:
+        - Market Data
+      summary: Get current price for a market
+      description: Retrieve real-time market data including bid/offer prices, high/low, and metadata
+      parameters:
+        - name: epic
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Market epic identifier
+          example: "SILVER"
+      responses:
+        '200':
+          description: Market data retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketInfo'
+        '404':
+          description: Market not found
+        '429':
+          description: Rate limit exceeded
+
+  /prices/{epic}:
+    get:
+      tags:
+        - Market Data
+      summary: Get historical price data
+      description: Retrieve historical OHLC price data for charting and analysis
+      parameters:
+        - name: epic
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Market epic identifier
+          example: "GOLD"
+        - name: resolution
+          in: query
+          schema:
+            type: string
+            enum: [MINUTE, MINUTE_5, MINUTE_15, MINUTE_30, HOUR, HOUR_4, DAY, WEEK]
+            default: HOUR
+          description: Timeframe resolution
+        - name: max
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+          description: Maximum number of data points to return
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start date in ISO 8601 format
+          example: "2026-03-01T00:00:00Z"
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End date in ISO 8601 format
+          example: "2026-03-04T23:59:59Z"
+      responses:
+        '200':
+          description: Historical prices retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoricalPrices'
+        '400':
+          description: Invalid parameters
+        '404':
+          description: Market not found
+        '429':
+          description: Rate limit exceeded
+
+  /markets:
+    get:
+      tags:
+        - Analytics
+      summary: Get all markets or top movers
+      description: |
+        Retrieve market data. Without search term, returns top 10 risers and fallers.
+        With search term, returns filtered market list.
+      parameters:
+        - name: searchTerm
+          in: query
+          schema:
+            type: string
+          description: Optional search term to filter markets
+          example: "EUR"
+      responses:
+        '200':
+          description: Markets data retrieved successfully
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TopMoversResponse'
+                  - $ref: '#/components/schemas/MarketsListResponse'
+        '429':
+          description: Rate limit exceeded
+
+components:
+  schemas:
+    CreatePositionRequest:
+      type: object
+      required:
+        - key
+        - action
+        - epic
+        - direction
+        - stopLevel
+        - fibLevel1
+        - size1
+      properties:
+        key:
+          type: string
+          description: API authentication key
+          example: "IuMfu0djI6ocgxgcbbQEdg"
+        action:
+          type: string
+          enum: [entry, update-sl, exit]
+          description: Action to perform
+        epic:
+          type: string
+          description: Market epic (ticker symbol)
+          example: "SILVER"
+        direction:
+          type: string
+          enum: [BUY, SELL]
+          description: Trade direction (required for entry)
+        stopLevel:
+          type: number
+          format: float
+          description: Stop loss price level
+          example: 85.5
+        fibLevel1:
+          type: number
+          format: float
+          description: First take profit level
+          example: 87.0
+        fibLevel2:
+          type: number
+          format: float
+          description: Second take profit level (optional)
+          example: 88.0
+        fibLevel3:
+          type: number
+          format: float
+          description: Third take profit level (optional)
+          example: 89.0
+        size1:
+          type: number
+          format: float
+          description: Position size for first TP
+          example: 100
+        size2:
+          type: number
+          format: float
+          description: Position size for second TP (optional)
+          example: 60
+        size3:
+          type: number
+          format: float
+          description: Position size for third TP (optional)
+          example: 40
+        inTradeTime:
+          type: boolean
+          description: Whether market is within trading hours
+          example: true
+
+    CreatePositionResponse:
+      type: object
+      properties:
+        responses:
+          type: array
+          items:
+            type: object
+            properties:
+              dealReference:
+                type: string
+                description: Unique deal reference
+              status_code:
+                type: integer
+                description: HTTP status code
+              tplevel:
+                type: number
+                description: Take profit level
+
+    PositionsResponse:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            type: object
+            properties:
+              market:
+                $ref: '#/components/schemas/MarketInfo'
+              position:
+                $ref: '#/components/schemas/PositionInfo'
+
+    PositionInfo:
+      type: object
+      properties:
+        dealId:
+          type: string
+          description: Unique position identifier
+        dealReference:
+          type: string
+        direction:
+          type: string
+          enum: [BUY, SELL]
+        size:
+          type: number
+          description: Position size
+        level:
+          type: number
+          description: Entry price
+        stopLevel:
+          type: number
+          description: Stop loss level
+        profitLevel:
+          type: number
+          description: Take profit level
+        currency:
+          type: string
+          description: Position currency
+        upl:
+          type: number
+          description: Unrealized profit/loss
+        createdDate:
+          type: string
+          format: date-time
+        guaranteedStop:
+          type: boolean
+
+    MarketInfo:
+      type: object
+      properties:
+        epic:
+          type: string
+          description: Market identifier
+        instrumentName:
+          type: string
+          description: Human-readable name
+        instrumentType:
+          type: string
+          description: Asset class
+          example: "COMMODITIES"
+        bid:
+          type: number
+          description: Current bid price
+        offer:
+          type: number
+          description: Current offer price
+        high:
+          type: number
+          description: Daily high
+        low:
+          type: number
+          description: Daily low
+        netChange:
+          type: number
+          description: Price change
+        percentageChange:
+          type: number
+          description: Percentage change
+        updateTime:
+          type: string
+          format: date-time
+        marketStatus:
+          type: string
+          enum: [TRADEABLE, CLOSED]
+
+    HistoricalPrices:
+      type: object
+      properties:
+        prices:
+          type: array
+          items:
+            type: object
+            properties:
+              snapshotTime:
+                type: string
+                format: date-time
+              openPrice:
+                type: object
+                properties:
+                  bid:
+                    type: number
+                  ask:
+                    type: number
+              closePrice:
+                type: object
+                properties:
+                  bid:
+                    type: number
+                  ask:
+                    type: number
+              highPrice:
+                type: object
+                properties:
+                  bid:
+                    type: number
+                  ask:
+                    type: number
+              lowPrice:
+                type: object
+                properties:
+                  bid:
+                    type: number
+                  ask:
+                    type: number
+              lastTradedVolume:
+                type: number
+
+    TopMoversResponse:
+      type: object
+      properties:
+        topRisers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketInfo'
+          description: Top 10 markets with highest positive percentage change
+        topFallers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketInfo'
+          description: Top 10 markets with highest negative percentage change
+        totalMarkets:
+          type: integer
+          description: Total number of markets analyzed
+
+    MarketsListResponse:
+      type: object
+      properties:
+        markets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketInfo'
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication (passed in request body as 'key' field)
+
+security:
+  - ApiKeyAuth: []

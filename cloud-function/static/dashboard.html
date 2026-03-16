@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strategy Optimization Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            border: 1px solid #e0e0e0;
+        }
+        
+        .card h2 {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            color: #667eea;
+        }
+        
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .stat:last-child {
+            border-bottom: none;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 0.9rem;
+        }
+        
+        .stat-value {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .positive {
+            color: #10b981;
+        }
+        
+        .negative {
+            color: #ef4444;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #666;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        .table th {
+            background: #f9fafb;
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            color: #666;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .table tr:hover {
+            background: #f9fafb;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        
+        .badge-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .badge-info {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        
+        .tab {
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: #666;
+            font-weight: 600;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1>🚀 Strategy Optimization Dashboard</h1>
+            <p>Real-time trading strategy optimization and analysis</p>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('overview')">Overview</button>
+            <button class="tab" onclick="showTab('optimize')">Run Optimization</button>
+            <button class="tab" onclick="showTab('history')">History</button>
+            <button class="tab" onclick="showTab('analysis')">Analysis</button>
+        </div>
+        
+        <!-- Overview Tab -->
+        <div id="overview" class="tab-content active">
+            <div class="grid">
+                <div class="card">
+                    <h2>📊 Overall Statistics</h2>
+                    <div id="overall-stats" class="loading">Loading...</div>
+                </div>
+                
+                <div class="card">
+                    <h2>🏆 Latest Run</h2>
+                    <div id="latest-run" class="loading">Loading...</div>
+                </div>
+                
+                <div class="card">
+                    <h2>💡 Best Strategy Ever</h2>
+                    <div id="best-ever" class="loading">Loading...</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>📈 Recent Runs</h2>
+                <div id="recent-runs" class="loading">Loading...</div>
+            </div>
+        </div>
+        
+        <!-- Optimize Tab -->
+        <div id="optimize" class="tab-content">
+            <div class="card">
+                <h2>🚀 Start New Optimization</h2>
+                <form onsubmit="startOptimization(event)">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label>Instrument</label>
+                            <select id="instrument">
+                                <option value="GOLD">GOLD</option>
+                                <option value="EURUSD">EURUSD</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Timeframe</label>
+                            <select id="timeframe">
+                                <option value="M5">M5 (5 minutes)</option>
+                                <option value="M15">M15 (15 minutes)</option>
+                                <option value="H1">H1 (1 hour)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Mode</label>
+                            <select id="mode">
+                                <option value="quick">Quick (2,340 combinations)</option>
+                                <option value="medium">Medium (5,000+ combinations)</option>
+                                <option value="full">Full (10,000+ combinations)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="grid">
+                        <div class="form-group">
+                            <label>Initial Capital ($)</label>
+                            <input type="number" id="capital" value="10000" step="1000">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Position Size (lots)</label>
+                            <input type="number" id="position" value="10" step="0.1">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Workers (-1 = all cores)</label>
+                            <input type="number" id="workers" value="-1">
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="optimize-btn">🚀 Start Optimization</button>
+                </form>
+                
+                <div id="optimize-status" style="margin-top: 1.5rem;"></div>
+            </div>
+        </div>
+        
+        <!-- History Tab -->
+        <div id="history" class="tab-content">
+            <div class="card">
+                <h2>📜 Optimization History</h2>
+                <div id="history-table" class="loading">Loading...</div>
+            </div>
+        </div>
+        
+        <!-- Analysis Tab -->
+        <div id="analysis" class="tab-content">
+            <div class="card">
+                <h2>🔍 Detailed Analysis</h2>
+                <button onclick="loadAnalysis()">🔄 Refresh Analysis</button>
+                <div id="analysis-content" class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // API Configuration
+        // Local development: http://localhost:8000
+        // Production: https://optimize-api-6ovej2yaoa-uc.a.run.app
+        const API_BASE = 'https://optimize-api-6ovej2yaoa-uc.a.run.app';
+        let activeRunId = null;
+        
+        // Tab switching
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+            
+            // Load data when switching tabs
+            if (tabName === 'history') loadHistory();
+            if (tabName === 'analysis') loadAnalysis();
+        }
+        
+        // Load overall stats
+        async function loadOverallStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/stats/summary`);
+                const data = await response.json();
+                
+                document.getElementById('overall-stats').innerHTML = `
+                    <div class="stat">
+                        <span class="stat-label">Total Runs</span>
+                        <span class="stat-value">${data.total_runs}</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Strategies Tested</span>
+                        <span class="stat-value">${data.total_strategies_tested.toLocaleString()}</span>
+                    </div>
+                `;
+                
+                document.getElementById('best-ever').innerHTML = `
+                    <div class="stat">
+                        <span class="stat-label">Best Return</span>
+                        <span class="stat-value positive">${data.best_return_ever.toFixed(2)}%</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Best Profit</span>
+                        <span class="stat-value positive">$${data.best_profit_ever.toLocaleString()}</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Best Run</span>
+                        <span class="stat-value" style="font-size: 0.8rem;">${data.best_run || 'N/A'}</span>
+                    </div>
+                `;
+                
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        // Load latest run
+        async function loadLatestRun() {
+            try {
+                const response = await fetch(`${API_BASE}/api/analyze/latest`);
+                const data = await response.json();
+                
+                const best = data.best_strategy;
+                document.getElementById('latest-run').innerHTML = `
+                    <div class="stat">
+                        <span class="stat-label">Date</span>
+                        <span class="stat-value">${data.date}</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Profit</span>
+                        <span class="stat-value positive">$${best.total_pnl.toLocaleString()}</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Return</span>
+                        <span class="stat-value positive">${best.return_pct}%</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Win Rate</span>
+                        <span class="stat-value">${best.win_rate}%</span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('latest-run').innerHTML = '<p>No runs available yet</p>';
+            }
+        }
+        
+        // Load recent runs
+        async function loadRecentRuns() {
+            try {
+                const response = await fetch(`${API_BASE}/api/optimize/history?limit=10`);
+                const data = await response.json();
+                
+                if (data.runs.length === 0) {
+                    document.getElementById('recent-runs').innerHTML = '<p>No runs available</p>';
+                    return;
+                }
+                
+                let html = '<table class="table"><thead><tr>' +
+                    '<th>Date</th><th>Instrument</th><th>Status</th>' +
+                    '<th>Profit</th><th>Return</th><th>Combinations</th>' +
+                    '</tr></thead><tbody>';
+                
+                data.runs.slice(0, 5).forEach(run => {
+                    const statusBadge = run.status === 'completed' ? 'badge-success' : 
+                                       run.status === 'running' ? 'badge-warning' : 'badge-info';
+                    
+                    html += `<tr>
+                        <td>${run.date}</td>
+                        <td>${run.instrument} ${run.timeframe}</td>
+                        <td><span class="badge ${statusBadge}">${run.status}</span></td>
+                        <td>${run.best_profit ? '$' + run.best_profit.toLocaleString() : '-'}</td>
+                        <td>${run.best_return ? run.best_return.toFixed(2) + '%' : '-'}</td>
+                        <td>${run.total_combinations ? run.total_combinations.toLocaleString() : '-'}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></table>';
+                document.getElementById('recent-runs').innerHTML = html;
+                
+            } catch (error) {
+                console.error('Error loading recent runs:', error);
+            }
+        }
+        
+        // Load history
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${API_BASE}/api/optimize/history?limit=50`);
+                const data = await response.json();
+                
+                if (data.runs.length === 0) {
+                    document.getElementById('history-table').innerHTML = '<p>No runs available</p>';
+                    return;
+                }
+                
+                let html = '<table class="table"><thead><tr>' +
+                    '<th>Run ID</th><th>Date</th><th>Instrument</th><th>Status</th>' +
+                    '<th>Profit</th><th>Return</th><th>Actions</th>' +
+                    '</tr></thead><tbody>';
+                
+                data.runs.forEach(run => {
+                    const statusBadge = run.status === 'completed' ? 'badge-success' : 
+                                       run.status === 'running' ? 'badge-warning' : 'badge-info';
+                    
+                    html += `<tr>
+                        <td style="font-size: 0.8rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${run.run_id}</td>
+                        <td>${run.date}</td>
+                        <td>${run.instrument} ${run.timeframe}</td>
+                        <td><span class="badge ${statusBadge}">${run.status}</span></td>
+                        <td>${run.best_profit ? '$' + run.best_profit.toLocaleString() : '-'}</td>
+                        <td>${run.best_return ? run.best_return.toFixed(2) + '%' : '-'}</td>
+                        <td>
+                            ${run.status === 'completed' ? 
+                                `<button onclick="viewResults('${run.run_id}')">View</button>` : 
+                                '-'}
+                        </td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></table>';
+                document.getElementById('history-table').innerHTML = html;
+                
+            } catch (error) {
+                console.error('Error loading history:', error);
+            }
+        }
+        
+        // Load analysis
+        async function loadAnalysis() {
+            try {
+                document.getElementById('analysis-content').innerHTML = '<div class="loading"><div class="spinner"></div>Loading analysis...</div>';
+                
+                const response = await fetch(`${API_BASE}/api/analyze/latest`);
+                const data = await response.json();
+                
+                const best = data.best_strategy;
+                
+                let html = `
+                    <h3 style="margin-top: 1.5rem;">🏆 Best Strategy</h3>
+                    <div class="grid">
+                        <div class="stat">
+                            <span class="stat-label">Strategy Name</span>
+                            <span class="stat-value" style="font-size: 0.85rem;">${best.strategy_name}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Profit</span>
+                            <span class="stat-value positive">$${best.total_pnl.toLocaleString()}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Return</span>
+                            <span class="stat-value positive">${best.return_pct}%</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Win Rate</span>
+                            <span class="stat-value">${best.win_rate}%</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Profit Factor</span>
+                            <span class="stat-value">${best.profit_factor}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Sharpe Ratio</span>
+                            <span class="stat-value">${best.sharpe_ratio}</span>
+                        </div>
+                    </div>
+                    
+                    <h3 style="margin-top: 1.5rem;">📈 pip_value Performance</h3>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>pip_value</th>
+                                <th>Count</th>
+                                <th>Profitable</th>
+                                <th>Rate</th>
+                                <th>Avg Profit</th>
+                                <th>Max Profit</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                Object.entries(data.pip_value_analysis).forEach(([pv, stats]) => {
+                    html += `<tr>
+                        <td>${pv}</td>
+                        <td>${stats.count}</td>
+                        <td>${stats.profitable}/${stats.count}</td>
+                        <td>${stats.profitable_pct}%</td>
+                        <td class="${stats.avg_profit > 0 ? 'positive' : 'negative'}">$${stats.avg_profit.toLocaleString()}</td>
+                        <td class="positive">$${stats.max_profit.toLocaleString()}</td>
+                    </tr>`;
+                });
+                
+                html += `</tbody></table>
+                    
+                    <h3 style="margin-top: 1.5rem;">⚠️ Risk Metrics</h3>
+                    <div class="grid">
+                        <div class="stat">
+                            <span class="stat-label">Profitability Rate</span>
+                            <span class="stat-value">${data.risk_metrics.profitability_rate}%</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Avg Drawdown</span>
+                            <span class="stat-value">${data.risk_metrics.avg_drawdown}%</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Worst Drawdown</span>
+                            <span class="stat-value negative">${data.risk_metrics.worst_drawdown}%</span>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('analysis-content').innerHTML = html;
+                
+            } catch (error) {
+                document.getElementById('analysis-content').innerHTML = '<p>No analysis available</p>';
+            }
+        }
+        
+        // Start optimization
+        async function startOptimization(event) {
+            event.preventDefault();
+            
+            const btn = document.getElementById('optimize-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Starting...';
+            
+            const payload = {
+                instrument: document.getElementById('instrument').value,
+                timeframe: document.getElementById('timeframe').value,
+                mode: document.getElementById('mode').value,
+                initial_capital: parseFloat(document.getElementById('capital').value),
+                position_size: parseFloat(document.getElementById('position').value),
+                n_jobs: parseInt(document.getElementById('workers').value),
+                parallel: true
+            };
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/optimize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await response.json();
+                activeRunId = data.run_id;
+                
+                document.getElementById('optimize-status').innerHTML = `
+                    <div class="card" style="background: #f0fdf4;">
+                        <p>✅ Optimization started!</p>
+                        <p><strong>Run ID:</strong> ${data.run_id}</p>
+                        <p>Check the History tab to monitor progress</p>
+                    </div>
+                `;
+                
+            } catch (error) {
+                document.getElementById('optimize-status').innerHTML = `
+                    <div class="card" style="background: #fef2f2;">
+                        <p>❌ Error starting optimization: ${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🚀 Start Optimization';
+            }
+        }
+        
+        // View results
+        function viewResults(runId) {
+            // Switch to analysis tab and load that run
+            showTab('analysis');
+            loadAnalysis();
+            alert('Viewing results for: ' + runId);
+        }
+        
+        // Initial load
+        loadOverallStats();
+        loadLatestRun();
+        loadRecentRuns();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            loadRecentRuns();
+            loadOverallStats();
+        }, 30000);
+    </script>
+</body>
+</html>

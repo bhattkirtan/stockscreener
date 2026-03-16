@@ -1,0 +1,8 @@
+# Requirements for Cloud Functions API
+# Minimal dependencies for CRUD operations only
+
+functions-framework==3.*
+flask==3.0.0
+google-cloud-storage==2.14.0
+google-cloud-tasks==2.14.0
+pandas==2.1.4

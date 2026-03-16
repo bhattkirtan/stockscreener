@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Data files (exclude results, keep source CSV files)
+data/optimization/
+data/backtest_results/
+backup/
+vector_store/
+
+# Exclude specific JSON files (keep CSVs for backtesting)
+data/*.json
+data/backtest_results.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+*.md
+docs/
+
+# Scripts that aren't needed in container
+scripts/test.sh
+test_*.py
+
+# Development files
+.env
+.env.local

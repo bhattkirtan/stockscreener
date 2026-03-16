@@ -1,0 +1,119 @@
+# ============================================================================
+# Knative Service Configuration - Capital.com Trading Service
+# ============================================================================
+#
+# This file documents the current Knative/Cloud Run service configuration
+# as deployed in Google Cloud Functions Gen2.
+#
+# This is for reference only - actual deployment uses gcloud CLI.
+# To apply changes, use: ./deploy.sh or gcloud functions deploy
+#
+# Service URL: https://capitalcomservice-6ovej2yaoa-uc.a.run.app
+# Function URL: https://us-central1-double-venture-442318-k8.cloudfunctions.net/capitalComService
+# ============================================================================
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: capitalcomservice
+  namespace: '361802071308'
+  labels:
+    goog-managed-by: cloudfunctions
+    goog-cloudfunctions-runtime: python312
+    cloud.googleapis.com/location: us-central1
+    goog-drz-cloudfunctions-id: capitalcomservice
+    goog-drz-cloudfunctions-location: us-central1
+  annotations:
+    run.googleapis.com/custom-audiences: '["https://us-central1-double-venture-442318-k8.cloudfunctions.net/capitalComService"]'
+    cloudfunctions.googleapis.com/function-id: capitalComService
+    run.googleapis.com/build-function-target: hello_http
+    run.googleapis.com/ingress: all
+
+spec:
+  template:
+    metadata:
+      labels:
+        run.googleapis.com/startupProbeType: Default
+      annotations:
+        cloudfunctions.googleapis.com/trigger-type: HTTP_TRIGGER
+        autoscaling.knative.dev/maxScale: '100'
+        run.googleapis.com/secrets: capitalService:latest
+        run.googleapis.com/startup-cpu-boost: 'true'
+    
+    spec:
+      containerConcurrency: 1
+      timeoutSeconds: 60
+      serviceAccountName: 361802071308-compute@developer.gserviceaccount.com
+      
+      containers:
+      - name: worker
+        image: us-central1-docker.pkg.dev/double-venture-442318-k8/cloud-run-source-deploy/capitalcomservice
+        
+        ports:
+        - name: http1
+          containerPort: 8080
+        
+        env:
+        - name: LOG_EXECUTION_ID
+          value: 'true'
+        - name: apicredentials
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: capitalService
+        
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 256Mi
+        
+        startupProbe:
+          timeoutSeconds: 240
+          periodSeconds: 240
+          failureThreshold: 1
+          tcpSocket:
+            port: 8080
+      
+      runtimeClassName: run.googleapis.com/linux-base-image-update
+  
+  traffic:
+  - percent: 100
+    latestRevision: true
+
+# ============================================================================
+# Configuration Notes
+# ============================================================================
+#
+# Resource Limits:
+#   - CPU: 1 vCPU (1000m)
+#   - Memory: 256Mi
+#   - Timeout: 60 seconds
+#   - Concurrency: 1 request per container instance
+#   - Max Instances: 100
+#
+# Secrets:
+#   - apicredentials: from Secret Manager (capitalService:latest)
+#
+# Health Checks:
+#   - Startup Probe: TCP check on port 8080
+#   - Timeout: 240 seconds
+#   - Period: 240 seconds
+#   - Failure Threshold: 1
+#
+# Networking:
+#   - Ingress: All (public)
+#   - Allow Unauthenticated: Yes
+#   - Port: 8080 (HTTP/1)
+#
+# Build:
+#   - Runtime: Python 3.12
+#   - Entry Point: hello_http
+#   - Base Image: us-central1-docker.pkg.dev/serverless-runtimes/google-22-full/runtimes/python312
+#   - Auto Updates: Enabled
+#
+# Service Account Permissions Required:
+#   - Secret Manager Secret Accessor (for capitalService secret)
+#   - Cloud Datastore User (for Firestore)
+#   - Logs Writer (for Cloud Logging)
+#
+# ============================================================================

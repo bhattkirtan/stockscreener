@@ -1,0 +1,1453 @@
+{
+  "generated_at": "2026-03-14T13:08:12.318176",
+  "source": "Historical calendar for backtesting (2024-2026)",
+  "years": [
+    2024,
+    2025,
+    2026
+  ],
+  "note": "Generated for backtesting. NFP=first Friday, CPI\u224813th, FOMC=official dates, GDP=last Friday",
+  "event_count": 144,
+  "events": [
+    {
+      "date": "2024-01-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-01-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-01-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2023 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-01-31",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-02-02",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-02-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-02-23",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2023 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-03-08",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-03-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-03-20",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-03-20",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2024-03-29",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2023 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-04-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-04-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-04-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2024 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-05-01",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-05-03",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-05-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-05-31",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2024 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-06-07",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-06-12",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-06-12",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2024-06-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-06-28",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2024 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-07-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-07-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-07-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2024 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-07-31",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-08-02",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-08-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-08-30",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2024 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-09-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-09-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-09-18",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-09-18",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2024-09-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2024 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-10-04",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-10-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-10-25",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2024 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-11-07",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-11-08",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-11-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-11-29",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2024 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2024-12-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-12-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2024-12-18",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2024-12-18",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2024-12-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2024 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-01-03",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-01-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-01-29",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-01-31",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2024 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-02-07",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-02-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-02-28",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2024 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-03-07",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-03-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-03-19",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-03-19",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2025-03-28",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2024 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-04-04",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-04-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-04-25",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2025 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-04-30",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-05-02",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-05-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-05-30",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2025 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-06-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-06-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-06-18",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-06-18",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2025-06-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2025 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-07-04",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-07-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-07-25",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2025 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-07-30",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-08-08",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-08-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-08-29",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2025 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-09-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-09-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-09-17",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-09-17",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2025-09-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2025 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-10-03",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-10-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-10-31",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2025 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-11-05",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-11-07",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-11-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-11-28",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2025 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2025-12-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-12-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2025-12-17",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2025-12-17",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2025-12-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2025 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-01-02",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-01-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-01-28",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-01-30",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2025 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-02-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-02-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-02-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2025 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-03-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-03-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-03-18",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-03-18",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2026-03-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q4 2025 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-04-03",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-04-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-04-24",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2026 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-04-29",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-05-08",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-05-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-05-29",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2026 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-06-05",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-06-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-06-17",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-06-17",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2026-06-26",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q1 2026 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-07-03",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-07-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-07-29",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-07-31",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2026 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-08-07",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-08-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-08-28",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2026 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-09-04",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-09-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-09-23",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-09-23",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2026-09-25",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q2 2026 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-10-02",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-10-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-10-30",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2026 Advanced",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-11-04",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-11-06",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-11-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-11-27",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2026 Preliminary",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    },
+    {
+      "date": "2026-12-04",
+      "time_utc": "12:30",
+      "event": "NFP",
+      "description": "Non-Farm Payrolls",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-12-13",
+      "time_utc": "12:30",
+      "event": "CPI",
+      "description": "Consumer Price Index",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 30
+    },
+    {
+      "date": "2026-12-16",
+      "time_utc": "18:00",
+      "event": "FOMC",
+      "description": "FOMC Rate Decision + Statement",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 60,
+      "block_minutes_after": 180
+    },
+    {
+      "date": "2026-12-16",
+      "time_utc": "18:30",
+      "event": "PowellPC",
+      "description": "Powell Press Conference",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 0,
+      "block_minutes_after": 120
+    },
+    {
+      "date": "2026-12-25",
+      "time_utc": "12:30",
+      "event": "GDP",
+      "description": "GDP Q3 2026 Final",
+      "country": "US",
+      "importance": "high",
+      "block_minutes_before": 15,
+      "block_minutes_after": 15
+    }
+  ]
+}

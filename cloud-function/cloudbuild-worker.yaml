@@ -1,0 +1,16 @@
+steps:
+  # Build the container image using the worker Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.worker'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/optimizer-worker:$BUILD_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/optimizer-worker:latest'
+      - '.'
+images:
+  - 'gcr.io/$PROJECT_ID/optimizer-worker:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/optimizer-worker:latest'
+timeout: '900s'

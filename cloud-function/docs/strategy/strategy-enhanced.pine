@@ -1,0 +1,308 @@
+//@version=6
+indicator("Supertrend, BB, VWAP with Fib TP - Enhanced with Webhooks", overlay=true)
+
+// ════════════════════════════════════════════════════════════════════════════
+// API Configuration
+// ════════════════════════════════════════════════════════════════════════════
+api_key    = input.string('IuMfu0djI6ocgxgcbbQEdg', title = 'API Key', group = 'API')
+order_size = input.int(200, title = 'Order Size', group = 'API')
+
+// ════════════════════════════════════════════════════════════════════════════
+// Input settings for indicators
+// ════════════════════════════════════════════════════════════════════════════
+use_st    = input(true, title = 'Use Super Trend (MA)', group = 'Indicators')
+use_bb    = input(false, title = 'Use Bollinger Bands (BB)', group = 'Indicators')
+use_vwap  = input(true,  title = 'Use VWAP', group = 'Indicators')
+use_ma    = input(true,  title = 'Use Moving Average (MA55)', group = 'Indicators')
+splitTp   = input(true,  title = 'Use multiple TP', group = 'Trade Management')
+useStopLoss = input(true, title = 'Use Stoploss', group = 'Trade Management')
+
+// New inputs for stop loss optimization
+useAtrSL      = input.bool(true, title="Use ATR-based Stop Loss", group = 'Stop Loss')
+atrMultiplier = input.float(2.0, title="ATR Multiplier for Stop Loss", step=0.1, group = 'Stop Loss')
+useSupResSL   = input.bool(true, title="Use Support/Resistance based Stop Loss", group = 'Stop Loss')
+
+// Define the time filter
+startHour = input.int(3, title = 'Start Time', group = 'Time Filter')
+endHour   = input.int(22, title = 'End Time', group = 'Time Filter')
+inTradeTime = (hour >= startHour and hour < endHour)
+
+stoplossCorrection = input.float(0.5, title = 'Stoploss Factor (SL = 50% of TP distance)', step = 0.01, group = 'Trade Management')
+
+// Configurable price type
+price_type = input.string('close', title = 'Price Type', options = ['close', 'hlc3'], group = 'Price')
+get_price(type) =>
+    switch type
+        'close' => close
+        'hlc3'  => hlc3
+price = get_price(price_type)
+
+// Calculate and plot the 55-period Moving Average
+ma_period = input(55, title = 'MA Period', group = 'Indicators')
+ma55 = ta.sma(price, ma_period)
+plot(use_ma ? ma55 : na, title="MA", color=color.lime)
+
+// VWAP Inputs and plotting
+sho_tf3 = input.bool(true, 'Show', inline = 'D', group = 'VWAP')
+src_tf3 = input.source(hlc3, '', inline = 'D', group = 'VWAP')
+res_tf3 = input.timeframe('D', '', inline = 'D', group = 'VWAP')
+wid_tf3 = input.int(2, '', minval = 0, inline = 'D', group = 'VWAP')
+col_tf3 = input.color(color.red, '', inline = 'D', group = 'VWAP')
+shoTF(res) =>
+    timeframe.in_seconds(timeframe.period) < timeframe.in_seconds(res)
+vwaptf3 = sho_tf3 and shoTF(res_tf3) ? ta.vwap(src_tf3, timeframe.change(res_tf3)) : float(na)
+plot(vwaptf3, 'DTD VWAP Line', col_tf3, math.max(1, wid_tf3))
+
+// TP and Stoploss settings
+hist_bars       = input.int(50, title = 'Historical Bars for Support & Resistance', group = 'Trade Management')
+hist_barsSL     = input.int(5, title = 'Historical Bars for SL Support/Resistance', group = 'Stop Loss')
+fib_level_perc1 = input.float(0.7, title = 'FB 1 Multiplier', step = 0.05, group = 'Take Profit')
+fib_level_perc2 = input.float(0.8, title = 'FB 2 Multiplier', step = 0.05, group = 'Take Profit')
+fib_level_perc3 = input.float(0.9, title = 'FB 3 Multiplier', step = 0.05, group = 'Take Profit')
+
+// Supertrend settings
+factor     = input.float(3.0, title = 'ATR Factor',step = 0.1, group = 'SuperTrend')
+atr_period = input(21, title = 'ATR Period', group = 'SuperTrend')
+[supertrend, direction] = ta.supertrend(factor, atr_period)
+directionOfTrend = ta.change(direction)
+
+// Bollinger Bands settings
+bb_length = input.int(20, title = 'BB Length', group = 'Bollinger Bands')
+bb_mult   = input.float(1.0, title = 'BB Multiplier', group = 'Bollinger Bands')
+basis     = ta.sma(price, bb_length)
+upper_bb  = basis + bb_mult * ta.stdev(price, bb_length)
+lower_bb  = basis - bb_mult * ta.stdev(price, bb_length)
+
+// Entry Conditions with MA filter added
+longCondition = inTradeTime and barstate.isconfirmed and (not use_st or (use_st and directionOfTrend < 0)) and (not use_bb or (use_bb and close < upper_bb)) and (not use_vwap or (use_vwap and price > vwaptf3)) and (not use_ma or (use_ma and close > ma55))
+
+shortCondition = inTradeTime and barstate.isconfirmed and (not use_st or (use_st and directionOfTrend > 0)) and (not use_bb or (use_bb and close > lower_bb)) and (not use_vwap or (use_vwap and price < vwaptf3)) and (not use_ma or (use_ma and close < ma55))
+
+// Support & Resistance logic
+swingHigh = ta.highest(high, hist_bars)
+swingLow  = ta.lowest(low, hist_bars)
+swingHighSL = ta.highest(high, hist_barsSL)
+swingLowSL  = ta.lowest(low, hist_barsSL)
+var float resistance   = na
+var float support      = na
+var float resistanceSL = na
+var float supportSL    = na
+
+if high == swingHigh
+    resistance := high
+resistanceSL := swingHighSL
+
+if low == swingLow
+    support := low
+    supportSL := swingLowSL
+
+// Fibonacci Levels for Take Profit and Stop Loss management
+var float fibLevel1 = na
+var float fibLevel2 = na
+var float fibLevel3 = na
+var float stopLevel = na
+var float fibRange  = na
+var float entry_price = na
+var bool longOrder  = false
+var bool shortOrder = false
+
+// ════════════════════════════════════════════════════════════════════════════
+// Helper Function: Send Webhook Alert
+// ════════════════════════════════════════════════════════════════════════════
+send_webhook_alert(action, direction, sl, tp1, tp2, tp3, size1, size2, size3) =>
+    json_payload = '{"key": "' + api_key + '", "action": "' + action + '", "epic": "' + syminfo.ticker + '", "direction": "' + direction + '", "stopLevel": ' + str.tostring(sl) + ', "fibLevel1": ' + str.tostring(tp1) + ', "fibLevel2": ' + str.tostring(tp2) + ', "fibLevel3": ' + str.tostring(tp3) + ', "size1": ' + str.tostring(size1) + ', "size2": ' + str.tostring(size2) + ', "size3": ' + str.tostring(size3) + ', "inTradeTime": ' + str.tostring(inTradeTime) + '}'
+    alert(json_payload, alert.freq_once_per_bar_close)
+
+send_update_sl_alert(sl) =>
+    json_payload = '{"key": "' + api_key + '", "action": "update-sl", "epic": "' + syminfo.ticker + '", "stopLevel": ' + str.tostring(sl) + ', "inTradeTime": true}'
+    alert(json_payload, alert.freq_once_per_bar_close)
+
+send_exit_alert() =>
+    json_payload = '{"key": "' + api_key + '", "action": "exit", "epic": "' + syminfo.ticker + '", "inTradeTime": true}'
+    alert(json_payload, alert.freq_once_per_bar_close)
+
+// ════════════════════════════════════════════════════════════════════════════
+// LONG ENTRY
+// ════════════════════════════════════════════════════════════════════════════
+if longCondition and not na(support)
+    entry_price := price
+    longOrder   := true
+    shortOrder  := false
+    fibRange    := price - support
+    fibLevel1   := price + fibRange * fib_level_perc1
+    fibLevel2   := price + fibRange * fib_level_perc2
+    fibLevel3   := price + fibRange * fib_level_perc3
+    
+    // Calculate TP distance
+    tp1 = fibLevel1 - entry_price
+
+    // Fixed SL based on TP
+    sl_fixed = entry_price - (tp1 * stoplossCorrection)
+    
+    // ATR based SL
+    atrValue = ta.atr(atr_period)
+    sl_atr = entry_price - (atrValue * atrMultiplier)
+    
+    // Support based SL
+    sl_support = support
+
+    // Choose highest SL (closest to entry) to minimize risk
+    candidate_sl_long = sl_fixed
+    if useAtrSL and not na(atrValue)
+        candidate_sl_long := math.max(candidate_sl_long, sl_atr)
+    if useSupResSL and not na(support)
+        candidate_sl_long := math.max(candidate_sl_long, sl_support)
+    
+    stopLevel := candidate_sl_long
+
+    // Calculate position sizes based on splitTp
+    size1 = splitTp ? order_size * 0.55 : order_size
+    size2 = splitTp ? order_size * 0.25 : 0
+    size3 = splitTp ? order_size * 0.20 : 0
+
+    // Send webhook alert for LONG ENTRY
+    send_webhook_alert("entry", "BUY", stopLevel, fibLevel1, fibLevel2, fibLevel3, size1, size2, size3)
+    
+    strategy.entry("Long", strategy.long, qty = order_size, comment = "Long Entry")
+
+// ════════════════════════════════════════════════════════════════════════════
+// SHORT ENTRY
+// ════════════════════════════════════════════════════════════════════════════
+if shortCondition and not na(resistance)
+    entry_price := price
+    shortOrder  := true
+    longOrder   := false
+    fibRange    := resistance - price
+    fibLevel1   := price - fibRange * fib_level_perc1
+    fibLevel2   := price - fibRange * fib_level_perc2
+    fibLevel3   := price - fibRange * fib_level_perc3
+    
+    // Calculate TP distance
+    tp1 = entry_price - fibLevel1
+
+    // Fixed SL based on TP
+    sl_fixed = entry_price + (tp1 * stoplossCorrection)
+    
+    // ATR-based SL
+    atrValue = ta.atr(atr_period)
+    sl_atr = entry_price + (atrValue * atrMultiplier)
+    
+    // Resistance based SL
+    sl_resistance = resistance
+
+    // Choose lowest SL (closest to entry) to minimize risk
+    candidate_sl_short = sl_fixed
+    if useAtrSL and not na(atrValue)
+        candidate_sl_short := math.min(candidate_sl_short, sl_atr)
+    if useSupResSL and not na(resistance)
+        candidate_sl_short := math.min(candidate_sl_short, sl_resistance)
+        
+    stopLevel := candidate_sl_short
+
+    // Calculate position sizes
+    size1 = splitTp ? order_size * 0.55 : order_size
+    size2 = splitTp ? order_size * 0.25 : 0
+    size3 = splitTp ? order_size * 0.20 : 0
+
+    // Send webhook alert for SHORT ENTRY
+    send_webhook_alert("entry", "SELL", stopLevel, fibLevel1, fibLevel2, fibLevel3, size1, size2, size3)
+
+    strategy.entry("Short", strategy.short, qty = order_size, comment = "Short Entry")
+
+// ════════════════════════════════════════════════════════════════════════════
+// EXIT CONDITIONS
+// ════════════════════════════════════════════════════════════════════════════
+original_close = request.security(syminfo.tickerid, timeframe.period, close)
+
+// Stop Loss Hit
+if not na(stopLevel) and useStopLoss and ((longOrder and (original_close < stopLevel)) or (shortOrder and (original_close > stopLevel)))
+    send_exit_alert()
+    
+    if longOrder
+        strategy.close("Long", comment="SL Hit")
+    if shortOrder
+        strategy.close("Short", comment="SL Hit")
+    
+    longOrder := false
+    shortOrder := false
+    fibLevel1 := na
+    fibLevel2 := na
+    fibLevel3 := na
+    stopLevel  := na
+
+// Take Profit 1
+if splitTp and not na(fibLevel1) and ((longOrder and (original_close > fibLevel1)) or (shortOrder and (original_close < fibLevel1)))
+    send_update_sl_alert(entry_price)
+    
+    stopLevel   := entry_price    
+    entry_price := fibLevel1    
+    
+    if longOrder
+        strategy.close("Long", qty_percent=55, comment="TP1 Long") 
+    if shortOrder
+        strategy.close("Short", qty_percent=55, comment="TP1 Short")
+    
+    label.new(bar_index, fibLevel1, "TP1 Hit", color=color.yellow, style=label.style_triangledown)
+    fibLevel1 := na
+
+// Take Profit 2
+if splitTp and not na(fibLevel2) and ((longOrder and (original_close > fibLevel2)) or (shortOrder and (original_close < fibLevel2)))
+    send_update_sl_alert(entry_price)
+    
+    stopLevel   := entry_price
+    entry_price := fibLevel2
+    
+    label.new(bar_index, fibLevel2, "TP2 Hit", color=color.fuchsia, style=label.style_cross)
+    
+    if longOrder
+        strategy.close("Long", qty_percent=75, comment="TP2 Long")
+    if shortOrder
+        strategy.close("Short", qty_percent=75, comment="TP2 Short") 
+    
+    fibLevel1 := na
+    fibLevel2 := na
+
+// Take Profit 3 (Final)
+if splitTp and not na(fibLevel3) and ((longOrder and (original_close > fibLevel3)) or (shortOrder and (original_close < fibLevel3)))
+    send_exit_alert()
+    
+    label.new(bar_index, fibLevel3, "TP3 Hit", color=color.yellow, style=label.style_cross)
+    
+    if longOrder    
+        strategy.close("Long", qty_percent=100, comment="TP3 Long") 
+    if shortOrder
+        strategy.close("Short", qty_percent=100, comment="TP3 Short") 
+    
+    fibLevel1 := na
+    fibLevel2 := na
+    fibLevel3 := na
+    stopLevel  := na
+    longOrder  := false
+    shortOrder := false
+
+// Single TP (if splitTp disabled)
+if not splitTp and ((longOrder and (original_close > fibLevel1)) or (shortOrder and (original_close < fibLevel1)))
+    send_exit_alert()
+    
+    stopLevel   := entry_price
+    entry_price := fibLevel1    
+    
+    if longOrder
+        strategy.close("Long", qty_percent=100, comment="TP1 Long") 
+    if shortOrder
+        strategy.close("Short", qty_percent=100, comment="TP1 Short")
+    
+    label.new(bar_index, fibLevel1, "TP1 Hit", color=color.yellow, style=label.style_triangledown)
+    
+    fibLevel1 := na
+    fibLevel2 := na
+    fibLevel3 := na
+    stopLevel  := na
+    longOrder  := false
+    shortOrder := false
+
+// ════════════════════════════════════════════════════════════════════════════
+// PLOT SIGNALS
+// ════════════════════════════════════════════════════════════════════════════
+plotshape(longCondition, style=shape.labelup, location=location.belowbar, color=color.new(#046ff9, 0), size=size.tiny, text="Buy", textcolor=color.white)
+plotshape(shortCondition, style=shape.labeldown, location=location.abovebar, color=color.new(#046ff9, 0), size=size.tiny, text="Sell", textcolor=color.white)

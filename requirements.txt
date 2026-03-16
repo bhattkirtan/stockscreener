@@ -1,0 +1,7 @@
+functions-framework==3.*
+Flask
+requests
+google-cloud-firestore
+google-cloud-logging
+python-dotenv
+cachetools==5.5.2

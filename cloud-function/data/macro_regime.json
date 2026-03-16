@@ -1,0 +1,17 @@
+{
+  "updated_at": "2026-03-13T09:59:31.893371",
+  "regime": "recovery",
+  "confidence": 0.7,
+  "position_multiplier": 1.0,
+  "risk_mode": "risk-on",
+  "indicators": {
+    "fed_funds_rate": 3.64,
+    "treasury_10y": 4.21,
+    "yield_curve": 0.51,
+    "dollar_index": 119.491,
+    "cpi_yoy": null,
+    "unemployment_rate": 4.4,
+    "gdp_growth": 1.260668401889295,
+    "recession_probability": 0.0
+  }
+}

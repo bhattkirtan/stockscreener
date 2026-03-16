@@ -1,0 +1,76 @@
+# Ignore local environment file
+.env
+
+# Large data directories (DO NOT DEPLOY) - exclude only root-level data, not src/data
+/data/
+tests/
+docs/
+examples/
+docker/
+static/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Analysis and test scripts (not needed in deployment)
+analyze_*.py
+compare_*.py
+test_*.py
+calc_*.py
+check_*.py
+verify_*.py
+monitor_*.sh
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation and scripts
+*.md
+scripts/
+*.yaml
+*.json
+!requirements*.txt
+!firestore.rules
+!firestore.indexes.json
+!requirements*.txt
+!firestore.rules
+!firestore.indexes.json
