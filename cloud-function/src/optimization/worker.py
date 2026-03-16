@@ -22,6 +22,7 @@ import traceback
 import pandas as pd
 
 from src.core.strategy import SupertrendVWAPStrategy
+from src.strategies.hybrid_zone_supertrend_strategy import HybridZoneSuperTrendStrategy
 from src.core.backtester import IntraCandleBacktester, BacktestConfig
 from src.optimization.tp_sl import apply_tp_sl_by_strategy
 
@@ -72,9 +73,14 @@ def build_backtest_config(params: dict, initial_capital: float) -> BacktestConfi
 # Strategy factory
 # ---------------------------------------------------------------------------
 
-def build_strategy(params: dict) -> SupertrendVWAPStrategy:
+def build_strategy(params: dict):
     """
-    Instantiate a SupertrendVWAPStrategy from a parameter dict.
+    Instantiate a strategy from a parameter dict.
+
+    When ``params['strategy_type'] == 'zone_hybrid'`` an
+    ``HybridZoneSuperTrendStrategy`` is returned (same interface as the base
+    strategy plus zone-filter knobs).  All other values produce a plain
+    ``SupertrendVWAPStrategy``.
 
     ATR strategies pass ``sl_pips`` / ``tp_pips`` as ATR multipliers inside
     the strategy constructor.  For fixed strategies the constructor values are
@@ -90,7 +96,7 @@ def build_strategy(params: dict) -> SupertrendVWAPStrategy:
     sl_pips = params.get('sl_pips') or 20.0
     tp_pips = params.get('tp_pips') or 40.0
 
-    return SupertrendVWAPStrategy(
+    common_kwargs = dict(
         supertrend_period=params['supertrend_period'],
         supertrend_multiplier=params['supertrend_multiplier'],
         sma_fast=params['sma_fast'],
@@ -114,6 +120,16 @@ def build_strategy(params: dict) -> SupertrendVWAPStrategy:
         use_session_filter=params.get('use_session_filter', False),
         trading_sessions=params.get('trading_sessions', 'london_ny'),
     )
+
+    if params.get('strategy_type') == 'zone_hybrid':
+        return HybridZoneSuperTrendStrategy(
+            **common_kwargs,
+            enable_zone_filter=params.get('enable_zone_filter', True),
+            enable_zone_stops=params.get('enable_zone_stops', False),
+            zone_block_distance=params.get('zone_block_distance', 1.0),
+        )
+
+    return SupertrendVWAPStrategy(**common_kwargs)
 
 
 # ---------------------------------------------------------------------------

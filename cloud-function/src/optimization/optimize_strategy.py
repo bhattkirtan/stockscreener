@@ -80,6 +80,9 @@ class StrategyOptimizer:
             Dictionary with compact parameter ranges
         """
         return {
+            # Strategy type — base vs zone-aware hybrid
+            'strategy_type': ['supertrend', 'zone_hybrid'],
+
             # Core signal parameters — full range, 2 key values each
             'supertrend_period': [7, 10, 14],
             'supertrend_multiplier': [1.5, 2.0, 2.5, 3.0],
@@ -100,6 +103,10 @@ class StrategyOptimizer:
             'tp_pips': [20, 30, 40],
             'atr_sl_multiplier': [1.5, 2.0],
             'atr_tp_multiplier': [3.0, 4.0],
+
+            # Zone-hybrid knobs (only applied when strategy_type='zone_hybrid')
+            'zone_block_distance': [0.5, 1.0, 1.5],
+            'enable_zone_stops': [False, True],
         }
 
     def define_parameter_grid(self) -> Dict[str, List]:
@@ -259,7 +266,57 @@ class StrategyOptimizer:
             # PHASE 2/3 REMOVED: All failed (ADX, BB sizing: -25.85%, Dynamic TP/SL: -55%, MTF: +0.82%, S/R: -25.90%)
             # Only RSI filter survived: +23.36% avg test improvement
         }
-    
+
+    def define_zone_grid(self) -> Dict[str, List]:
+        """
+        Zone-focused parameter grid — tests zone_hybrid vs plain supertrend across a tight
+        range of proven-good core settings, then exhaustively sweeps zone knobs.
+
+        Design intent: keep total combos < 600 so the run finishes in under a minute
+        with 12 workers, giving a clean zone-vs-no-zone comparison.
+
+        Combo estimate:
+          valid SMA pairs (20/30, 20/50, 25/30, 25/50)  = 4
+          ST  (period×mult)                               = 2×2 = 4
+          pip_value                                       = 2
+          TP/SL combos (2 fixed + 2 ATR)                 = 4
+          ─────────────────────────────────────────────────────
+          base combinations                               = 4×4×2×8 = 256 supertrend
+          zone_hybrid  =  256 × zone_dist(4) × zone_stops(2) = 2,048
+          ─────────────────────────────────────────────────────
+          TOTAL  ~  2,304 combos  (~30 s with 12 cores)
+
+        Returns:
+            Dictionary with zone-exploration parameter ranges
+        """
+        return {
+            # Both strategy types so results are directly comparable
+            'strategy_type': ['supertrend', 'zone_hybrid'],
+
+            # Proven-best core range — narrow to keep combos manageable
+            'supertrend_period':     [10, 14],
+            'supertrend_multiplier': [2.0, 2.5],
+            'sma_fast':  [20, 25],
+            'sma_slow':  [30, 50],
+
+            # Lock non-impactful params
+            'ema_period': [21],
+            'bb_period':  [20],
+            'bb_std':     [2.0],
+            'pip_value':  [0.5, 1.0],
+
+            # Two representative TP/SL variants each
+            'tp_sl_strategy':    ['fixed', 'atr'],
+            'sl_pips':           [15, 20],
+            'tp_pips':           [30, 40],
+            'atr_sl_multiplier': [1.5, 2.0],
+            'atr_tp_multiplier': [3.0, 4.0],
+
+            # Zone knobs — exhaustive sweep
+            'zone_block_distance': [0.5, 1.0, 1.5, 2.0],
+            'enable_zone_stops':   [False, True],
+        }
+
     def generate_combinations(self, grid: Dict[str, List]) -> List[Dict]:
         """
         Generate all valid parameter combinations
@@ -276,8 +333,11 @@ class StrategyOptimizer:
         base_params = [
             'supertrend_period', 'supertrend_multiplier',
             'sma_fast', 'sma_slow', 'ema_period',
-            'bb_period', 'bb_std', 'pip_value'
+            'bb_period', 'bb_std', 'pip_value',
+            'strategy_type',
         ]
+        if 'strategy_type' not in grid:
+            base_params.remove('strategy_type')
         
         # Check if Phase 1 filter parameters exist in grid
         phase1_params = [
@@ -559,6 +619,23 @@ class StrategyOptimizer:
                             # No additional filters - just add base combo
                             combinations.append(combo)
         
+        # Zone param expansion: only vary zone params for zone_hybrid combos
+        has_zone = 'zone_block_distance' in grid
+        if has_zone:
+            expanded = []
+            for combo in combinations:
+                if combo.get('strategy_type') == 'zone_hybrid':
+                    for zone_dist in grid['zone_block_distance']:
+                        for zone_stops in grid.get('enable_zone_stops', [False]):
+                            expanded.append({
+                                **combo,
+                                'zone_block_distance': zone_dist,
+                                'enable_zone_stops': zone_stops,
+                            })
+                else:
+                    expanded.append(combo)
+            return expanded
+
         return combinations
     
     def run_single_backtest(self, params: Dict) -> Dict:
@@ -676,6 +753,10 @@ class StrategyOptimizer:
             grid = self.define_intraday_grid()
             print(f"🎯 INTRADAY Optimization Mode (same-day close with EOD blackout)")
             print(f"⏰ Testing time-based features: time_exit, eod_close, eod_blackout, partial_exit")
+        elif mode == 'zone':
+            grid = self.define_zone_grid()
+            print(f"🗺️  Zone Optimization Mode  (~2,300 combos, ~30s with 12 cores)")
+            print(f"   Compares supertrend baseline vs zone_hybrid across proven-best core params.")
         else:
             grid = self.define_parameter_grid()
             print(f"🎯 Full Optimization Mode")
@@ -895,6 +976,11 @@ class StrategyOptimizer:
                 # Phase 4: Heiken Ashi
                 'use_heikin_ashi': params.get('use_heikin_ashi', False),
                 
+                # Zone-hybrid strategy
+                'strategy_type': params.get('strategy_type', 'supertrend'),
+                'zone_block_distance': params.get('zone_block_distance', 1.0),
+                'enable_zone_stops': params.get('enable_zone_stops', False),
+                
                 # PHASE 2/3 REMOVED: All failed in testing (ADX: no improvement, BB sizing: -25.85%, 
                 # Dynamic TP/SL: -55%, MTF: +0.82% (negligible), S/R: -25.90% (catastrophic))
                 # Only RSI filter survived: +30.09% test improvement
@@ -987,8 +1073,12 @@ class StrategyOptimizer:
             # Format pip_value for name (remove trailing zeros)
             pip_str = f"{pip_val:.2f}" if pip_val < 1 else f"{int(pip_val)}"
             
-            # Format: ST2.0_SMA15-50_BB2.0_PIP1_F20-60
-            name = f"ST{st_mult}_SMA{sma_fast}-{sma_slow}_BB{bb_std}_PIP{pip_str}_{tp_sl_name}"
+            # Zone-hybrid suffix
+            strategy_type = row.get('strategy_type', 'supertrend')
+            zone_tag = '_ZH' if strategy_type == 'zone_hybrid' else ''
+
+            # Format: ST2.0_SMA15-50_BB2.0_PIP1_F20-60 or ..._ZH
+            name = f"ST{st_mult}_SMA{sma_fast}-{sma_slow}_BB{bb_std}_PIP{pip_str}_{tp_sl_name}{zone_tag}"
             
             # Add rank prefix for easy sorting
             names[idx] = f"rank{idx+1:02d}_{name}"

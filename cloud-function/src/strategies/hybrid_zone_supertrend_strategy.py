@@ -20,7 +20,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-from .supertrend_vwap_strategy import SupertrendVWAPStrategy
+from ..core.strategy import SupertrendVWAPStrategy
 from ..zones.zone_engine import Zone, ZoneEngine, ZoneType
 from ..zones.zone_scoring import ZoneScorer
 
@@ -31,13 +31,20 @@ class HybridZoneSuperTrendStrategy(SupertrendVWAPStrategy):
     Inherits from SupertrendVWAPStrategy and adds zone awareness.
     """
     
+    _ZONE_ONLY_KEYS = frozenset({
+        'enable_zone_filter', 'enable_zone_stops', 'zone_block_distance',
+        'zone_config', 'symbol', 'strategy_type',
+    })
+
     def __init__(self, **params):
         """Initialize hybrid strategy.
         
         Args:
             **params: Strategy parameters including zone config
         """
-        super().__init__(**params)
+        # Strip keys unknown to the base class before delegating
+        base_params = {k: v for k, v in params.items() if k not in self._ZONE_ONLY_KEYS}
+        super().__init__(**base_params)
         
         # Zone-related parameters
         self.enable_zone_filter = params.get('enable_zone_filter', True)
@@ -125,33 +132,28 @@ class HybridZoneSuperTrendStrategy(SupertrendVWAPStrategy):
         df_view = df.iloc[:current_bar+1].copy()
         
         # Resample to higher timeframes
-        df_h4 = self._resample_to_timeframe(df_view, 'H4')
-        df_h1 = self._resample_to_timeframe(df_view, 'H1')
+        df_h4  = self._resample_to_timeframe(df_view, 'H4')
+        df_h1  = self._resample_to_timeframe(df_view, 'H1')
         df_m15 = self._resample_to_timeframe(df_view, 'M15')
         
-        # Detect zones on each timeframe
+        threshold = self.zone_scorer.strong_thresholds.get(
+            self.zone_scorer.symbol, 4.0
+        )
+
         self.cached_zones = {}
-        
-        if len(df_h4) >= 50:
-            zones_h4 = self.zone_engine.detect_zones(df_h4, 'H4')
-            scored_zones_h4 = self.zone_scorer.rank_zones(
-                self.zone_scorer.score_zones(zones_h4, df_h4, 'H4')
+
+        for tf, df_tf in [('H4', df_h4), ('H1', df_h1), ('M15', df_m15)]:
+            if len(df_tf) < 50:
+                continue
+            raw_zones = self.zone_engine.detect_zones(df_tf, tf)
+            # Score each zone and keep only those that meet the strong threshold
+            scored = sorted(
+                [(z, self.zone_scorer.score_zone(z, df_tf)) for z in raw_zones],
+                key=lambda x: x[1],
+                reverse=True,
             )
-            self.cached_zones['H4'] = scored_zones_h4[:10]  # Keep top 10
-        
-        if len(df_h1) >= 50:
-            zones_h1 = self.zone_engine.detect_zones(df_h1, 'H1')
-            scored_zones_h1 = self.zone_scorer.rank_zones(
-                self.zone_scorer.score_zones(zones_h1, df_h1, 'H1')
-            )
-            self.cached_zones['H1'] = scored_zones_h1[:10]
-        
-        if len(df_m15) >= 50:
-            zones_m15 = self.zone_engine.detect_zones(df_m15, 'M15')
-            scored_zones_m15 = self.zone_scorer.rank_zones(
-                self.zone_scorer.score_zones(zones_m15, df_m15, 'M15')
-            )
-            self.cached_zones['M15'] = scored_zones_m15[:10]
+            # Store only Zone objects (filter out weak zones, cap at 10)
+            self.cached_zones[tf] = [z for z, s in scored[:10] if s >= threshold]
     
     def _find_nearest_resistance(self, price: float) -> Optional[Zone]:
         """Find nearest resistance zone above price.
@@ -228,11 +230,9 @@ class HybridZoneSuperTrendStrategy(SupertrendVWAPStrategy):
         distance = resistance.lower_bound - price
         zone_width = resistance.upper_bound - resistance.lower_bound
         
-        # Check if resistance is too close
+        # Check if resistance is too close (all zones in cache are already strong)
         if distance < self.zone_block_distance * zone_width:
-            # Check if resistance is strong
-            if self.zone_scorer.is_strong_zone(resistance):
-                return True, f"strong {resistance.timeframe} resistance {distance:.1f} pips overhead"
+            return True, f"strong {resistance.timeframe} resistance {distance:.1f} pips overhead"
         
         return False, ""
     
@@ -259,11 +259,9 @@ class HybridZoneSuperTrendStrategy(SupertrendVWAPStrategy):
         distance = price - support.upper_bound
         zone_width = support.upper_bound - support.lower_bound
         
-        # Check if support is too close
+        # Check if support is too close (all zones in cache are already strong)
         if distance < self.zone_block_distance * zone_width:
-            # Check if support is strong
-            if self.zone_scorer.is_strong_zone(support):
-                return True, f"strong {support.timeframe} support {distance:.1f} pips below"
+            return True, f"strong {support.timeframe} support {distance:.1f} pips below"
         
         return False, ""
     

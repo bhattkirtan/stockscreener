@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--instrument', default='GOLD', help='Instrument name')
     parser.add_argument('--timeframe', default='M5', help='Timeframe')
     parser.add_argument('--capital', type=float, default=10000.0, help='Initial capital')
-    parser.add_argument('--mode', default='quick', choices=['short', 'quick', 'medium', 'full', 'intraday'], help='Optimization mode: short=~2k combos, quick=intraday, medium, full=186k')
+    parser.add_argument('--mode', default='quick', choices=['short', 'quick', 'medium', 'full', 'intraday', 'zone'], help='Optimization mode: short=~2k combos, quick=intraday, medium, full=186k, zone=~1.1k zone-vs-baseline')
     parser.add_argument('--validation-split', type=float, default=0.0, help='Train/test split ratio (e.g., 0.3 for 70/30 split)')
     parser.add_argument('--n-jobs', type=int, default=12, help='Number of parallel workers (default: 12, use -1 for all cores)')
     parser.add_argument('--no-parallel', action='store_true', help='Disable parallel processing')
