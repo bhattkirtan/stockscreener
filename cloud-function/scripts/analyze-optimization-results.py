@@ -1789,236 +1789,185 @@ class OptimizationAnalyzer:
         print()
 
     def analyze_orders_csv(self, orders_file: str):
-        """Analyze losing trades directly from an orders.csv file"""
+        """Comprehensive orders analysis: summary, win/loss breakdown, patterns, time-of-day, hold-time, streaks"""
         import pandas as pd
-        
+
         print("="*80)
-        print("🔍 ORDERS FILE ANALYSIS - LOSING TRADES")
+        print("🔍 ORDERS ANALYSIS")
         print("="*80)
-        
-        # Load orders
+
         print(f"\n📂 Loading: {orders_file}")
         try:
             orders_df = pd.read_csv(orders_file)
         except Exception as e:
             print(f"❌ Failed to load orders file: {e}")
             return
-        
+
         # Parse timestamp if available
         if 'entry_time' in orders_df.columns:
             orders_df['entry_time'] = pd.to_datetime(orders_df['entry_time'])
         if 'exit_time' in orders_df.columns:
             orders_df['exit_time'] = pd.to_datetime(orders_df['exit_time'])
         
-        # Normalize side/direction column
-        if 'side' in orders_df.columns:
-            orders_df['direction'] = orders_df['side'].str.lower().replace({'buy': 'long', 'sell': 'short'})
-        elif 'direction' not in orders_df.columns:
-            orders_df['direction'] = 'unknown'
-        
-        # Normalize exit_reason/exit_type column
+        # Normalise columns
+        orders_df['direction'] = (
+            orders_df['side'].str.lower().replace({'buy': 'long', 'sell': 'short'})
+            if 'side' in orders_df.columns
+            else 'unknown'
+        )
         if 'exit_reason' in orders_df.columns and 'exit_type' not in orders_df.columns:
             orders_df['exit_type'] = orders_df['exit_reason']
-        
-        # Calculate duration_bars if not present (approximate based on time difference, assume 5-minute bars)
         if 'duration_bars' not in orders_df.columns and 'entry_time' in orders_df.columns and 'exit_time' in orders_df.columns:
-            orders_df['duration_bars'] = (orders_df['exit_time'] - orders_df['entry_time']).dt.total_seconds() / 300  # 5 min = 300 sec
-        
+            orders_df['duration_bars'] = (
+                (orders_df['exit_time'] - orders_df['entry_time']).dt.total_seconds() / 300
+            )
+
         print(f"✅ Loaded {len(orders_df)} orders\n")
-        
-        # Calculate metrics
-        wins = orders_df[orders_df['pnl'] > 0]
+
+        wins   = orders_df[orders_df['pnl'] > 0]
         losses = orders_df[orders_df['pnl'] < 0]
-        breakeven = orders_df[orders_df['pnl'] == 0]
-        
-        total_pnl = orders_df['pnl'].sum()
-        win_rate = len(wins) / len(orders_df) * 100 if len(orders_df) > 0 else 0
-        avg_win = wins['pnl'].mean() if len(wins) > 0 else 0
-        avg_loss = losses['pnl'].mean() if len(losses) > 0 else 0
-        
-        # Overall statistics
-        print("📊 OVERALL STATISTICS")
-        print("="*80)
-        print(f"Total Trades:        {len(orders_df)}")
-        print(f"Winning Trades:      {len(wins)} ({len(wins)/len(orders_df)*100:.1f}%)")
-        print(f"Losing Trades:       {len(losses)} ({len(losses)/len(orders_df)*100:.1f}%)")
-        print(f"Breakeven Trades:    {len(breakeven)} ({len(breakeven)/len(orders_df)*100:.1f}%)")
-        print(f"\nTotal P&L:           {total_pnl:.2f} pips")
-        print(f"Win Rate:            {win_rate:.1f}%")
-        print(f"Average Win:         {avg_win:.2f} pips")
-        print(f"Average Loss:        {avg_loss:.2f} pips")
-        if avg_loss != 0:
-            print(f"Win/Loss Ratio:      {abs(avg_win/avg_loss):.2f}:1")
-        
-        # Analyze losing trades
-        if len(losses) == 0:
-            print("\n✅ No losing trades found! Perfect strategy!")
-            return
-        
-        print(f"\n\n{'='*80}")
-        print(f"❌ DETAILED LOSING TRADES ANALYSIS ({len(losses)} trades)")
-        print("="*80)
-        
-        # Individual losing trades
-        print(f"\n📋 All Losing Trades:")
-        print("-"*80)
-        for idx, trade in losses.iterrows():
-            print(f"\nTrade #{idx + 1}:")
-            if 'entry_time' in trade:
-                print(f"   Entry:  {trade['entry_time']} @ {trade['entry_price']:.2f} ({trade['direction'].upper()})")
+        be     = orders_df[orders_df['pnl'] == 0]
+
+        total_pnl   = orders_df['pnl'].sum()
+        avg_win     = wins['pnl'].mean()   if len(wins)   > 0 else 0
+        avg_loss    = losses['pnl'].mean() if len(losses) > 0 else 0
+        win_rate    = len(wins) / len(orders_df) * 100 if len(orders_df) > 0 else 0
+        rr          = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+        pf_gross    = wins['pnl'].sum() / abs(losses['pnl'].sum()) if len(losses) > 0 and losses['pnl'].sum() != 0 else float('inf')
+        total_costs = (orders_df['spread_cost'].sum() + orders_df['slippage_cost'].sum()) if 'spread_cost' in orders_df.columns else 0
+        largest_win  = wins['pnl'].max()   if len(wins)   > 0 else 0
+        largest_loss = losses['pnl'].min() if len(losses) > 0 else 0
+
+        # ── 1. SUMMARY ──────────────────────────────────────────────────────────
+        print("="*60)
+        print("1️⃣  SUMMARY")
+        print("="*60)
+        print(f"  Total trades    : {len(orders_df)}")
+        print(f"  Wins / Losses   : {len(wins)} ({win_rate:.1f}%) / {len(losses)} ({len(losses)/len(orders_df)*100:.1f}%)")
+        print(f"  Breakeven       : {len(be)}")
+        print(f"  Total P&L       : ${total_pnl:,.2f}")
+        print(f"  Avg win         : ${avg_win:,.2f}    Avg loss: ${avg_loss:,.2f}")
+        print(f"  Largest win     : ${largest_win:,.2f}  Largest loss: ${largest_loss:,.2f}")
+        print(f"  Win/Loss ratio  : {rr:.2f}:1")
+        print(f"  Profit factor   : {pf_gross:.2f}")
+        if total_costs > 0:
+            print(f"  Total costs     : ${total_costs:,.2f}  ({total_costs/abs(total_pnl)*100:.1f}% of gross P&L)")
+
+        # ── 2. EXIT REASON BREAKDOWN ─────────────────────────────────────────────
+        if 'exit_type' in orders_df.columns:
+            print(f"\n{'='*60}")
+            print("2️⃣  EXIT REASON BREAKDOWN")
+            print("="*60)
+            print(f"  {'Exit reason':<22} {'Trades':>7} {'Win%':>7} {'Avg P&L':>10} {'Total P&L':>12}")
+            print(f"  {'-'*22} {'-'*7} {'-'*7} {'-'*10} {'-'*12}")
+            for reason, grp in orders_df.groupby('exit_type'):
+                w = (grp['pnl'] > 0).sum()
+                print(f"  {reason:<22} {len(grp):>7} {w/len(grp)*100:>6.1f}% {grp['pnl'].mean():>10.2f} {grp['pnl'].sum():>12.2f}")
+
+        # ── 3. DIRECTION BREAKDOWN ───────────────────────────────────────────────
+        print(f"\n{'='*60}")
+        print("3️⃣  DIRECTION BREAKDOWN")
+        print("="*60)
+        print(f"  {'Side':<8} {'Trades':>7} {'Win%':>7} {'Avg P&L':>10} {'Total P&L':>12} {'Best':>10} {'Worst':>10}")
+        print(f"  {'-'*8} {'-'*7} {'-'*7} {'-'*10} {'-'*12} {'-'*10} {'-'*10}")
+        for side, grp in orders_df.groupby('direction'):
+            w = (grp['pnl'] > 0).sum()
+            best  = grp['pnl'].max()
+            worst = grp['pnl'].min()
+            print(f"  {side.upper():<8} {len(grp):>7} {w/len(grp)*100:>6.1f}% {grp['pnl'].mean():>10.2f} {grp['pnl'].sum():>12.2f} {best:>10.2f} {worst:>10.2f}")
+
+        # ── 4. TIME-OF-DAY P&L (UTC hours) ──────────────────────────────────────
+        if 'entry_time' in orders_df.columns:
+            print(f"\n{'='*60}")
+            print("4️⃣  HOUR-OF-DAY P&L (UTC)")
+            print("="*60)
+            orders_df['hour'] = orders_df['entry_time'].dt.hour
+            print(f"  {'Hour':>5} {'Trades':>7} {'Win%':>7} {'Avg P&L':>10} {'Total P&L':>12}")
+            print(f"  {'-'*5} {'-'*7} {'-'*7} {'-'*10} {'-'*12}")
+            for hour, grp in orders_df.groupby('hour'):
+                w = (grp['pnl'] > 0).sum()
+                print(f"  {hour:>4}h {len(grp):>7} {w/len(grp)*100:>6.1f}% {grp['pnl'].mean():>10.2f} {grp['pnl'].sum():>12.2f}")
+
+        # ── 5. HOLD TIME DISTRIBUTION ────────────────────────────────────────────
+        if 'duration_bars' in orders_df.columns:
+            print(f"\n{'='*60}")
+            print("5️⃣  HOLD-TIME BUCKETS (x5-min bars)")
+            print("="*60)
+            bins   = [0, 5, 15, 30, 60, 120, 288, float('inf')]
+            labels = ['≤25m', '≤1h', '≤2.5h', '≤5h', '≤10h', '≤24h', '>24h']
+            orders_df['hold_bucket'] = pd.cut(orders_df['duration_bars'], bins=bins, labels=labels)
+            print(f"  {'Bucket':<8} {'Trades':>7} {'Win%':>7} {'Avg P&L':>10} {'Total P&L':>12}")
+            print(f"  {'-'*8} {'-'*7} {'-'*7} {'-'*10} {'-'*12}")
+            for bucket, grp in orders_df.groupby('hold_bucket', observed=True):
+                if len(grp) == 0:
+                    continue
+                w = (grp['pnl'] > 0).sum()
+                print(f"  {str(bucket):<8} {len(grp):>7} {w/len(grp)*100:>6.1f}% {grp['pnl'].mean():>10.2f} {grp['pnl'].sum():>12.2f}")
+
+        # ── 6. STREAK ANALYSIS ───────────────────────────────────────────────────
+        print(f"\n{'='*60}")
+        print("6️⃣  STREAK ANALYSIS")
+        print("="*60)
+        outcomes = (orders_df['pnl'] > 0).astype(int).tolist()
+        max_win_streak = max_loss_streak = cur_win = cur_loss = 0
+        for o in outcomes:
+            if o:
+                cur_win  += 1; cur_loss  = 0
             else:
-                print(f"   Entry:  {trade['entry_price']:.2f} ({trade['direction'].upper()})")
-            if 'exit_time' in trade:
-                print(f"   Exit:   {trade['exit_time']} @ {trade['exit_price']:.2f}")
-            else:
-                print(f"   Exit:   {trade['exit_price']:.2f}")
-            print(f"   P&L:    {trade['pnl']:.2f} pips")
-            print(f"   Type:   {trade.get('exit_type', 'unknown')}")
-            if 'duration_bars' in trade:
-                print(f"   Duration: {trade['duration_bars']} bars")
-        
-        # Pattern analysis
-        print(f"\n\n{'='*80}")
-        print("🔍 LOSS PATTERN ANALYSIS")
-        print("="*80)
-        
-        # 1. Exit type distribution
-        if 'exit_type' in losses.columns:
-            print(f"\n1️⃣  Exit Type Distribution:")
-            exit_counts = losses['exit_type'].value_counts()
-            for exit_type, count in exit_counts.items():
-                pct = 100 * count / len(losses)
-                type_losses = losses[losses['exit_type'] == exit_type]
-                avg_loss_type = type_losses['pnl'].mean()
-                total_impact = type_losses['pnl'].sum()
-                print(f"   {exit_type:20s}: {count:2d} trades ({pct:5.1f}%) | Avg: {avg_loss_type:7.2f} pips | Total: {total_impact:7.2f} pips")
-        
-        # 2. Direction analysis
-        print(f"\n2️⃣  Direction Analysis:")
-        long_losses = losses[losses['direction'] == 'long']
-        short_losses = losses[losses['direction'] == 'short']
-        
-        if len(long_losses) > 0:
-            print(f"   LONG losses:   {len(long_losses):2d} trades | Avg: {long_losses['pnl'].mean():7.2f} pips | Total: {long_losses['pnl'].sum():7.2f} pips")
+                cur_loss += 1; cur_win   = 0
+            max_win_streak  = max(max_win_streak,  cur_win)
+            max_loss_streak = max(max_loss_streak, cur_loss)
+        print(f"  Max consecutive wins  : {max_win_streak}")
+        print(f"  Max consecutive losses: {max_loss_streak}")
+
+        # ── 7. TOP 10 WINS & WORST 10 LOSSES ────────────────────────────────────
+        print(f"\n{'='*60}")
+        print("7️⃣  TOP 10 WINS")
+        print("="*60)
+        print(f"  {'#':>3} {'Entry time':<22} {'Side':<6} {'Entry':>8} {'Exit':>8} {'P&L':>10} {'Exit reason'}")
+        print(f"  {'-'*3} {'-'*22} {'-'*6} {'-'*8} {'-'*8} {'-'*10} {'-'*20}")
+        for i, (_, r) in enumerate(wins.nlargest(10, 'pnl').iterrows(), 1):
+            et = str(r.get('entry_time', ''))[:19]
+            print(f"  {i:>3} {et:<22} {r['direction'].upper():<6} {r['entry_price']:>8.2f} {r['exit_price']:>8.2f} {r['pnl']:>10.2f}  {r.get('exit_type','')}")
+
+        print(f"\n{'='*60}")
+        print("8️⃣  WORST 10 LOSSES")
+        print("="*60)
+        print(f"  {'#':>3} {'Entry time':<22} {'Side':<6} {'Entry':>8} {'Exit':>8} {'P&L':>10} {'Exit reason'}")
+        print(f"  {'-'*3} {'-'*22} {'-'*6} {'-'*8} {'-'*8} {'-'*10} {'-'*20}")
+        for i, (_, r) in enumerate(losses.nsmallest(10, 'pnl').iterrows(), 1):
+            et = str(r.get('entry_time', ''))[:19]
+            print(f"  {i:>3} {et:<22} {r['direction'].upper():<6} {r['entry_price']:>8.2f} {r['exit_price']:>8.2f} {r['pnl']:>10.2f}  {r.get('exit_type','')}")
+
+        # ── 8. KEY INSIGHTS ──────────────────────────────────────────────────────
+        print(f"\n{'='*60}")
+        print("💡 KEY INSIGHTS")
+        print("="*60)
+
+        long_trades  = orders_df[orders_df['direction'] == 'long']
+        short_trades = orders_df[orders_df['direction'] == 'short']
+        long_wr  = (long_trades['pnl']  > 0).mean() * 100 if len(long_trades)  > 0 else 0
+        short_wr = (short_trades['pnl'] > 0).mean() * 100 if len(short_trades) > 0 else 0
+        if abs(long_wr - short_wr) > 5:
+            better = "LONG" if long_wr > short_wr else "SHORT"
+            print(f"  ⚠️  Direction bias: {better} trades win {max(long_wr,short_wr):.1f}% vs {min(long_wr,short_wr):.1f}% for {'SHORT' if better=='LONG' else 'LONG'}")
+
+        if 'hour' in orders_df.columns:
+            hourly_pnl = orders_df.groupby('hour')['pnl'].sum()
+            best_hours  = hourly_pnl.nlargest(3).index.tolist()
+            worst_hours = hourly_pnl.nsmallest(3).index.tolist()
+            print(f"  ✅ Best hours (UTC): {best_hours}  →  consider focusing entries here")
+            print(f"  ❌ Worst hours (UTC): {worst_hours}  →  consider blacklisting")
+
+        if max_loss_streak >= 10:
+            print(f"  ⚠️  Max loss streak of {max_loss_streak} — consider a daily loss-cap rule")
+
+        wl_total_ratio = wins['pnl'].sum() / abs(losses['pnl'].sum()) if len(losses) > 0 and losses['pnl'].sum() != 0 else float('inf')
+        if wl_total_ratio < 1.5:
+            print(f"  ⚠️  Gross profit/loss ratio only {wl_total_ratio:.2f} — margin for spread/slippage is thin")
         else:
-            print(f"   LONG losses:    0 trades")
-        
-        if len(short_losses) > 0:
-            print(f"   SHORT losses:  {len(short_losses):2d} trades | Avg: {short_losses['pnl'].mean():7.2f} pips | Total: {short_losses['pnl'].sum():7.2f} pips")
-        else:
-            print(f"   SHORT losses:   0 trades")
-        
-        # 3. Duration analysis
-        if 'duration_bars' in losses.columns:
-            print(f"\n3️⃣  Duration Analysis:")
-            print(f"   Avg loss duration:  {losses['duration_bars'].mean():.1f} bars")
-            print(f"   Min loss duration:  {losses['duration_bars'].min():.0f} bars")
-            print(f"   Max loss duration:  {losses['duration_bars'].max():.0f} bars")
-            
-            if len(wins) > 0 and 'duration_bars' in wins.columns:
-                print(f"   Avg win duration:   {wins['duration_bars'].mean():.1f} bars")
-                duration_diff = wins['duration_bars'].mean() - losses['duration_bars'].mean()
-                print(f"   Duration diff:      {duration_diff:+.1f} bars (wins vs losses)")
-        
-        # 4. Time pattern analysis
-        if 'entry_time' in losses.columns:
-            print(f"\n4️⃣  Time Pattern Analysis:")
-            losses['hour'] = losses['entry_time'].dt.hour
-            hour_counts = losses['hour'].value_counts().sort_index()
-            print(f"   Losses by hour:")
-            for hour, count in hour_counts.items():
-                pct = count / len(losses) * 100
-                print(f"      {hour:02d}:00 - {count} trades ({pct:.1f}%)")
-        
-        # Recommendations
-        print(f"\n\n{'='*80}")
-        print("💡 RECOMMENDATIONS TO AVOID LOSSES")
-        print("="*80)
-        
-        recommendations = []
-        
-        # Exit type recommendations
-        if 'exit_type' in losses.columns:
-            stop_loss_exits = losses[losses['exit_type'] == 'stop_loss']
-            reversal_exits = losses[losses['exit_type'] == 'reversal']
-            
-            if len(stop_loss_exits) > len(losses) * 0.7:
-                recommendations.append((
-                    "⚠️  70%+ losses from stop_loss hits",
-                    "Consider: 1) Wider stop loss, 2) Better entry timing, 3) Trend filter"
-                ))
-            
-            if len(reversal_exits) > len(losses) * 0.5:
-                recommendations.append((
-                    "💡 50%+ losses from reversals",
-                    "Consider: 1) Trailing stops, 2) Partial profit taking, 3) Momentum filter"
-                ))
-        
-        # Direction bias recommendations
-        if len(long_losses) > 2 * len(short_losses):
-            recommendations.append((
-                f"⚠️  Strong LONG bias in losses ({len(long_losses)} long vs {len(short_losses)} short)",
-                "Consider: 1) Disable long trades temporarily, 2) Add long-specific filters, 3) Check for uptrend bias"
-            ))
-        elif len(short_losses) > 2 * len(long_losses):
-            recommendations.append((
-                f"⚠️  Strong SHORT bias in losses ({len(short_losses)} short vs {len(long_losses)} long)",
-                "Consider: 1) Disable short trades temporarily, 2) Add short-specific filters, 3) Check for downtrend bias"
-            ))
-        
-        # Duration recommendations
-        if 'duration_bars' in losses.columns and len(wins) > 0 and 'duration_bars' in wins.columns:
-            if losses['duration_bars'].mean() < wins['duration_bars'].mean() * 0.5:
-                recommendations.append((
-                    "💡 Losers exit much faster than winners",
-                    "Consider: Minimum hold time filter to avoid noise/whipsaw trades"
-                ))
-            elif losses['duration_bars'].mean() > wins['duration_bars'].mean() * 1.5:
-                recommendations.append((
-                    "⚠️  Losers hold longer than winners",
-                    "Consider: Earlier exit signals or time-based stops"
-                ))
-        
-        # Time pattern recommendations
-        if 'entry_time' in losses.columns and len(losses) >= 3:
-            worst_hours = losses['hour'].value_counts().head(2)
-            for hour, count in worst_hours.items():
-                if count >= len(losses) * 0.3:  # 30%+ of losses in one hour
-                    recommendations.append((
-                        f"🕐 {count} losses ({count/len(losses)*100:.0f}%) occur at {hour:02d}:00 hour",
-                        f"Consider: Blacklist trading during {hour:02d}:00-{hour+1:02d}:00 window"
-                    ))
-        
-        # Print recommendations
-        if recommendations:
-            for i, (finding, suggestion) in enumerate(recommendations, 1):
-                print(f"\n{i}. {finding}")
-                print(f"   → {suggestion}")
-        else:
-            print("\n✅ No obvious patterns detected. Strategy appears well-balanced.")
-        
-        # Impact analysis
-        print(f"\n\n{'='*80}")
-        print("📊 IMPACT ANALYSIS")
-        print("="*80)
-        
-        total_loss_pips = abs(losses['pnl'].sum())
-        current_pnl = total_pnl
-        
-        print(f"\n💰 If we eliminated ALL losing trades:")
-        print(f"   Current P&L:        {current_pnl:.2f} pips")
-        print(f"   Without losers:     {current_pnl + total_loss_pips:.2f} pips")
-        print(f"   Potential gain:     +{total_loss_pips:.2f} pips")
-        print(f"   Win rate would be:  100.0%")
-        
-        print(f"\n🎯 Realistic Goal: Avoid 50% of losing trades")
-        half_avoided = total_loss_pips * 0.5
-        new_pnl = current_pnl + half_avoided
-        new_win_rate = (len(wins) + len(losses) * 0.5) / len(orders_df) * 100
-        print(f"   P&L improvement:    +{half_avoided:.2f} pips")
-        print(f"   New estimated P&L:  {new_pnl:.2f} pips")
-        print(f"   New win rate:       {new_win_rate:.1f}%")
-        
+            print(f"  ✅ Gross P&L ratio {wl_total_ratio:.2f} — comfortable buffer over costs")
+
         print()
 
 
