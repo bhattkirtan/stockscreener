@@ -1,9 +1,10 @@
 from dotenv import load_dotenv
-from flask import jsonify, abort, make_response
+from flask import jsonify, abort, make_response, Request
 import functions_framework
 import google.cloud.logging
+from google.cloud import firestore, storage
 import json, logging, os
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.api.firestore_client import FirestoreDB
 from src.api.capital_client import CapitalClient
 
@@ -45,6 +46,11 @@ capital_client_live = CapitalClient(
 
 # Clear plaintext secret from memory
 del _raw, _secrets
+
+# ── GCS Storage Client (for logs) ────────────────────────────────────────────
+project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'double-venture-442318-k8')
+storage_client = storage.Client(project=project_id)
+logs_bucket_name = os.getenv('GCS_LOGS_BUCKET', f'{project_id}-trading-logs')
 
 # ── Helper to get the right client based on request ─────────────────────────
 def get_capital_client():
@@ -138,6 +144,272 @@ def _require_fields(data: dict, *fields):
     missing = [f for f in fields if data.get(f) is None]
     if missing:
         abort(400, description=f"Missing required fields: {', '.join(missing)}")
+
+# ── Bot Monitoring & Logs Handlers ───────────────────────────────────────────
+def handle_get_bot_status(request: Request):
+    """Get current bot status from Firestore"""
+    try:
+        bot_id = request.args.get('bot_id', 'gold_m5_bot')
+        doc_ref = db.db.collection('bot_status').document(bot_id)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return jsonify({
+                'error': 'Bot not found',
+                'bot_id': bot_id,
+                'status': 'unknown'
+            }), 404
+        
+        status_data = doc.to_dict()
+        
+        # Check if bot is stale (no heartbeat in last 2 minutes)
+        if 'last_heartbeat' in status_data:
+            last_heartbeat = datetime.fromisoformat(status_data['last_heartbeat'])
+            if datetime.now() - last_heartbeat > timedelta(minutes=2):
+                status_data['is_stale'] = True
+                status_data['stale_reason'] = 'No heartbeat in last 2 minutes'
+        
+        return jsonify(status_data), 200
+    except Exception as e:
+        logger.error(f"Error getting bot status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def handle_get_bot_positions(request: Request):
+    """Get active positions from Firestore"""
+    try:
+        status_filter = request.args.get('status', 'open')
+        epic_filter = request.args.get('epic', None)
+        
+        query = db.db.collection('active_positions')
+        
+        if status_filter != 'all':
+            query = query.where('status', '==', status_filter)
+        
+        if epic_filter:
+            query = query.where('epic', '==', epic_filter)
+        
+        query = query.order_by('opened_at', direction=firestore.Query.DESCENDING)
+        
+        docs = query.stream()
+        positions = []
+        total_pnl = 0.0
+        
+        for doc in docs:
+            position_data = doc.to_dict()
+            position_data['id'] = doc.id
+            positions.append(position_data)
+            
+            if 'pnl' in position_data:
+                total_pnl += position_data['pnl']
+            elif 'realized_pnl' in position_data:
+                total_pnl += position_data['realized_pnl']
+        
+        return jsonify({
+            'positions': positions,
+            'count': len(positions),
+            'total_pnl': round(total_pnl, 2)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def handle_get_bot_signals(request: Request):
+    """Get recent trading signals from Firestore"""
+    try:
+        epic_filter = request.args.get('epic', None)
+        limit = min(int(request.args.get('limit', 20)), 100)
+        mode_filter = request.args.get('mode', 'all')
+        
+        query = db.db.collection('trading_signals')
+        
+        if epic_filter:
+            query = query.where('epic', '==', epic_filter)
+        
+        if mode_filter != 'all':
+            query = query.where('mode', '==', mode_filter)
+        
+        query = query.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit)
+        
+        docs = query.stream()
+        signals = []
+        
+        for doc in docs:
+            signal_data = doc.to_dict()
+            signal_data['id'] = doc.id
+            signals.append(signal_data)
+        
+        return jsonify({
+            'signals': signals,
+            'count': len(signals)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error getting signals: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def handle_get_live_logs(request: Request):
+    """Get live logs from Firestore (recent logs from current bot run)"""
+    try:
+        bot_id = request.args.get('bot_id', 'gold_m5_bot')
+        run_id = request.args.get('run_id', None)
+        limit = min(int(request.args.get('limit', 200)), 500)
+        level_filter = request.args.get('level', 'all')
+        
+        query = db.db.collection('bot_logs')
+        query = query.where('bot_id', '==', bot_id)
+        
+        if run_id:
+            query = query.where('run_id', '==', run_id)
+        
+        if level_filter != 'all':
+            query = query.where('level', '==', level_filter.upper())
+        
+        # Order by sequence number (chronological within a run)
+        query = query.order_by('sequence', direction=firestore.Query.DESCENDING).limit(limit)
+        
+        docs = query.stream()
+        logs = []
+        
+        for doc in docs:
+            log_data = doc.to_dict()
+            log_data['id'] = doc.id
+            
+            # Convert timestamp to ISO string
+            if 'timestamp' in log_data and hasattr(log_data['timestamp'], 'isoformat'):
+                log_data['timestamp'] = log_data['timestamp'].isoformat()
+            
+            logs.append(log_data)
+        
+        # Reverse to show oldest first
+        logs.reverse()
+        
+        return jsonify({
+            'logs': logs,
+            'count': len(logs),
+            'bot_id': bot_id,
+            'run_id': run_id if run_id else 'latest',
+            'source': 'firestore_live'
+        }), 200
+    except Exception as e:
+        logger.error(f"Error getting live logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def handle_get_bot_logs(request: Request):
+    """Get bot logs from GCS bucket"""
+    try:
+        date_str = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+        file_name = request.args.get('file', None)
+        lines = min(int(request.args.get('lines', 100)), 1000)
+        output_format = request.args.get('format', 'json')
+        
+        # Validate date
+        try:
+            datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+        
+        bucket = storage_client.bucket(logs_bucket_name)
+        
+        if file_name:
+            # Get specific file
+            blob_path = f"logs/{date_str}/{file_name}"
+            blob = bucket.blob(blob_path)
+            
+            if not blob.exists():
+                blob = bucket.blob("logs/latest.log")
+                if not blob.exists():
+                    return jsonify({
+                        'error': f'Log file not found: {file_name}',
+                        'date': date_str
+                    }), 404
+            
+            content = blob.download_as_text()
+            log_lines = content.splitlines()
+            log_lines = log_lines[-lines:] if len(log_lines) > lines else log_lines
+            
+            if output_format == 'text':
+                return '\n'.join(log_lines), 200, {'Content-Type': 'text/plain'}
+            
+            return jsonify({
+                'file': file_name,
+                'date': date_str,
+                'lines': log_lines,
+                'total_lines': len(log_lines),
+                'bucket': bucket.name,
+                'path': blob.name
+            }), 200
+        else:
+            # List all log files for date
+            prefix = f"logs/{date_str}/"
+            blobs = list(bucket.list_blobs(prefix=prefix))
+            
+            if not blobs:
+                # Get available dates
+                dates_blobs = bucket.list_blobs(prefix='logs/')
+                dates = set()
+                for b in dates_blobs:
+                    parts = b.name.split('/')
+                    if len(parts) >= 2 and parts[1] != 'latest.log':
+                        dates.add(parts[1])
+                available_dates = sorted(list(dates), reverse=True)[:30]
+                
+                return jsonify({
+                    'error': f'No logs found for date: {date_str}',
+                    'date': date_str,
+                    'available_dates': available_dates
+                }), 404
+            
+            log_files = []
+            for blob in blobs:
+                log_files.append({
+                    'name': blob.name.split('/')[-1],
+                    'size': blob.size,
+                    'updated': blob.updated.isoformat() if blob.updated else None,
+                    'path': blob.name,
+                    'url': f"/logs/get?date={date_str}&file={blob.name.split('/')[-1]}"
+                })
+            
+            return jsonify({
+                'date': date_str,
+                'files': log_files,
+                'count': len(log_files),
+                'bucket': bucket.name
+            }), 200
+    except Exception as e:
+        logger.error(f"Error getting logs: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+def handle_list_log_dates(request: Request):
+    """List available log dates from GCS"""
+    try:
+        bucket = storage_client.bucket(logs_bucket_name)
+        blobs = bucket.list_blobs(prefix='logs/')
+        dates = set()
+        
+        for blob in blobs:
+            parts = blob.name.split('/')
+            if len(parts) >= 2 and parts[1] != 'latest.log':
+                dates.add(parts[1])
+        
+        dates_list = sorted(list(dates), reverse=True)[:30]
+        
+        return jsonify({
+            'dates': dates_list,
+            'count': len(dates_list),
+            'bucket': bucket.name,
+            'latest_url': f'/logs/get?date={dates_list[0]}' if dates_list else None
+        }), 200
+    except Exception as e:
+        logger.error(f"Error listing log dates: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ── HTTP Handlers ─────────────────────────────────────────────────────────────
 def handle_create_position(req):
@@ -332,7 +604,7 @@ def hello_http(req):
         epic = req.args.get('epic')
         
         try:
-            query = db.collection('trading_signals')
+            query = db.db.collection('trading_signals')
             
             if epic:
                 query = query.where('epic', '==', epic)
@@ -363,7 +635,7 @@ def hello_http(req):
             return _add_cors_headers(response), 400
         
         try:
-            query = db.collection('trading_signals')\
+            query = db.db.collection('trading_signals')\
                 .where('epic', '==', epic)\
                 .order_by('timestamp', direction='DESCENDING')\
                 .limit(1)
@@ -382,8 +654,68 @@ def hello_http(req):
             response = jsonify({'error': str(e)})
             return _add_cors_headers(response), 500
 
+    # Bot monitoring endpoints
+    if method == 'GET' and (path == '/bot/status' or path == '/status'):
+        result, status_code = handle_get_bot_status(req)
+        return _add_cors_headers(result), status_code
+
+    if method == 'GET' and (path == '/bot/positions' or path == '/positions'):
+        result, status_code = handle_get_bot_positions(req)
+        return _add_cors_headers(result), status_code
+
+    if method == 'GET' and (path == '/bot/signals' or path == '/bot_signals'):
+        result, status_code = handle_get_bot_signals(req)
+        return _add_cors_headers(result), status_code
+
+    if method == 'GET' and (path == '/bot/logs/live' or path == '/bot/live_logs'):
+        result, status_code = handle_get_live_logs(req)
+        return _add_cors_headers(result), status_code
+
+    # Logs endpoints
+    if method == 'GET' and (path == '/logs/get' or path == '/logs'):
+        result, status_code = handle_get_bot_logs(req)
+        if isinstance(result, str):  # text format
+            return result, status_code
+        return _add_cors_headers(result), status_code
+
+    if method == 'GET' and path == '/logs/dates':
+        result, status_code = handle_list_log_dates(req)
+        return _add_cors_headers(result), status_code
+
+    # API info endpoint
+    if method == 'GET' and path == '/':
+        response = jsonify({
+            'name': 'Trading Bot Unified API',
+            'version': '2.0.0',
+            'endpoints': {
+                'capital_com': {
+                    'positions': '/get_positions',
+                    'create_position': '/create_position',
+                    'update_position': '/updte_position',
+                    'close_position': '/close_position/{dealId}',
+                    'market_info': '/market/{epic}',
+                    'prices': '/prices/{epic}?resolution=HOUR',
+                    'markets': '/markets?searchTerm=GOLD'
+                },
+                'bot_monitoring': {
+                    'bot_status': '/bot/status?bot_id=gold_m5_bot',
+                    'active_positions': '/bot/positions?status=open&epic=GOLD',
+                    'bot_signals': '/bot/signals?epic=GOLD&limit=20'
+                },
+                'logs': {
+                    'get_logs': '/logs/get?date=YYYY-MM-DD&file=bot-output.log',
+                    'list_dates': '/logs/dates'
+                },
+                'signals': {
+                    'recent_signals': '/signals?epic=GOLD&limit=20',
+                    'latest_signal': '/signals/latest?epic=GOLD'
+                }
+            }
+        })
+        return _add_cors_headers(response), 200
+
     # 404 with CORS headers
-    response = jsonify({'error': 'Not found'})
+    response = jsonify({'error': 'Not found', 'path': path})
     return _add_cors_headers(response), 404
 
 

@@ -11,6 +11,33 @@ service cloud.firestore {
       allow read: if true;
     }
     
+    // Bot status collection
+    match /bot_status/{botId} {
+      // Allow bot to write status (server-side with service account)
+      allow write: if true;
+      
+      // Allow anyone to read status (for monitoring)
+      allow read: if true;
+    }
+    
+    // Active positions collection
+    match /active_positions/{positionId} {
+      // Allow bot to write positions (server-side with service account)
+      allow write: if true;
+      
+      // Allow anyone to read positions (for monitoring)
+      allow read: if true;
+    }
+    
+    // Bot logs collection (live logs for streaming)
+    match /bot_logs/{logId} {
+      // Allow bot to write logs (server-side with service account)
+      allow write: if true;
+      
+      // Allow anyone to read logs (for monitoring/debugging)
+      allow read: if true;
+    }
+    
     // Deny all other collections by default
     match /{document=**} {
       allow read, write: if false;

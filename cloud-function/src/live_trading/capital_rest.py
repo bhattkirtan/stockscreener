@@ -10,6 +10,7 @@ Handles authentication and REST API calls for:
 
 import requests
 import logging
+from datetime import datetime
 from typing import Dict, Optional, List
 from cachetools import TTLCache, cached
 
@@ -201,3 +202,43 @@ class CapitalRestClient:
         response = self._request('DELETE', f'/api/v1/positions/{deal_id}')
         logger.info(f"✅ Position closed: {deal_id}")
         return response.json()
+
+    def get_historical_candles(self, epic: str, resolution: str = 'MINUTE_5', count: int = 100) -> List[Dict]:
+        """
+        Fetch historical OHLC candles via REST API.
+        Returns list of candle dicts in the same format as WebSocket candle callbacks.
+        """
+        response = self._request('GET', f'/api/v1/prices/{epic}', params={
+            'resolution': resolution,
+            'max': count
+        })
+        data = response.json()
+        candles = []
+        for item in data.get('prices', []):
+            snap = item.get('snapshotTimeUTC', '')
+            # Handle ISO "2026-03-17T12:55:00" and slashed "2026/03/17 12:55:00:000"
+            try:
+                dt = datetime.fromisoformat(snap[:19].replace('/', '-').replace(' ', 'T'))
+            except ValueError:
+                logger.warning(f"⚠️ Could not parse candle timestamp: {snap!r}")
+                continue
+            epoch_ms = int(dt.timestamp() * 1000)
+
+            def mid(price_obj):
+                bid = price_obj.get('bid') or 0
+                ask = price_obj.get('ask') or 0
+                return (bid + ask) / 2.0 if bid and ask else (bid or ask)
+
+            candles.append({
+                'epic': epic,
+                'resolution': resolution,
+                'open': mid(item.get('openPrice', {})),
+                'high': mid(item.get('highPrice', {})),
+                'low': mid(item.get('lowPrice', {})),
+                'close': mid(item.get('closePrice', {})),
+                'volume': item.get('lastTradedVolume', 0),
+                'timestamp': epoch_ms,
+                'time': dt,
+            })
+        logger.info(f"📥 Fetched {len(candles)} historical {resolution} candles for {epic}")
+        return candles

@@ -206,11 +206,16 @@ class CapitalWebSocketClient:
                 
                 self.latest_candles[epic] = candle_data
                 logger.debug(
-                    f"🕯️ {epic} {candle_data['resolution']}: "
+                    f"🕯️ {epic} {candle_data['resolution']} [{candle_data['price_type']}]: "
                     f"O={candle_data['open']} H={candle_data['high']} "
                     f"L={candle_data['low']} C={candle_data['close']}"
                 )
                 
+                # Capital.com sends both BID and ASK candles — only process ASK
+                # (ASK = the price you pay to BUY, consistent with entry/exit levels)
+                if candle_data.get('price_type') == 'BID':
+                    return
+
                 # Call user callback if set
                 if self.on_candle:
                     await self.on_candle(candle_data)

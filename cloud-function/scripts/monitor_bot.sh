@@ -2,9 +2,13 @@
 # 📊 Trading Bot Continuous Monitor - Runs every 5 minutes
 # Usage: ./monitor_bot.sh (runs in foreground) or nohup ./monitor_bot.sh &
 
-# Configuration
-BOT_LOG="bot.log"
-SCRIPT_NAME="trading_bot_m5.py"
+# Resolve project root relative to this script, regardless of CWD
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Configuration — trading_bot.log is a symlink to the current run's log in logs/
+BOT_LOG="$PROJECT_DIR/trading_bot.log"
+SCRIPT_NAME="trading_bot.py"
 CHECK_INTERVAL=300  # 5 minutes in seconds
 
 # Colors
@@ -28,8 +32,8 @@ while true; do
     echo "----------------------------------------"
     
     # 1. Check if process is running
-    if ps aux | grep -q "[t]rading_bot_m5.py"; then
-        BOT_PID=$(ps aux | grep "[t]rading_bot_m5.py" | awk '{print $2}')
+    if ps aux | grep -q "[t]rading_bot.py"; then
+        BOT_PID=$(ps aux | grep "[t]rading_bot.py" | awk '{print $2}')
         echo -e "${GREEN}✅ Bot is running (PID: $BOT_PID)${NC}"
     else
         echo -e "${RED}❌ WARNING: Bot process not found!${NC}"
@@ -53,7 +57,7 @@ while true; do
             echo -e "${GREEN}✅ No errors found in recent logs${NC}"
             
             # Show last candle received
-            LAST_CANDLE=$(tail -20 "$BOT_LOG" | grep -E "📊 M5 Candle|🎯 Signal|✅ Signal published" | tail -1)
+            LAST_CANDLE=$(tail -20 "$BOT_LOG" | grep -E "📊|🎯 Signal|✅ Signal published" | tail -1)
             if [ ! -z "$LAST_CANDLE" ]; then
                 echo -e "${BLUE}📊 Latest: $LAST_CANDLE${NC}"
             fi

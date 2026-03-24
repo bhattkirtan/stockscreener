@@ -792,6 +792,39 @@ class StrategyOptimizer:
         
         return df_results
     
+    def run_combinations(self, combinations: List[Dict], parallel: bool = True) -> pd.DataFrame:
+        """
+        Run a pre-built list of parameter dicts directly, bypassing grid generation.
+        Used by --mode winners to re-run specific combos (e.g. with event blocking).
+
+        Args:
+            combinations: List of fully-specified parameter dicts
+            parallel: Use parallel processing
+
+        Returns:
+            Formatted results DataFrame
+        """
+        total = len(combinations)
+        print(f"📊 Testing {total} parameter combinations")
+        print(f"📈 Data: {len(self.df)} bars ({self.df.index[0]} to {self.df.index[-1]})")
+        print(f"💰 Initial capital: ${self.initial_capital:,.2f}")
+
+        if parallel and self.n_jobs > 1:
+            print(f"🚀 Parallel mode: {self.n_jobs} workers\n")
+            results = self._run_parallel(combinations)
+        else:
+            print(f"⏱️ Sequential mode\n")
+            results = self._run_sequential(combinations)
+
+        print("\n")
+        self.results = results
+        df = self._format_results(results)
+        # Attach strategy names so comparison tables work without export_results
+        if not df.empty:
+            names = self._generate_strategy_names(df)
+            df.insert(0, 'strategy_name', [names.get(i, f'strategy_{i+1:03d}') for i in range(len(df))])
+        return df
+
     def _run_sequential(self, combinations: List[Dict]) -> List[Dict]:
         """Run backtests sequentially (original method)"""
         results = []
@@ -981,6 +1014,10 @@ class StrategyOptimizer:
                 'zone_block_distance': params.get('zone_block_distance', 1.0),
                 'enable_zone_stops': params.get('enable_zone_stops', False),
                 
+                # Event blocking
+                'enable_event_blocking': params.get('enable_event_blocking', False),
+                '_winner_rank': params.get('_winner_rank', -1),
+
                 # PHASE 2/3 REMOVED: All failed in testing (ADX: no improvement, BB sizing: -25.85%, 
                 # Dynamic TP/SL: -55%, MTF: +0.82% (negligible), S/R: -25.90% (catastrophic))
                 # Only RSI filter survived: +30.09% test improvement
@@ -1479,9 +1516,10 @@ class StrategyOptimizer:
         
         print(f"✅ Exported {len(df_results)} strategies to individual folders")
         
-        # Add strategy names to results
+        # Add strategy names to results (skip if already present, e.g. from run_combinations)
         df_export = df_results.copy()
-        df_export.insert(0, 'strategy_name', [strategy_names.get(i, f"strategy_{i+1:03d}") for i in range(len(df_export))])
+        if 'strategy_name' not in df_export.columns:
+            df_export.insert(0, 'strategy_name', [strategy_names.get(i, f"strategy_{i+1:03d}") for i in range(len(df_export))])
         
         # Export master summary CSV (all strategies) with timestamp
         master_csv = base_dir / f"{self.epic}_{self.resolution}_all_strategies_{timestamp}.csv"

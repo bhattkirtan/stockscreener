@@ -1,0 +1,39 @@
+# ── Trading Bot Dockerfile ───────────────────────────────────────────────────
+# Single image, deploy as M5 or M15 via --env-file flag:
+#   docker run --env-file .env.m5 --name bot-m5 bot:latest
+#   docker run --env-file .env.m15 --name bot-m15 bot:latest
+
+FROM python:3.11-slim
+
+# System deps for websockets + numpy
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps first (layer cached unless requirements change)
+COPY requirements.txt ./
+RUN pip install --no-cache-dir \
+    requests \
+    websockets \
+    python-dotenv \
+    numpy \
+    pandas \
+    google-cloud-firestore \
+    google-auth \
+    cachetools
+
+# Copy bot source
+COPY scripts/trading_bot.py ./scripts/
+COPY src/ ./src/
+COPY data/economic_calendar.json ./data/
+
+# Non-root user for security
+RUN useradd -m botuser && chown -R botuser:botuser /app
+USER botuser
+
+# Optional: mount service account credentials at runtime
+# docker run -v /path/to/sa.json:/app/credentials/service_account.json ...
+
+CMD ["python", "scripts/trading_bot.py"]

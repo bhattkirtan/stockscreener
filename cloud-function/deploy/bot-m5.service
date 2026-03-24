@@ -1,0 +1,23 @@
+[Unit]
+Description=Capital.com Trading Bot — M5 (GOLD 5-minute)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/stockScreener/cloud-function
+EnvironmentFile=/home/botuser/stockScreener/cloud-function/.env.m5
+ExecStart=/home/botuser/venv/bin/python scripts/trading_bot.py
+
+# Auto-restart on crash (the bot also has its own reconnect loop for WS drops)
+Restart=on-failure
+RestartSec=15s
+
+# Logs go to journald — view with: journalctl -u bot-m5 -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bot-m5
+
+[Install]
+WantedBy=multi-user.target

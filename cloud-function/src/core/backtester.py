@@ -336,9 +336,9 @@ class IntraCandleBacktester:
                 
                 calendar = ManualCalendarAdapter(self.config.calendar_path)
                 self.config.event_blocker = EventBlocker(
-                    calendar=calendar,
-                    pre_event_minutes=self.config.event_pre_window_minutes,
-                    post_event_minutes=self.config.event_post_window_minutes
+                    calendar_adapter=calendar,
+                    pre_event_minutes=15,
+                    post_event_minutes=15
                 )
                 logger.info(f"✅ Event blocker created from {self.config.calendar_path}")
             except Exception as e:

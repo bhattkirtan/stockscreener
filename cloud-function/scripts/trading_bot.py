@@ -5,15 +5,15 @@ MODES:
 - DEMO (paper trading): Fully automated - generates signals AND places trades
 - LIVE (real trading): Signal-only mode - ONLY logs signals, NO automatic orders
 
-GOLD M15 Strategy:
+GOLD M5 Strategy — rank01 from optimization 2026-03-17:
 - Supertrend: period=7, multiplier=2.0
-- SMA: Fast=21, Slow=50
+- SMA: Fast=25, Slow=30
 - Bollinger Bands: period=20, std=2.0
-- ATR: period=14
-- Stop Loss: 0.7× ATR
-- Take Profit: 2.5× ATR
+- Stop Loss: 20 pips (fixed)
+- Take Profit: 40 pips (fixed)
+- Event Blocking: enabled (15 min before / 15 min after high-impact events)
 
-Performance: 155% return, 26.8% win rate, 1.24 profit factor, 24 trades/month
+Performance (backtest 2024-2026): 373.7% return, 14.0% max DD, 0.18 Sharpe
 """
 
 import sys
@@ -43,12 +43,29 @@ from src.core.strategy import SupertrendVWAPStrategy
 # Import live trading components  
 from src.live_trading.capital_rest import CapitalRestClient
 
-# Setup logging
+# Import event blocking
+from src.data.manual_calendar_adapter import ManualCalendarAdapter
+from src.core.event_blocker import EventBlocker
+
+# Setup logging — new timestamped file each run, plus symlink trading_bot.log → latest
+_log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
+os.makedirs(_log_dir, exist_ok=True)
+_log_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+_log_file = os.path.join(_log_dir, f'trading_bot_{_log_ts}.log')
+_symlink = os.path.join(os.path.dirname(__file__), '..', 'trading_bot.log')
+# Update symlink so `tail -f trading_bot.log` always follows the current run
+try:
+    if os.path.islink(_symlink) or os.path.exists(_symlink):
+        os.remove(_symlink)
+    os.symlink(os.path.abspath(_log_file), _symlink)
+except OSError:
+    pass  # non-fatal if symlink can't be created
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('trading_bot.log'),
+        logging.FileHandler(_log_file),
         logging.StreamHandler()
     ]
 )
@@ -125,30 +142,45 @@ class TradingBot:
         self.epic = epic
         self.auto_trade = (config.environment == 'demo')  # Auto-trade only in DEMO
         
-        # Strategy configuration (GOLD M15 proven parameters)
+        # Best strategy: ST2.0 SMA25-30 BB2.0 Fixed F20-40 on M5
+        # Source: rank01 optimization run 2026-03-17 → 373.7% return, 14.0% DD
         self.strategy = SupertrendVWAPStrategy(
-            supertrend_period=7,
-            supertrend_multiplier=2.0,
-            sma_fast=21,
-            sma_slow=50,
-            ema_period=21,
-            bb_period=20,
-            bb_std=2.0,
-            sl_pips=0.7,  # Will be multiplied by ATR
-            tp_pips=2.5,  # Will be multiplied by ATR
-            pip_value=1.0,  # For GOLD: 1 pip = $1
+            supertrend_period=config.supertrend_period,
+            supertrend_multiplier=config.supertrend_multiplier,
+            sma_fast=config.sma_fast,
+            sma_slow=config.sma_slow,
+            ema_period=config.sma_fast,
+            bb_period=config.bb_period,
+            bb_std=config.bb_std,
+            sl_pips=config.sl_pips_fixed,
+            tp_pips=config.tp_pips_fixed,
+            pip_value=1.0,  # For GOLD: 1 pip = $1 price move
             use_rsi_filter=False,
             use_atr_volatility_filter=False,
             use_session_filter=False,
             use_heikin_ashi=False
         )
         
-        # M5 to M15 aggregator
-        self.aggregator = M5toM15Aggregator()
-        
-        # Historical M15 bars for indicator calculation (need 50+ bars for SMA slow)
-        self.m15_history: List[Dict] = []
-        self.min_history_bars = 60  # Need at least 60 bars for indicators
+        # Historical bars for indicator calculation
+        self.m5_history: List[Dict] = []
+        _bars_by_tf = {'MINUTE_5': 60, 'MINUTE_15': 100, 'MINUTE_30': 120, 'HOUR': 150}
+        self.min_history_bars = _bars_by_tf.get(self.config.timeframe, 60)
+
+        # Event blocker
+        if config.enable_event_blocking and config.calendar_path:
+            try:
+                calendar = ManualCalendarAdapter(config.calendar_path)
+                self.event_blocker = EventBlocker(
+                    calendar_adapter=calendar,
+                    pre_event_minutes=15,
+                    post_event_minutes=15
+                )
+                logger.info(f"🚫 Event blocking enabled: {config.calendar_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Event blocker init failed: {e} — blocking disabled")
+                self.event_blocker = None
+        else:
+            self.event_blocker = None
         
         # Position tracking
         self.current_position: Optional[Dict] = None
@@ -177,6 +209,8 @@ class TradingBot:
             self.signal_publisher = None
         
         logger.info(f"🤖 Trading Bot initialized: Epic={epic}, Mode={'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'}")
+        logger.info(f"   Timeframe: {config.timeframe} | Strategy: ST{config.supertrend_multiplier} SMA{config.sma_fast}/{config.sma_slow} BB{config.bb_std} SL={config.sl_pips_fixed}pip TP={config.tp_pips_fixed}pip")
+        logger.info(f"   Event blocking: {'ON' if self.event_blocker else 'OFF'}")
     
     async def authenticate(self):
         """Authenticate with Capital.com and get session tokens"""
@@ -190,85 +224,109 @@ class TradingBot:
             logger.error(f"❌ Authentication failed: {e}")
             raise
     
-    async def start(self):
-        """Start the trading bot"""
+    async def _prefetch_history(self):
+        """Pre-populate M5 history from REST API so the bot is ready to trade immediately."""
         try:
-            # Authenticate
-            await self.authenticate()
-            
-            # Create WebSocket client
-            self.ws_client = CapitalWebSocketClient(
-                cst=self.cst,
-                security_token=self.security_token,
-                ws_url=self.config.ws_url,
-                ping_interval=self.config.ping_interval
+            count = max(self.min_history_bars + 20, 100)
+            logger.info(f"📥 Fetching {count} historical {self.config.timeframe} candles for {self.epic}...")
+            candles = self.rest_client.get_historical_candles(
+                self.epic, resolution=self.config.timeframe, count=count
             )
-            
-            # Set callbacks
-            self.ws_client.on_candle = self.on_m5_candle
-            self.ws_client.on_quote = self.on_quote
-            
-            # Connect
-            await self.ws_client.connect()
-            
-            # Subscribe to GOLD M5 OHLC candles
-            await self.ws_client.subscribe_ohlc([self.epic], resolution='MINUTE_5')
-            
-            # Subscribe to live quotes for current price
-            await self.ws_client.subscribe_quotes([self.epic])
-            
-            logger.info(f"🎯 Subscribed to {self.epic} M5 candles and live quotes")
-            logger.info(f"⚡ Bot running in {'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'} mode")
-            
-            # Run WebSocket client
-            await self.ws_client.run()
-            
+            if candles:
+                self.m5_history = candles
+                logger.info(f"✅ Pre-loaded {len(candles)} historical candles — strategy ready immediately")
+            else:
+                logger.warning("⚠️ No historical candles returned — will build from live feed")
         except Exception as e:
-            logger.error(f"❌ Bot start failed: {e}")
-            raise
+            logger.warning(f"⚠️ History prefetch failed: {e} — will build from live feed")
+
+    async def start(self):
+        """Start the trading bot with auto-reconnect on WebSocket drop"""
+        # Authenticate and prefetch once
+        await self.authenticate()
+        await self._prefetch_history()
+        await self._sync_open_position()
+
+        reconnect_delay = 5  # seconds
+        while True:
+            try:
+                # Fresh WebSocket client each reconnect
+                self.ws_client = CapitalWebSocketClient(
+                    cst=self.cst,
+                    security_token=self.security_token,
+                    ws_url=self.config.ws_url,
+                    ping_interval=self.config.ping_interval_seconds
+                )
+
+                # Set callbacks
+                self.ws_client.on_candle = self.on_m5_candle
+                self.ws_client.on_quote = self.on_quote
+
+                # Connect and subscribe
+                await self.ws_client.connect()
+                await self.ws_client.subscribe_ohlc([self.epic], resolution=self.config.timeframe)
+                await self.ws_client.subscribe_quotes([self.epic])
+
+                logger.info(f"🎯 Subscribed to {self.epic} {self.config.timeframe} candles and live quotes")
+                logger.info(f"⚡ Bot running in {'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'} mode")
+
+                reconnect_delay = 5  # reset on clean connection
+                await self.ws_client.run()
+
+                # run() returned cleanly (WebSocket closed)
+                logger.warning("⚠️ WebSocket closed — reconnecting in 5s...")
+
+            except asyncio.CancelledError:
+                raise  # propagate shutdown
+            except Exception as e:
+                logger.error(f"❌ WebSocket error: {e} — reconnecting in {reconnect_delay}s...")
+
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)  # back-off up to 60s
+
+            # Re-authenticate if tokens may have expired
+            try:
+                await self.authenticate()
+                await self._sync_open_position()
+            except Exception as e:
+                logger.warning(f"⚠️ Re-auth failed: {e}")
     
-    async def on_m5_candle(self, epic: str, candle: Dict):
+    async def on_m5_candle(self, candle: Dict):
         """
-        Callback when M5 OHLC candle is received
+        Callback when M5 OHLC candle is received. Strategy runs directly on M5.
         
         Args:
-            epic: Instrument (e.g., 'GOLD')
-            candle: M5 candle data
+            candle: M5 candle dict (includes 'epic' key)
         """
+        epic = candle.get('epic')
         if epic != self.epic:
             return
         
-        logger.info(f"📊 M5 Candle: {candle['timestamp']} O:{candle['open']:.2f} H:{candle['high']:.2f} L:{candle['low']:.2f} C:{candle['close']:.2f}")
+        logger.info(f"📊 {self.config.timeframe} Candle: {candle['timestamp']} O:{candle['open']:.2f} H:{candle['high']:.2f} L:{candle['low']:.2f} C:{candle['close']:.2f}")
         
-        # Aggregate to M15
-        m15_bar = self.aggregator.add_m5_candle(candle)
+        # Add directly to M5 history (no M15 aggregation)
+        self.m5_history.append(candle)
         
-        if m15_bar is None:
-            return  # Not ready yet
-        
-        # Add to history
-        self.m15_history.append(m15_bar)
-        
-        # Keep only last 100 bars (enough for indicators + some buffer)
-        if len(self.m15_history) > 100:
-            self.m15_history = self.m15_history[-100:]
+        # Keep only last 200 bars
+        if len(self.m5_history) > 200:
+            self.m5_history = self.m5_history[-200:]
         
         # Wait for enough history
-        if len(self.m15_history) < self.min_history_bars:
-            logger.info(f"⏳ Building history: {len(self.m15_history)}/{self.min_history_bars} bars")
+        if len(self.m5_history) < self.min_history_bars:
+            logger.info(f"⏳ Building history: {len(self.m5_history)}/{self.min_history_bars} bars")
             return
         
         # Generate signal
         await self.generate_signal()
     
-    async def on_quote(self, epic: str, quote: Dict):
+    async def on_quote(self, quote: Dict):
         """
-        Callback when live quote is received
+        Callback when live quote is received.
         
         Args:
-            epic: Instrument (e.g., 'GOLD')
-            quote: Live quote data with bid, offer, mid
+            quote: Live quote dict (includes 'epic' key) with bid, offer, mid
         """
+        epic = quote.get('epic')
         if epic != self.epic:
             return
         
@@ -278,13 +336,13 @@ class TradingBot:
     
     def calculate_indicators(self) -> pd.DataFrame:
         """
-        Calculate indicators on M15 history
+        Calculate indicators on M5 history
         
         Returns:
             DataFrame with all indicators
         """
-        # Convert M15 history to DataFrame
-        df = pd.DataFrame(self.m15_history)
+        # Convert M5 history to DataFrame
+        df = pd.DataFrame(self.m5_history)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
         
@@ -297,7 +355,7 @@ class TradingBot:
         return df_with_indicators
     
     async def generate_signal(self):
-        """Generate trading signal from M15 indicators"""
+        """Generate trading signal from M5 indicators"""
         try:
             # Calculate indicators
             df = self.calculate_indicators()
@@ -316,8 +374,14 @@ class TradingBot:
             sma_fast = latest['sma_fast']
             sma_slow = latest['sma_slow']
             ema = latest['ema']
-            atr = self.strategy.calculate_atr(df, 14).iloc[-1]
-            
+
+            # Event blocking check before evaluating signals
+            if self.event_blocker:
+                is_allowed, block_reason = self.event_blocker.is_trading_allowed(datetime.utcnow())
+                if not is_allowed:
+                    logger.info(f"🚫 Trade blocked by event filter: {block_reason}")
+                    return
+
             # Check if already in position
             if self.current_position:
                 logger.info(f"📍 Already in position: {self.current_position['direction']} {self.current_position['size']} @ {self.current_position['entry_price']:.2f}")
@@ -346,9 +410,9 @@ class TradingBot:
                 close > ema and 
                 (golden_cross or sma_fast > sma_slow)):
                 
-                # Calculate SL/TP based on ATR
-                stop_loss = close - (self.strategy.sl_pips * atr)
-                take_profit = close + (self.strategy.tp_pips * atr)
+                # Fixed pip TP/SL (best strategy uses 20 SL / 40 TP)
+                stop_loss = close - self.config.sl_pips_fixed
+                take_profit = close + self.config.tp_pips_fixed
                 
                 logger.info("=" * 80)
                 logger.info("🟢 BUY SIGNAL DETECTED")
@@ -357,9 +421,8 @@ class TradingBot:
                 logger.info(f"   SMA Fast: {sma_fast:.2f}")
                 logger.info(f"   SMA Slow: {sma_slow:.2f}")
                 logger.info(f"   EMA: {ema:.2f}")
-                logger.info(f"   ATR: {atr:.2f}")
-                logger.info(f"   Stop Loss: {stop_loss:.2f} ({self.strategy.sl_pips}× ATR)")
-                logger.info(f"   Take Profit: {take_profit:.2f} ({self.strategy.tp_pips}× ATR)")
+                logger.info(f"   Stop Loss: {stop_loss:.2f} ({self.config.sl_pips_fixed} pips fixed)")
+                logger.info(f"   Take Profit: {take_profit:.2f} ({self.config.tp_pips_fixed} pips fixed)")
                 logger.info("=" * 80)
                 
                 # Publish signal to Firestore/Pub/Sub
@@ -375,13 +438,12 @@ class TradingBot:
                         'strategy': 'SupertrendVWAP',
                         'mode': 'AUTO' if self.auto_trade else 'SIGNAL_ONLY',
                         'indicators': {
-                            'supertrend': supertrend,
+                            'supertrend': float(latest['supertrend']),
                             'supertrend_direction': int(supertrend_dir),
-                            'sma_fast': sma_fast,
-                            'sma_slow': sma_slow,
-                            'ema': ema,
-                            'atr': atr,
-                            'golden_cross': golden_cross
+                            'sma_fast': float(sma_fast),
+                            'sma_slow': float(sma_slow),
+                            'ema': float(ema),
+                            'golden_cross': bool(golden_cross)
                         }
                     }
                     try:
@@ -399,9 +461,9 @@ class TradingBot:
                   close < ema and 
                   (death_cross or sma_fast < sma_slow)):
                 
-                # Calculate SL/TP based on ATR
-                stop_loss = close + (self.strategy.sl_pips * atr)
-                take_profit = close - (self.strategy.tp_pips * atr)
+                # Fixed pip TP/SL
+                stop_loss = close + self.config.sl_pips_fixed
+                take_profit = close - self.config.tp_pips_fixed
                 
                 logger.info("=" * 80)
                 logger.info("🔴 SELL SIGNAL DETECTED")
@@ -410,9 +472,8 @@ class TradingBot:
                 logger.info(f"   SMA Fast: {sma_fast:.2f}")
                 logger.info(f"   SMA Slow: {sma_slow:.2f}")
                 logger.info(f"   EMA: {ema:.2f}")
-                logger.info(f"   ATR: {atr:.2f}")
-                logger.info(f"   Stop Loss: {stop_loss:.2f} ({self.strategy.sl_pips}× ATR)")
-                logger.info(f"   Take Profit: {take_profit:.2f} ({self.strategy.tp_pips}× ATR)")
+                logger.info(f"   Stop Loss: {stop_loss:.2f} ({self.config.sl_pips_fixed} pips fixed)")
+                logger.info(f"   Take Profit: {take_profit:.2f} ({self.config.tp_pips_fixed} pips fixed)")
                 logger.info("=" * 80)
                 
                 # Publish signal to Firestore/Pub/Sub
@@ -428,13 +489,12 @@ class TradingBot:
                         'strategy': 'SupertrendVWAP',
                         'mode': 'AUTO' if self.auto_trade else 'SIGNAL_ONLY',
                         'indicators': {
-                            'supertrend': supertrend,
+                            'supertrend': float(latest['supertrend']),
                             'supertrend_direction': int(supertrend_dir),
-                            'sma_fast': sma_fast,
-                            'sma_slow': sma_slow,
-                            'ema': ema,
-                            'atr': atr,
-                            'death_cross': death_cross
+                            'sma_fast': float(sma_fast),
+                            'sma_slow': float(sma_slow),
+                            'ema': float(ema),
+                            'death_cross': bool(death_cross)
                         }
                     }
                     try:
@@ -471,16 +531,15 @@ class TradingBot:
             logger.info(f"   SL: {stop_loss:.2f} | TP: {take_profit:.2f}")
             
             # Create position via REST API
-            response = capitalService.create_position(
+            response = self.rest_client.create_position(
                 epic=self.epic,
                 size=position_size,
                 direction=direction,
-                stopLevel=stop_loss,
-                profitLevel=take_profit
+                stop_level=stop_loss,
+                profit_level=take_profit
             )
-            
-            if response.status_code == 200:
-                deal_reference = response.json().get('dealReference')
+            deal_reference = response.get('dealReference')
+            if deal_reference:
                 logger.info(f"✅ Order placed successfully: {deal_reference}")
                 
                 # Track position
@@ -496,29 +555,53 @@ class TradingBot:
                 
                 self.last_signal_time = datetime.now()
             else:
-                logger.error(f"❌ Order placement failed: {response.status_code} - {response.text}")
+                logger.error(f"❌ Order placement failed: no dealReference in response: {response}")
         
         except Exception as e:
             logger.error(f"❌ Order placement error: {e}", exc_info=True)
     
     async def close_position(self):
-        """Close current position"""
+        """Close current position via REST API"""
         if not self.current_position:
             return
-        
+
+        deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
+        logger.info(f"🔚 Closing position: {deal_id}")
         try:
-            deal_ref = self.current_position['deal_reference']
-            logger.info(f"🔚 Closing position: {deal_ref}")
-            
-            # In practice, you'd call capitalService.close_position(dealId)
-            # For now, just clear position tracking
-            # TODO: Implement after verifying deal reference lookup
-            
-            logger.info(f"✅ Position closed: {deal_ref}")
-            self.current_position = None
-        
+            self.rest_client.close_position(deal_id)
+            logger.info(f"✅ Position closed: {deal_id}")
         except Exception as e:
-            logger.error(f"❌ Close position error: {e}", exc_info=True)
+            logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
+        finally:
+            # Always clear local state — Capital.com may have already closed it via SL/TP
+            self.current_position = None
+
+    async def _sync_open_position(self):
+        """On startup, re-hydrate self.current_position from any live open position on Capital.com."""
+        try:
+            positions = self.rest_client.get_open_positions()
+            for item in positions:
+                pos = item.get('position', {})
+                mkt = item.get('market', {})
+                if mkt.get('epic') == self.epic:
+                    self.current_position = {
+                        'deal_id': pos.get('dealId'),
+                        'deal_reference': pos.get('dealReference'),
+                        'direction': pos.get('direction'),
+                        'size': pos.get('size'),
+                        'entry_price': pos.get('level'),
+                        'stop_loss': pos.get('stopLevel'),
+                        'take_profit': pos.get('limitLevel'),
+                        'entry_time': None,
+                    }
+                    logger.info(
+                        f"🔄 Resumed existing {pos.get('direction')} position: "
+                        f"dealId={pos.get('dealId')} entry={pos.get('level')}"
+                    )
+                    return
+            logger.info("✅ No open positions found — starting fresh")
+        except Exception as e:
+            logger.warning(f"⚠️ Position sync failed: {e} — assuming no open position")
     
     async def check_position_status(self, quote: Dict):
         """
@@ -529,22 +612,27 @@ class TradingBot:
         """
         if not self.current_position:
             return
-        
-        current_price = quote['mid']
-        
+
+        current_price = quote.get('mid')
+        if current_price is None:
+            return
+
+        stop_loss = self.current_position.get('stop_loss')
+        take_profit = self.current_position.get('take_profit')
+
         # Check LONG position
         if self.current_position['direction'] == 'BUY':
-            if current_price <= self.current_position['stop_loss']:
-                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} <= {self.current_position['stop_loss']:.2f}")
-            elif current_price >= self.current_position['take_profit']:
-                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} >= {self.current_position['take_profit']:.2f}")
-        
+            if stop_loss and current_price <= stop_loss:
+                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} <= {stop_loss:.2f}")
+            elif take_profit and current_price >= take_profit:
+                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} >= {take_profit:.2f}")
+
         # Check SHORT position
         elif self.current_position['direction'] == 'SELL':
-            if current_price >= self.current_position['stop_loss']:
-                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} >= {self.current_position['stop_loss']:.2f}")
-            elif current_price <= self.current_position['take_profit']:
-                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} <= {self.current_position['take_profit']:.2f}")
+            if stop_loss and current_price >= stop_loss:
+                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} >= {stop_loss:.2f}")
+            elif take_profit and current_price <= take_profit:
+                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} <= {take_profit:.2f}")
     
     async def stop(self):
         """Stop the trading bot"""

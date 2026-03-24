@@ -31,16 +31,26 @@ class TradingConfig:
     # Trading instrument
     gold_epic: str = None  # Will be discovered via API
     
-    # GOLD M15 Strategy Parameters (from optimization results)
+    # Timeframe — controls WebSocket subscription and history prefetch
+    # Values: 'MINUTE_5' | 'MINUTE_15' — override with BOT_TIMEFRAME env var
+    timeframe: str = 'MINUTE_5'
+
+    # Strategy Parameters — defaults are best M5 params from optimization 2026-03-17
+    # rank01: ST2.0 SMA25-30 BB2.0 Fixed F20-40 + event blocking → 373.7% return, 14.0% DD
+    # Override each via env vars (BOT_SMA_FAST, BOT_SMA_SLOW, etc.)
     supertrend_period: int = 7
     supertrend_multiplier: float = 2.0
-    sma_fast: int = 21
-    sma_slow: int = 50
+    sma_fast: int = 25
+    sma_slow: int = 30
     bb_period: int = 20
     bb_std: float = 2.0
-    atr_sl_multiplier: float = 0.7
-    atr_tp_multiplier: float = 2.5
-    
+    # Fixed pip TP/SL (not ATR-based) — override with BOT_SL_PIPS / BOT_TP_PIPS
+    sl_pips_fixed: float = 20.0
+    tp_pips_fixed: float = 40.0
+    # Event blocking
+    enable_event_blocking: bool = True
+    calendar_path: str = 'data/economic_calendar.json'
+
     # Position sizing
     position_size: float = 0.1  # Size per trade (adjust based on capital)
     max_capital_per_trade: float = 300.0  # Max $300 margin per trade
@@ -71,11 +81,25 @@ class TradingConfig:
         # Set URLs based on environment
         if self.environment == 'demo':
             self.rest_base_url = 'https://demo-api-capital.backend-capital.com'
-            # WebSocket uses same endpoint for both demo and live
             self.ws_url = 'wss://api-streaming-capital.backend-capital.com/connect'
         else:
             self.rest_base_url = 'https://api-capital.backend-capital.com'
             self.ws_url = 'wss://api-streaming-capital.backend-capital.com/connect'
+
+        # Strategy overrides from environment variables
+        self.timeframe = os.getenv('BOT_TIMEFRAME', self.timeframe)
+        if os.getenv('BOT_SMA_FAST'):
+            self.sma_fast = int(os.getenv('BOT_SMA_FAST'))
+        if os.getenv('BOT_SMA_SLOW'):
+            self.sma_slow = int(os.getenv('BOT_SMA_SLOW'))
+        if os.getenv('BOT_SL_PIPS'):
+            self.sl_pips_fixed = float(os.getenv('BOT_SL_PIPS'))
+        if os.getenv('BOT_TP_PIPS'):
+            self.tp_pips_fixed = float(os.getenv('BOT_TP_PIPS'))
+        if os.getenv('BOT_ST_MULTIPLIER'):
+            self.supertrend_multiplier = float(os.getenv('BOT_ST_MULTIPLIER'))
+        if os.getenv('BOT_EVENT_BLOCKING'):
+            self.enable_event_blocking = os.getenv('BOT_EVENT_BLOCKING', 'true').lower() == 'true'
     
     def validate(self) -> bool:
         """Validate configuration has required credentials"""

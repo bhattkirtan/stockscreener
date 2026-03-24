@@ -128,13 +128,13 @@ class EventBlocker:
                 continue
             
             # Calculate block window
-            block_start = event.time_utc - timedelta(minutes=self.pre_event_minutes)
-            block_end = event.time_utc + timedelta(minutes=self.post_event_minutes)
+            block_start = event.datetime_utc - timedelta(minutes=self.pre_event_minutes)
+            block_end = event.datetime_utc + timedelta(minutes=self.post_event_minutes)
             
             blocked_period = BlockedPeriod(
                 start_time=block_start,
                 end_time=block_end,
-                reason=f"High-impact event: {event.category}",
+                reason=f"High-impact event: {event.event}",
                 event=event
             )
             
