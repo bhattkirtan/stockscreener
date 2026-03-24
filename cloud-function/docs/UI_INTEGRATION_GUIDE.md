@@ -2,22 +2,50 @@
 
 ## API Overview
 
-Your backend **already has** an enhanced API deployed and running with ALL strategy parameters exposed for UI control:
+Your backend has **two main API groups** deployed and running:
 
+### 1. Strategy Optimization APIs
 - ✅ Strategy indicators (Supertrend, SMA, EMA, Bollinger Bands)
 - ✅ TP/SL strategies (Fixed pips vs ATR-based)
 - ✅ Pip value optimization (leverage scaling)
 - ✅ Advanced filters (min trades, win rate, drawdown)
 - ✅ Data selection options (12 instruments across Forex/Commodities/Crypto/Indices)
 
+### 2. Live Trading Bot Monitoring APIs (NEW!)
+- ✅ Real-time bot status and health monitoring
+- ✅ Active positions with P&L tracking
+- ✅ Trading signals and entry/exit notifications
+- ✅ Live log streaming (Firestore, 24h retention)
+- ✅ Historical log archives (GCS)
+- ✅ Capital.com trading operations
+
 ## Production Endpoints
 
-### Optimization API
+### 🤖 Bot Monitoring & Trading API (capitalComService)
+- **URL**: `https://capitalcomservice-6ovej2yaoa-uc.a.run.app`
+- **Purpose**: Live bot monitoring, trading operations, real-time logs
+- **Status**: ✅ Deployed & Healthy
+
+**Key Endpoints:**
+- `GET /bot/status` - Bot health, uptime, statistics
+- `GET /bot/positions` - Active positions with real-time P&L
+- `GET /bot/signals` - Recent trading signals
+- `GET /bot/logs/live` - Real-time log streaming (last 24h)
+- `GET /logs/get` - Historical logs from GCS
+- `GET /logs/dates` - Available log archive dates
+- Capital.com API: `/get_positions`, `/create_position`, `/close_position`, etc.
+
+**Health Check:**
+```bash
+curl https://capitalcomservice-6ovej2yaoa-uc.a.run.app/
+```
+
+### 📊 Optimization API
 - **URL**: `https://optimize-api-6ovej2yaoa-uc.a.run.app`
 - **Endpoint**: `POST /optimize`
 - **Status**: ✅ Deployed & Healthy
 
-### Scheduler Control API (Data Sync)
+### 🕐 Scheduler Control API (Data Sync)
 - **URL**: `https://scheduler-control-6ovej2yaoa-uc.a.run.app`
 - **Endpoints**: 
   - `GET /scheduler/status` - Check if auto-updates are enabled
@@ -29,6 +57,7 @@ Your backend **already has** an enhanced API deployed and running with ALL strat
 ### Health Checks
 ```bash
 # Verify all services are running
+curl https://capitalcomservice-6ovej2yaoa-uc.a.run.app/
 curl https://optimize-api-6ovej2yaoa-uc.a.run.app/health
 curl https://optimizer-worker-6ovej2yaoa-uc.a.run.app/health
 curl https://scheduler-control-6ovej2yaoa-uc.a.run.app/scheduler/status
@@ -58,7 +87,395 @@ The system currently supports **12 instruments** across 4 categories:
 
 ---
 
-## UI Integration for Lovable
+## 🤖 Bot Monitoring API Integration (NEW!)
+
+The **capitalComService** provides real-time bot monitoring and trading operations.
+
+### Base URL
+```typescript
+const BOT_API_BASE = 'https://capitalcomservice-6ovej2yaoa-uc.a.run.app';
+```
+
+### 1. Bot Status Dashboard
+
+Display real-time bot health and statistics:
+
+```typescript
+// frontend/src/services/botMonitoring.ts
+export interface BotStatus {
+  bot_id: string;
+  status: 'RUNNING' | 'STOPPED' | 'ERROR';
+  uptime_seconds: number;
+  last_heartbeat: string;
+  current_capital: number;
+  total_trades: number;
+  open_positions_count: number;
+  win_rate?: number;
+  total_pnl?: number;
+}
+
+export async function getBotStatus(bot_id: string = 'gold_m5_bot'): Promise<BotStatus> {
+  const response = await fetch(
+    `${BOT_API_BASE}/bot/status?bot_id=${bot_id}`
+  );
+  return response.json();
+}
+
+// Usage in React component:
+function BotStatusWidget() {
+  const [status, setStatus] = useState<BotStatus | null>(null);
+  
+  useEffect(() => {
+    // Poll every 5 seconds
+    const fetchStatus = async () => {
+      const data = await getBotStatus('gold_m5_bot');
+      setStatus(data);
+    };
+    
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
+  
+  if (!status) return <div>Loading...</div>;
+  
+  return (
+    <div className="bot-status-card">
+      <div className="status-header">
+        <h3>{status.bot_id}</h3>
+        <span className={`status-badge ${status.status.toLowerCase()}`}>
+          {status.status}
+        </span>
+      </div>
+      <div className="stats-grid">
+        <div>Uptime: {formatUptime(status.uptime_seconds)}</div>
+        <div>Capital: ${status.current_capital.toFixed(2)}</div>
+        <div>Trades: {status.total_trades}</div>
+        <div>Win Rate: {(status.win_rate * 100).toFixed(1)}%</div>
+        <div>P&L: ${status.total_pnl?.toFixed(2)}</div>
+      </div>
+    </div>
+  );
+}
+```
+
+### 2. Active Positions Viewer
+
+Monitor open positions with real-time P&L:
+
+```typescript
+export interface Position {
+  position_id: string;
+  deal_id: string;
+  epic: string;
+  direction: 'BUY' | 'SELL';
+  size: number;
+  open_level: number;
+  current_level: number;
+  pnl: number;
+  pnl_pct: number;
+  stop_loss?: number;
+  take_profit?: number;
+  opened_at: string;
+  signal_data?: any;
+}
+
+export async function getActivePositions(
+  status: 'open' | 'closed' = 'open',
+  epic?: string
+): Promise<Position[]> {
+  let url = `${BOT_API_BASE}/bot/positions?status=${status}`;
+  if (epic) url += `&epic=${epic}`;
+  
+  const response = await fetch(url);
+  const data = await response.json();
+  return data.positions || [];
+}
+
+// Usage:
+function PositionsTable() {
+  const [positions, setPositions] = useState<Position[]>([]);
+  
+  useEffect(() => {
+    const fetchPositions = async () => {
+      const data = await getActivePositions('open');
+      setPositions(data);
+    };
+    
+    fetchPositions();
+    const interval = setInterval(fetchPositions, 3000); // 3 second refresh
+    return () => clearInterval(interval);
+  }, []);
+  
+  return (
+    <table className="positions-table">
+      <thead>
+        <tr>
+          <th>Epic</th>
+          <th>Direction</th>
+          <th>Size</th>
+          <th>Entry</th>
+          <th>Current</th>
+          <th>P&L</th>
+          <th>P&L %</th>
+        </tr>
+      </thead>
+      <tbody>
+        {positions.map(pos => (
+          <tr key={pos.position_id}>
+            <td>{pos.epic}</td>
+            <td>{pos.direction}</td>
+            <td>{pos.size}</td>
+            <td>{pos.open_level}</td>
+            <td>{pos.current_level}</td>
+            <td className={pos.pnl >= 0 ? 'profit' : 'loss'}>
+              ${pos.pnl.toFixed(2)}
+            </td>
+            <td className={pos.pnl_pct >= 0 ? 'profit' : 'loss'}>
+              {pos.pnl_pct.toFixed(2)}%
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+```
+
+### 3. Trading Signals Feed
+
+Display recent bot signals and trade decisions:
+
+```typescript
+export interface TradingSignal {
+  signal_id: string;
+  bot_id: string;
+  epic: string;
+  timestamp: string;
+  signal_type: 'BUY' | 'SELL' | 'CLOSE';
+  confidence?: number;
+  indicators: {
+    supertrend?: string;
+    sma_alignment?: boolean;
+    rsi?: number;
+  };
+  action_taken: 'executed' | 'pending' | 'rejected';
+  position_id?: string;
+}
+
+export async function getTradingSignals(
+  epic?: string,
+  limit: number = 20
+): Promise<TradingSignal[]> {
+  let url = `${BOT_API_BASE}/bot/signals?limit=${limit}`;
+  if (epic) url += `&epic=${epic}`;
+  
+  const response = await fetch(url);
+  const data = await response.json();
+  return data.signals || [];
+}
+
+// Usage:
+function SignalsFeed() {
+  const [signals, setSignals] = useState<TradingSignal[]>([]);
+  
+  useEffect(() => {
+    const fetchSignals = async () => {
+      const data = await getTradingSignals('GOLD', 10);
+      setSignals(data);
+    };
+    
+    fetchSignals();
+    const interval = setInterval(fetchSignals, 10000); // 10 second refresh
+    return () => clearInterval(interval);
+  }, []);
+  
+  return (
+    <div className="signals-feed">
+      <h3>Recent Signals</h3>
+      {signals.map(signal => (
+        <div key={signal.signal_id} className={`signal-card ${signal.signal_type.toLowerCase()}`}>
+          <div className="signal-header">
+            <span className="signal-type">{signal.signal_type}</span>
+            <span className="epic">{signal.epic}</span>
+            <span className="time">{formatRelativeTime(signal.timestamp)}</span>
+          </div>
+          <div className="signal-details">
+            <span className={`action ${signal.action_taken}`}>
+              {signal.action_taken}
+            </span>
+            {signal.confidence && (
+              <span className="confidence">
+                Confidence: {(signal.confidence * 100).toFixed(0)}%
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### 4. Live Log Streaming (NEW!)
+
+Real-time log monitoring for debugging and monitoring:
+
+```typescript
+export interface BotLog {
+  id: string;
+  timestamp: string;
+  level: 'INFO' | 'WARNING' | 'ERROR' | 'DEBUG';
+  logger: string;
+  message: string;
+  bot_id: string;
+  run_id: string;
+  sequence: number;
+  ttl: string; // 24-hour auto-cleanup
+}
+
+export async function getLiveLogs(
+  bot_id: string = 'gold_m5_bot',
+  limit: number = 100,
+  level?: string,
+  run_id?: string
+): Promise<BotLog[]> {
+  let url = `${BOT_API_BASE}/bot/logs/live?bot_id=${bot_id}&limit=${limit}`;
+  if (level) url += `&level=${level}`;
+  if (run_id) url += `&run_id=${run_id}`;
+  
+  const response = await fetch(url);
+  const data = await response.json();
+  return data.logs || [];
+}
+
+// Usage - Auto-refreshing log viewer:
+function LiveLogsViewer() {
+  const [logs, setLogs] = useState<BotLog[]>([]);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [filter, setFilter] = useState<string>('');
+  
+  useEffect(() => {
+    if (!autoRefresh) return;
+    
+    const fetchLogs = async () => {
+      const data = await getLiveLogs('gold_m5_bot', 50, filter || undefined);
+      setLogs(data);
+    };
+    
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000); // 5 second refresh
+    return () => clearInterval(interval);
+  }, [autoRefresh, filter]);
+  
+  return (
+    <div className="live-logs-viewer">
+      <div className="logs-controls">
+        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="">All Levels</option>
+          <option value="ERROR">Errors Only</option>
+          <option value="WARNING">Warnings</option>
+          <option value="INFO">Info</option>
+        </select>
+        <button onClick={() => setAutoRefresh(!autoRefresh)}>
+          {autoRefresh ? '⏸ Pause' : '▶ Resume'}
+        </button>
+      </div>
+      
+      <div className="logs-container">
+        {logs.map(log => (
+          <div key={log.id} className={`log-line level-${log.level.toLowerCase()}`}>
+            <span className="timestamp">{new Date(log.timestamp).toLocaleTimeString()}</span>
+            <span className={`level ${log.level.toLowerCase()}`}>{log.level}</span>
+            <span className="logger">{log.logger}</span>
+            <span className="message">{log.message}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// CSS suggestion:
+const styles = `
+.log-line.level-error { background: #fee; border-left: 4px solid #f00; }
+.log-line.level-warning { background: #ffc; border-left: 4px solid #fa0; }
+.log-line.level-info { background: #eff; border-left: 4px solid #0af; }
+`;
+```
+
+### 5. Combined Dashboard Example
+
+Putting it all together:
+
+```typescript
+function TradingDashboard() {
+  return (
+    <div className="trading-dashboard">
+      <div className="dashboard-header">
+        <h1>Live Trading Bot Monitor</h1>
+      </div>
+      
+      <div className="dashboard-grid">
+        {/* Top Row - Status Cards */}
+        <div className="status-section">
+          <BotStatusWidget />
+        </div>
+        
+        {/* Middle Row - Positions and Signals */}
+        <div className="positions-section">
+          <h2>Active Positions</h2>
+          <PositionsTable />
+        </div>
+        
+        <div className="signals-section">
+          <SignalsFeed />
+        </div>
+        
+        {/* Bottom Row - Live Logs */}
+        <div className="logs-section full-width">
+          <h2>Live Logs</h2>
+          <LiveLogsViewer />
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+### API Endpoints Summary
+
+| Endpoint | Method | Description | Refresh Rate |
+|----------|--------|-------------|--------------|
+| `/bot/status` | GET | Bot health and stats | 5 seconds |
+| `/bot/positions` | GET | Active positions with P&L | 3 seconds |
+| `/bot/signals` | GET | Recent trading signals | 10 seconds |
+| `/bot/logs/live` | GET | Real-time logs (24h) | 5 seconds |
+| `/logs/get` | GET | Historical logs (GCS) | On demand |
+| `/logs/dates` | GET | Available log dates | On demand |
+
+### Query Parameters
+
+**Bot Status:**
+- `bot_id` (default: `gold_m5_bot`) - Bot identifier
+
+**Positions:**
+- `status` (default: `open`) - Filter: `open` or `closed`
+- `epic` (optional) - Filter by instrument: `GOLD`, `EURUSD`, etc.
+
+**Signals:**
+- `epic` (optional) - Filter by instrument
+- `limit` (default: 20) - Number of signals to return
+
+**Live Logs:**
+- `bot_id` (default: `gold_m5_bot`) - Bot identifier
+- `run_id` (optional) - Specific bot run, or `latest`
+- `limit` (default: 200, max: 500) - Number of logs
+- `level` (optional) - Filter: `ERROR`, `WARNING`, `INFO`, `DEBUG`
+
+---
+
+## 📊 Strategy Optimization UI Integration
 
 ### 1. Basic UI (Current - Minimal Changes)
 
@@ -490,14 +907,53 @@ Poll the `status_url` to get results when optimization completes.
 
 ### 📚 Additional Documentation
 
-- [API_CUSTOMIZATION_GUIDE.md](./API_CUSTOMIZATION_GUIDE.md) - All 20+ parameters explained
-- [UI_CONTROL_API.md](./UI_CONTROL_API.md) - Complete API reference
+- **[UNIFIED_API_GUIDE.md](../UNIFIED_API_GUIDE.md)** - Complete bot monitoring & trading API reference (capitalComService)
+- **[LOGS_API_GUIDE.md](../LOGS_API_GUIDE.md)** - Historical log archives (GCS)
+- [API_CUSTOMIZATION_GUIDE.md](./API_CUSTOMIZATION_GUIDE.md) - All 20+ optimization parameters explained
+- [UI_CONTROL_API.md](./UI_CONTROL_API.md) - Complete optimization API reference
 - [DEPLOYMENT_COMPLETE.md](./DEPLOYMENT_COMPLETE.md) - Full system architecture
 - [FOLDER_STRUCTURE.md](../FOLDER_STRUCTURE.md) - Project organization
 
 ---
 
-**Last Updated**: March 5, 2026  
-**Backend Version**: v2.0 (Enhanced API with 12 instruments)  
-**Status**: ✅ Production Ready
+## 💰 Cost & Architecture Notes
 
+### Bot Monitoring API (capitalComService)
+- **Hosting**: Google Cloud Run (Gen 2)
+- **Cost**: ~$0-5/month (minimal usage)
+- **Firestore**: Live logs with 24h TTL = ~$1/month
+- **GCS**: Historical log archives = ~$0.02/GB/month
+- **Total**: < $10/month for complete monitoring
+
+### Live Logs Architecture
+```
+Bot Logs → Firestore (live, 24h TTL) → Cloud Function API → UI
+     ↓
+   Timer (15 min)
+     ↓
+  GCS Bucket (historical archives)
+```
+
+**Benefits:**
+- Real-time: 5-second latency via Firestore
+- Cost-effective: Batched writes ($1/month vs $22/month direct GCS)
+- Auto-cleanup: 24h TTL prevents data bloat
+- Historical: Long-term archives in GCS
+
+### Refresh Rate Recommendations
+- **Bot Status**: Poll every 5 seconds
+- **Positions**: Poll every 3 seconds (active trading)
+- **Signals**: Poll every 10 seconds
+- **Live Logs**: Poll every 5 seconds (pauseable)
+- **Historical Logs**: On-demand only
+
+### CORS Configuration
+All APIs support CORS from any origin. For production, restrict to your domain:
+```
+Access-Control-Allow-Origin: https://your-ui-domain.com
+```
+
+---
+
+**Last Updated**: March 24, 2026
+**Backend Version**: v3.0 (Bot Monitoring + Live Logs + 12 instruments)
