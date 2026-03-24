@@ -62,7 +62,16 @@ def calculate_supertrend(
     if first_valid_idx is None:
         return supertrend, direction
 
-    first_pos = df.index.get_loc(first_valid_idx)
+    _loc = df.index.get_loc(first_valid_idx)
+    # get_loc returns a slice when the index has duplicate labels (e.g. duplicate
+    # candle timestamps fed from WebSocket). Always resolve to a plain int.
+    if isinstance(_loc, slice):
+        first_pos = _loc.start
+    elif hasattr(_loc, '__iter__'):  # boolean ndarray
+        import numpy as _np
+        first_pos = int(_np.argmax(_loc))
+    else:
+        first_pos = _loc
     supertrend.iloc[first_pos] = upper_band.iloc[first_pos]
     direction.iloc[first_pos] = 1
 

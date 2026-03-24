@@ -211,9 +211,12 @@ class CapitalWebSocketClient:
                     f"L={candle_data['low']} C={candle_data['close']}"
                 )
                 
-                # Capital.com sends both BID and ASK candles — only process ASK
-                # (ASK = the price you pay to BUY, consistent with entry/exit levels)
-                if candle_data.get('price_type') == 'BID':
+                # Capital.com sends both BID and ASK/OFR candles — only process the offer
+                # (ASK/OFR = the price you pay to BUY, consistent with entry/exit levels)
+                # Use allowlist rather than denylist: Capital.com may use 'OFR' not 'ASK'
+                price_type = candle_data.get('price_type', '')
+                if price_type not in ('ASK', 'OFR'):
+                    logger.debug(f"⏭️ Skipping {price_type} candle for {epic}")
                     return
 
                 # Call user callback if set
