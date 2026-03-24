@@ -48,7 +48,9 @@ def build_backtest_config(params: dict, initial_capital: float) -> BacktestConfi
     return BacktestConfig(
         initial_capital=initial_capital,
         pip_value=params.get('pip_value', 1.0),
-        default_position_size=10.0,          # 10x position (50% of 20× leverage)
+        default_position_size=params.get('position_size', 10.0),
+        spread_cost_usd=params.get('spread_usd', 0.50),
+        slippage_cost_usd=params.get('slippage_usd', 0.05),
         max_positions=1,
         # Intraday time-gating
         enable_time_exit=params.get('enable_time_exit', False),

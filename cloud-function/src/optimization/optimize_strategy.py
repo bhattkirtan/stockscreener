@@ -338,6 +338,10 @@ class StrategyOptimizer:
         ]
         if 'strategy_type' not in grid:
             base_params.remove('strategy_type')
+        # Passthrough overrides (e.g. position_size, spread_usd) — single-value lists
+        for _passthrough in ('position_size', 'spread_usd', 'slippage_usd'):
+            if _passthrough in grid and _passthrough not in base_params:
+                base_params.append(_passthrough)
         
         # Check if Phase 1 filter parameters exist in grid
         phase1_params = [
@@ -1061,8 +1065,20 @@ class StrategyOptimizer:
         
         # Sort by return_pct descending
         df = df.sort_values('return_pct', ascending=False).reset_index(drop=True)
-        
-        print(f"\n✅ Valid results: {len(rows)}/{len(results)}")
+
+        # Deduplicate: drop rows whose outcome is identical to a higher-ranked row.
+        # This prevents zone_hybrid combos (which vary only in zone_block_distance /
+        # enable_zone_stops) from flooding the top-N when no zones are detected and
+        # all those combos produce the exact same backtest result.
+        outcome_cols = ['return_pct', 'total_trades', 'sharpe_ratio', 'win_rate', 'max_drawdown_pct']
+        present_outcome_cols = [c for c in outcome_cols if c in df.columns]
+        before_dedup = len(df)
+        df = df.drop_duplicates(subset=present_outcome_cols, keep='first').reset_index(drop=True)
+        dupes_removed = before_dedup - len(df)
+        if dupes_removed > 0:
+            print(f"ℹ️  Removed {dupes_removed} duplicate results (identical outcomes, e.g. zone params with no zones detected)")
+
+        print(f"\n✅ Valid results: {len(df)}/{len(results)}")
         
         return df
     

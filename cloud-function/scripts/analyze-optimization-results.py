@@ -72,8 +72,8 @@ class OptimizationAnalyzer:
                     return False
                 search_dir = max(date_folders, key=lambda x: x.stat().st_mtime)
         
-        # Find CSV file (search in subdirectories too)
-        csv_files = list(search_dir.glob("**/GOLD_M5_all_strategies*.csv"))
+        # Find CSV file (search in subdirectories too) — supports any instrument
+        csv_files = list(search_dir.glob("**/*_all_strategies*.csv"))
         if not csv_files:
             print(f"❌ No results CSV found in {search_dir}")
             return False

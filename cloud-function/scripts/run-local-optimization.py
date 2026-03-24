@@ -191,6 +191,26 @@ def main():
     parser.add_argument('--results-csv', default=None,
                         help='Path to a specific results CSV for winners mode (default: auto-detect latest)')
 
+    # Grid overrides — useful for non-GOLD instruments (e.g. ETH needs larger SL/TP in $)
+    parser.add_argument('--sl-pips', default=None,
+                        help='Override SL values (comma-separated). e.g. "50,100,150" for ETH')
+    parser.add_argument('--tp-pips', default=None,
+                        help='Override TP values (comma-separated). e.g. "100,200,300" for ETH')
+    parser.add_argument('--pip-value', default=None,
+                        help='Override pip_value values (comma-separated). e.g. "1.0" for ETH')
+    parser.add_argument('--fixed-only', action='store_true',
+                        help='Test fixed TP/SL only (skip ATR combos) — simpler and faster')
+    parser.add_argument('--st-mult', default=None,
+                        help='Supertrend multipliers, comma-separated. e.g. "1.0,1.5,2.0"')
+    parser.add_argument('--sma-fast', default=None,
+                        help='SMA fast periods, comma-separated. e.g. "5,10,15"')
+    parser.add_argument('--sma-slow', default=None,
+                        help='SMA slow periods, comma-separated. e.g. "20,30,50"')
+    parser.add_argument('--position-size', default=None, type=float,
+                        help='Position size per trade. e.g. 1.0 for 1 ETH (default: 10.0)')
+    parser.add_argument('--spread-usd', default=None, type=float,
+                        help='Spread cost in USD per trade. e.g. 1.75 for ETH (default: 0.50 GOLD)')
+
     args = parser.parse_args()
 
     print("\n" + "="*70)
@@ -283,6 +303,58 @@ def main():
 
         print("\n✅ Winners analysis complete!\n")
         return
+
+    # ── GRID OVERRIDES (sl_pips / tp_pips / pip_value / fixed-only) ─────────
+    def _apply_grid_overrides(grid: dict) -> dict:
+        if args.sl_pips:
+            grid['sl_pips'] = [float(v) for v in args.sl_pips.split(',')]
+        if args.tp_pips:
+            grid['tp_pips'] = [float(v) for v in args.tp_pips.split(',')]
+        if args.pip_value:
+            grid['pip_value'] = [float(v) for v in args.pip_value.split(',')]
+        if args.fixed_only:
+            grid['tp_sl_strategy'] = ['fixed']
+        if args.position_size is not None:
+            grid['position_size'] = [args.position_size]
+        if args.spread_usd is not None:
+            grid['spread_usd'] = [args.spread_usd]
+        if args.st_mult:
+            grid['supertrend_multiplier'] = [float(v) for v in args.st_mult.split(',')]
+        if args.sma_fast:
+            grid['sma_fast'] = [int(v) for v in args.sma_fast.split(',')]
+        if args.sma_slow:
+            grid['sma_slow'] = [int(v) for v in args.sma_slow.split(',')]
+        return grid
+
+    _has_overrides = any([
+        args.sl_pips, args.tp_pips, args.pip_value, args.fixed_only,
+        args.position_size is not None, args.spread_usd is not None,
+        args.st_mult, args.sma_fast, args.sma_slow,
+    ])
+    if _has_overrides:
+        _orig_short    = optimizer.define_short_grid
+        _orig_quick    = optimizer.define_quick_grid
+        _orig_medium   = optimizer.define_medium_grid
+        _orig_intraday = optimizer.define_intraday_grid
+        _orig_zone     = optimizer.define_zone_grid
+        _orig_full     = optimizer.define_parameter_grid
+        optimizer.define_short_grid     = lambda: _apply_grid_overrides(_orig_short())
+        optimizer.define_quick_grid     = lambda: _apply_grid_overrides(_orig_quick())
+        optimizer.define_medium_grid    = lambda: _apply_grid_overrides(_orig_medium())
+        optimizer.define_intraday_grid  = lambda: _apply_grid_overrides(_orig_intraday())
+        optimizer.define_zone_grid      = lambda: _apply_grid_overrides(_orig_zone())
+        optimizer.define_parameter_grid = lambda: _apply_grid_overrides(_orig_full())
+        overrides = []
+        if args.st_mult:                    overrides.append(f'st_mult={args.st_mult}')
+        if args.sma_fast:                   overrides.append(f'sma_fast={args.sma_fast}')
+        if args.sma_slow:                   overrides.append(f'sma_slow={args.sma_slow}')
+        if args.sl_pips:                    overrides.append(f'sl_pips={args.sl_pips}')
+        if args.tp_pips:                    overrides.append(f'tp_pips={args.tp_pips}')
+        if args.pip_value:                  overrides.append(f'pip_value={args.pip_value}')
+        if args.fixed_only:                overrides.append('fixed TP/SL only')
+        if args.position_size is not None: overrides.append(f'position_size={args.position_size}')
+        if args.spread_usd is not None:    overrides.append(f'spread_usd=${args.spread_usd}')
+        print(f"   🔧 Grid overrides: {', '.join(overrides)}\n")
 
     # ── ALL OTHER MODES ────────────────────────────────────────────────────
     if args.enable_event_blocking:
