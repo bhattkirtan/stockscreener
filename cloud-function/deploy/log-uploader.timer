@@ -1,0 +1,11 @@
+[Unit]
+Description=Upload Trading Bot Logs Every 15 Minutes
+Requires=log-uploader.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

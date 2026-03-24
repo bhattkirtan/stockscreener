@@ -1,0 +1,16 @@
+[Unit]
+Description=Upload Trading Bot Logs to GCS
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/trading-bot
+Environment="PATH=/opt/trading-bot/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/trading-bot/.gcp/trading-bot-sa.json"
+ExecStart=/opt/trading-bot/venv/bin/python3 /opt/trading-bot/scripts/upload_logs.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
