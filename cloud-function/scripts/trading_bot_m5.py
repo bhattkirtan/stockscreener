@@ -37,6 +37,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.live_trading.config import TradingConfig
 from src.live_trading.capital_websocket import CapitalWebSocketClient
 from src.live_trading.signal_publisher import SignalPublisher, SignalBackend
+from src.live_trading.bot_status_publisher import BotStatusPublisher, BotStatus
+from src.live_trading.position_publisher import PositionPublisher, PositionStatus
 from src.live_trading.historical_data import fetch_historical_candles
 
 # Import strategy indicator calculations
@@ -148,6 +150,29 @@ class TradingBot:
             logger.warning("Bot will continue without signal publishing")
             self.signal_publisher = None
         
+        # Bot status publisher (track bot health in Firestore)
+        try:
+            self.status_publisher = BotStatusPublisher(
+                bot_id='gold_m5_bot',
+                collection='bot_status',
+                project_id='double-venture-442318-k8'
+            )
+            logger.info("📊 Bot status tracking enabled (Firestore)")
+        except Exception as e:
+            logger.warning(f"⚠️ Bot status publisher initialization failed: {e}")
+            self.status_publisher = None
+        
+        # Position publisher (track active positions in Firestore)
+        try:
+            self.position_publisher = PositionPublisher(
+                collection='active_positions',
+                project_id='double-venture-442318-k8'
+            )
+            logger.info("💼 Position tracking enabled (Firestore)")
+        except Exception as e:
+            logger.warning(f"⚠️ Position publisher initialization failed: {e}")
+            self.position_publisher = None
+        
         logger.info(f"🤖 M5 Trading Bot initialized: Epic={epic}, Mode={'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'}, Timeframe=M5")
     
     async def authenticate(self):
@@ -227,6 +252,14 @@ class TradingBot:
     async def start(self):
         """Start the trading bot"""
         try:
+            # Publish STARTING status
+            if self.status_publisher:
+                self.status_publisher.update_status(
+                    BotStatus.STARTING,
+                    epic=self.epic,
+                    mode='AUTO' if self.auto_trade else 'SIGNAL_ONLY'
+                )
+            
             # Authenticate
             await self.authenticate()
             
@@ -280,14 +313,33 @@ class TradingBot:
             logger.info(f"🎯 Subscribed to {self.epic} M5 candles and live quotes")
             logger.info(f"⚡ Bot running in {'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'} mode")
             
+            # Publish RUNNING status
+            if self.status_publisher:
+                self.status_publisher.update_status(
+                    BotStatus.RUNNING,
+                    epic=self.epic,
+                    mode='AUTO' if self.auto_trade else 'SIGNAL_ONLY',
+                    metadata={'min_history_bars': self.min_history_bars, 'current_bars': len(self.m5_history)}
+                )
+            
             # Start position sync task (every 30 seconds)
             asyncio.create_task(self.sync_positions_periodically())
+            
+            # Start heartbeat task (every 30 seconds)
+            asyncio.create_task(self.heartbeat_periodically())
             
             # Run WebSocket client
             await self.ws_client.run()
             
         except Exception as e:
             logger.error(f"❌ Bot start failed: {e}")
+            # Publish ERROR status
+            if self.status_publisher:
+                self.status_publisher.update_status(
+                    BotStatus.ERROR,
+                    epic=self.epic,
+                    error=str(e)
+                )
             raise
     
     async def on_m5_candle(self, candle: Dict):
@@ -360,6 +412,16 @@ class TradingBot:
         
         # Update current position if exists
         if self.current_position:
+            # Update current price for P&L tracking
+            self.current_position['current_price'] = float(quote['mid'])
+            
+            # Publish P&L update to Firestore (every quote)
+            if self.position_publisher and 'deal_id' in self.current_position:
+                self.position_publisher.update_pnl(
+                    deal_id=self.current_position['deal_id'],
+                    current_price=self.current_position['current_price']
+                )
+            
             await self.check_position_status(quote)
     
     def calculate_indicators(self) -> pd.DataFrame:
@@ -607,6 +669,11 @@ class TradingBot:
                     self.signal_publisher.publish_signal(signal_data)
                     # Also save to local file
                     self.save_signal_to_file(signal_data)
+                    
+                    # Increment statistics
+                    if self.status_publisher:
+                        self.status_publisher.increment_stat('signals_generated')
+                    
                 except Exception as e:
                     logger.warning(f"⚠️ Signal publishing failed: {e}")
             
@@ -701,6 +768,19 @@ class TradingBot:
                 deal_id = self.current_position['deal_id']
                 self.order_manager.unregister_position(deal_id)
                 logger.info(f"🗑️ Unregistered position {deal_id} from OrderManager")
+                
+                # Publish position closure to Firestore
+                if self.position_publisher and 'current_price' in self.current_position:
+                    self.position_publisher.close_position(
+                        deal_id=deal_id,
+                        close_price=self.current_position.get('current_price'),
+                        close_reason='MANUAL'
+                    )
+                    logger.info(f"💼 Position closure published to Firestore")
+                
+                # Increment statistics
+                if self.status_publisher:
+                    self.status_publisher.increment_stat('positions_closed')
             
             self.current_position = None
         
@@ -726,6 +806,18 @@ class TradingBot:
                         logger.info(f"🔍 Detected server-side closure: {deal_id}")
                         self.order_manager.unregister_position(deal_id)
                         
+                        # Publish position closure to Firestore
+                        if self.position_publisher:
+                            self.position_publisher.close_position(
+                                deal_id=deal_id,
+                                close_price=0.0,  # Unknown close price from API
+                                close_reason='SERVER_CLOSED'
+                            )
+                        
+                        # Increment statistics
+                        if self.status_publisher:
+                            self.status_publisher.increment_stat('positions_closed')
+                        
                         # Also clear current_position if it matches
                         if self.current_position and self.current_position.get('deal_id') == deal_id:
                             logger.info(f"🗑️ Clearing current_position tracking for {deal_id}")
@@ -742,6 +834,22 @@ class TradingBot:
                 break
             except Exception as e:
                 logger.error(f"❌ Position sync error: {e}")
+    
+    async def heartbeat_periodically(self):
+        """Send heartbeat to Firestore every 30 seconds to indicate bot is alive"""
+        while True:
+            try:
+                await asyncio.sleep(30)  # Every 30 seconds
+                
+                if self.status_publisher:
+                    self.status_publisher.heartbeat()
+                    logger.debug("💓 Heartbeat sent")
+            
+            except asyncio.CancelledError:
+                logger.info("🛑 Heartbeat task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"❌ Heartbeat error: {e}")
     
     async def check_position_status(self, quote: Dict):
         """
@@ -772,6 +880,14 @@ class TradingBot:
     async def stop(self):
         """Stop the trading bot"""
         logger.info("🛑 Stopping trading bot...")
+        
+        # Publish STOPPED status
+        if self.status_publisher:
+            self.status_publisher.update_status(
+                BotStatus.STOPPED,
+                epic=self.epic
+            )
+        
         if self.ws_client:
             await self.ws_client.close()
         logger.info("✅ Trading bot stopped")

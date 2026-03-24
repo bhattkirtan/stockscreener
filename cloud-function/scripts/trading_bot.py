@@ -35,7 +35,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.live_trading.config import TradingConfig
 from src.live_trading.capital_websocket import CapitalWebSocketClient
 from src.live_trading.signal_publisher import SignalPublisher, SignalBackend
-from src.live_trading.signal_publisher import SignalPublisher, SignalBackend
+from src.live_trading.bot_status_publisher import BotStatusPublisher, BotStatus
+from src.live_trading.position_publisher import PositionPublisher, PositionStatus
+from src.live_trading.log_publisher import LogPublisher, FirestoreLogHandler
 
 # Import strategy indicator calculations
 from src.core.strategy import SupertrendVWAPStrategy
@@ -208,6 +210,40 @@ class TradingBot:
             logger.warning("Bot will continue without signal publishing")
             self.signal_publisher = None
         
+        # Bot status publisher (tracks bot health and heartbeat)
+        try:
+            self.status_publisher = BotStatusPublisher(
+                bot_id=f"{epic.lower()}_m5_bot"
+            )
+            logger.info("📡 Bot status publishing enabled (Firestore)")
+        except Exception as e:
+            logger.warning(f"⚠️ Bot status publisher initialization failed: {e}")
+            self.status_publisher = None
+        
+        # Position publisher (tracks active positions with P&L)
+        try:
+            self.position_publisher = PositionPublisher()
+            logger.info("📡 Position publishing enabled (Firestore)")
+        except Exception as e:
+            logger.warning(f"⚠️ Position publisher initialization failed: {e}")
+            self.position_publisher = None
+        
+        # Log publisher (streams live logs to Firestore for UI)
+        try:
+            run_id = _log_ts  # Use same timestamp as log file
+            bot_id = f"{epic.lower()}_m5_bot"
+            self.log_publisher = LogPublisher(bot_id=bot_id, run_id=run_id)
+            
+            # Add Firestore handler to root logger
+            firestore_handler = FirestoreLogHandler(self.log_publisher, level=logging.INFO)
+            firestore_handler.setFormatter(logging.Formatter('%(message)s'))
+            logging.getLogger().addHandler(firestore_handler)
+            
+            logger.info("📡 Log publishing enabled (Firestore)")
+        except Exception as e:
+            logger.warning(f"⚠️ Log publisher initialization failed: {e}")
+            self.log_publisher = None
+        
         logger.info(f"🤖 Trading Bot initialized: Epic={epic}, Mode={'AUTO-TRADE' if self.auto_trade else 'SIGNAL-ONLY'}")
         logger.info(f"   Timeframe: {config.timeframe} | Strategy: ST{config.supertrend_multiplier} SMA{config.sma_fast}/{config.sma_slow} BB{config.bb_std} SL={config.sl_pips_fixed}pip TP={config.tp_pips_fixed}pip")
         logger.info(f"   Event blocking: {'ON' if self.event_blocker else 'OFF'}")
@@ -242,10 +278,33 @@ class TradingBot:
 
     async def start(self):
         """Start the trading bot with auto-reconnect on WebSocket drop"""
+        # Update bot status to STARTING
+        if self.status_publisher:
+            self.status_publisher.update_status(
+                BotStatus.STARTING,
+                epic=self.epic,
+                mode='AUTO' if self.auto_trade else 'SIGNAL_ONLY'
+            )
+        
         # Authenticate and prefetch once
         await self.authenticate()
         await self._prefetch_history()
         await self._sync_open_position()
+        
+        # Update bot status to RUNNING
+        if self.status_publisher:
+            self.status_publisher.update_status(
+                BotStatus.RUNNING,
+                epic=self.epic,
+                mode='AUTO' if self.auto_trade else 'SIGNAL_ONLY'
+            )
+        
+        # Start log publisher batch writer
+        if self.log_publisher:
+            self.log_publisher.start_batch_writer()
+        
+        # Start heartbeat task
+        asyncio.create_task(self._heartbeat_loop())
 
         reconnect_delay = 5  # seconds
         while True:
@@ -291,6 +350,24 @@ class TradingBot:
             except Exception as e:
                 logger.warning(f"⚠️ Re-auth failed: {e}")
     
+    async def _heartbeat_loop(self):
+        """Send periodic heartbeat to bot_status collection (every 30 seconds)"""
+        while True:
+            try:
+                await asyncio.sleep(30)  # Heartbeat every 30 seconds
+                if self.status_publisher:
+                    self.status_publisher.heartbeat()
+                    
+                    # Update position count
+                    position_count = 1 if self.current_position else 0
+                    self.status_publisher.update_statistics({
+                        'position_count': position_count
+                    })
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Heartbeat error: {e}")
+    
     async def on_m5_candle(self, candle: Dict):
         """
         Callback when M5 OHLC candle is received. Strategy runs directly on M5.
@@ -301,6 +378,13 @@ class TradingBot:
         epic = candle.get('epic')
         if epic != self.epic:
             return
+
+        # Deduplicate: skip if same candle timestamp already processed this bar
+        candle_ts = candle.get('timestamp')
+        if candle_ts == getattr(self, '_last_candle_ts', None):
+            logger.debug(f"⏭️ Skipping duplicate candle ts={candle_ts}")
+            return
+        self._last_candle_ts = candle_ts
         
         logger.info(f"📊 {self.config.timeframe} Candle: {candle['timestamp']} O:{candle['open']:.2f} H:{candle['high']:.2f} L:{candle['low']:.2f} C:{candle['close']:.2f}")
         
@@ -553,6 +637,18 @@ class TradingBot:
                     'entry_time': datetime.now()
                 }
                 
+                # Publish position to Firestore
+                if self.position_publisher:
+                    self.position_publisher.publish_position({
+                        'deal_id': deal_reference,
+                        'epic': self.epic,
+                        'direction': direction,
+                        'size': position_size,
+                        'entry_price': entry_price,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit
+                    }, status=PositionStatus.OPEN)
+                
                 self.last_signal_time = datetime.now()
             else:
                 logger.error(f"❌ Order placement failed: no dealReference in response: {response}")
@@ -570,6 +666,11 @@ class TradingBot:
         try:
             self.rest_client.close_position(deal_id)
             logger.info(f"✅ Position closed: {deal_id}")
+            
+            # Update position status in Firestore
+            if self.position_publisher:
+                self.position_publisher.close_position(deal_id)
+                
         except Exception as e:
             logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
         finally:
@@ -605,7 +706,7 @@ class TradingBot:
     
     async def check_position_status(self, quote: Dict):
         """
-        Check if position hit SL/TP
+        Check if position hit SL/TP, and update P&L in Firestore
         
         Args:
             quote: Live quote with bid, offer, mid
@@ -616,6 +717,12 @@ class TradingBot:
         current_price = quote.get('mid')
         if current_price is None:
             return
+        
+        # Update P&L in Firestore (if publisher enabled)
+        if self.position_publisher:
+            deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
+            if deal_id:
+                self.position_publisher.update_pnl(deal_id, current_price=current_price)
 
         stop_loss = self.current_position.get('stop_loss')
         take_profit = self.current_position.get('take_profit')
@@ -624,19 +731,32 @@ class TradingBot:
         if self.current_position['direction'] == 'BUY':
             if stop_loss and current_price <= stop_loss:
                 logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} <= {stop_loss:.2f}")
+                await self.close_position()
             elif take_profit and current_price >= take_profit:
                 logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} >= {take_profit:.2f}")
+                await self.close_position()
 
         # Check SHORT position
         elif self.current_position['direction'] == 'SELL':
             if stop_loss and current_price >= stop_loss:
                 logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} >= {stop_loss:.2f}")
+                await self.close_position()
             elif take_profit and current_price <= take_profit:
                 logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} <= {take_profit:.2f}")
+                await self.close_position()
     
     async def stop(self):
         """Stop the trading bot"""
         logger.info("🛑 Stopping trading bot...")
+        
+        # Update bot status to STOPPED
+        if self.status_publisher:
+            self.status_publisher.update_status(BotStatus.STOPPED)
+        
+        # Stop log publisher and flush remaining logs
+        if self.log_publisher:
+            self.log_publisher.stop_batch_writer()
+        
         if self.ws_client:
             await self.ws_client.close()
         logger.info("✅ Trading bot stopped")
