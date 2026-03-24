@@ -15,7 +15,7 @@
 #   make status     - Check function status
 # ============================================================================
 
-.PHONY: help install run test deploy logs logs-tail status describe clean
+.PHONY: help install run test deploy logs logs-tail status describe clean deploy-with-bot-monitoring show-new-endpoints test-bot-status test-bot-positions test-bot-logs
 
 # Default target
 help:
@@ -28,8 +28,15 @@ help:
 	@echo "  make test         Test function locally"
 	@echo ""
 	@echo "Deployment:"
-	@echo "  make deploy       Deploy function to Google Cloud"
+	@echo "  make deploy       Deploy/Update Capital.com function"
 	@echo "  make deploy-fast  Deploy without confirmation prompt"
+	@echo "  make deploy-with-bot-monitoring  Update function with bot monitoring endpoints"
+	@echo ""
+	@echo "Bot Monitoring - Testing (after deploy-with-bot-monitoring):"
+	@echo "  make test-bot-status      Test /bot/status endpoint"
+	@echo "  make test-bot-positions   Test /bot/positions endpoint"
+	@echo "  make test-bot-logs        Test /logs/dates endpoint"
+	@echo "  make show-new-endpoints   List all available endpoints"
 	@echo ""
 	@echo "Monitoring:"
 	@echo "  make logs         View recent function logs (50 entries)"
@@ -129,6 +136,67 @@ urls:
 		--region us-central1 \
 		--gen2 \
 		--format="value(serviceConfig.url)"
+
+# Bot monitoring endpoints (adds to existing capitalComService function)
+# Note: These endpoints are already added to functions/main.py
+# Just redeploy the existing function to activate them
+deploy-with-bot-monitoring:
+	@echo "🚀 Updating capitalComService with Bot Monitoring endpoints..."
+	@echo ""
+	@echo "📦 Function: $(FUNCTION_NAME) (existing)"
+	@echo "📍 Region: $(REGION)"
+	@echo "🆕 New endpoints: /bot/status, /bot/positions, /bot/signals, /logs/get, /logs/dates"
+	@echo "♻️  Existing endpoints: /get_positions, /create_position, /markets, /signals (preserved)"
+	@echo ""
+	@echo "⚠️  This will update your existing function that the frontend is using."
+	@echo ""
+	./scripts/deploy.sh --confirm-overwrite
+	@echo ""
+	@echo "✅ Function updated with bot monitoring endpoints!"
+	@echo ""
+	@$(MAKE) show-new-endpoints
+
+show-new-endpoints:
+	@echo "🆕 New Bot Monitoring Endpoints Available:"
+	@echo ""
+	@URL=$$(gcloud functions describe $(FUNCTION_NAME) --region $(REGION) --gen2 --format="value(serviceConfig.uri)" 2>/dev/null); \
+	echo "Bot Status:     $$URL/bot/status"; \
+	echo "Bot Positions:  $$URL/bot/positions?status=open"; \
+	echo "Bot Signals:    $$URL/bot/signals?epic=GOLD&limit=20"; \
+	echo "Bot Logs List:  $$URL/logs/dates"; \
+	echo "Bot Logs Get:   $$URL/logs/get?date=2026-03-24"; \
+	echo ""; \
+	echo "📊 Existing Endpoints (unchanged):"; \
+	echo "Positions:      $$URL/get_positions"; \
+	echo "Signals:        $$URL/signals?epic=GOLD"; \
+	echo "Markets:        $$URL/markets"
+
+test-bot-status:
+	@echo "🔍 Testing bot status endpoint..."
+	@URL=$$(gcloud functions describe $(FUNCTION_NAME) --region $(REGION) --gen2 --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -n "$$URL" ]; then \
+		curl -s "$$URL/bot/status" | jq . || curl "$$URL/bot/status"; \
+	else \
+		echo "❌ Function not deployed"; \
+	fi
+
+test-bot-positions:
+	@echo "🔍 Testing bot positions endpoint..."
+	@URL=$$(gcloud functions describe $(FUNCTION_NAME) --region $(REGION) --gen2 --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -n "$$URL" ]; then \
+		curl -s "$$URL/bot/positions?status=open" | jq . || curl "$$URL/bot/positions?status=open"; \
+	else \
+		echo "❌ Function not deployed"; \
+	fi
+
+test-bot-logs:
+	@echo "🔍 Testing bot logs endpoint..."
+	@URL=$$(gcloud functions describe $(FUNCTION_NAME) --region $(REGION) --gen2 --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -n "$$URL" ]; then \
+		curl -s "$$URL/logs/dates" | jq . || curl "$$URL/logs/dates"; \
+	else \
+		echo "❌ Function not deployed"; \
+	fi
 
 # Project configuration
 PROJECT_ID = double-venture-442318-k8

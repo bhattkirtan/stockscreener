@@ -105,7 +105,7 @@ gcloud functions deploy ${FUNCTION_NAME} \
     --concurrency ${CONCURRENCY} \
     --service-account ${SERVICE_ACCOUNT} \
     --set-secrets "apicredentials=${SECRET_NAME}:latest" \
-    --set-env-vars "CAPITAL_ENV=${CAPITAL_ENV},GCP_PROJECT_ID=${PROJECT_ID},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+    --set-env-vars "CAPITAL_ENV=${CAPITAL_ENV},GCP_PROJECT_ID=${PROJECT_ID},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_LOGS_BUCKET=${PROJECT_ID}-trading-logs" \
     --allow-unauthenticated
 
 echo ""
@@ -113,6 +113,13 @@ echo "✅ Deployment complete!"
 echo ""
 echo "📡 Function URLs:"
 gcloud functions describe ${FUNCTION_NAME} --region ${REGION} --gen2 --format='value(serviceConfig.uri)'
+echo ""
+echo "🆕 New Bot Monitoring Endpoints:"
+echo "   /bot/status - Bot health & statistics"
+echo "   /bot/positions - Active positions with P&L"
+echo "   /bot/signals - Trading signals archive"
+echo "   /logs/get - Bot logs from GCS"
+echo "   /logs/dates - Available log dates"
 echo ""
 echo "📊 View logs:"
 echo "   gcloud functions logs read ${FUNCTION_NAME} --region ${REGION} --gen2 --limit 50"
