@@ -257,6 +257,17 @@ def handle_get_live_logs(request: Request):
         limit = min(int(request.args.get('limit', 200)), 500)
         level_filter = request.args.get('level', 'all')
         
+        # If no run_id specified, get the latest run_id first
+        if not run_id:
+            # Query for most recent log to get latest run_id
+            latest_query = db.db.collection('bot_logs')\
+                .where('bot_id', '==', bot_id)\
+                .order_by('timestamp', direction=firestore.Query.DESCENDING)\
+                .limit(1)
+            latest_docs = list(latest_query.stream())
+            if latest_docs:
+                run_id = latest_docs[0].to_dict().get('run_id')
+        
         query = db.db.collection('bot_logs')
         query = query.where('bot_id', '==', bot_id)
         
@@ -266,8 +277,8 @@ def handle_get_live_logs(request: Request):
         if level_filter != 'all':
             query = query.where('level', '==', level_filter.upper())
         
-        # Order by sequence number (chronological within a run)
-        query = query.order_by('sequence', direction=firestore.Query.DESCENDING).limit(limit)
+        # Order by timestamp for accurate chronological order across runs
+        query = query.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit)
         
         docs = query.stream()
         logs = []
@@ -276,7 +287,7 @@ def handle_get_live_logs(request: Request):
             log_data = doc.to_dict()
             log_data['id'] = doc.id
             
-            # Convert timestamp to ISO string
+            # Convert timestamp to ISO string if it's a Firestore timestamp
             if 'timestamp' in log_data and hasattr(log_data['timestamp'], 'isoformat'):
                 log_data['timestamp'] = log_data['timestamp'].isoformat()
             

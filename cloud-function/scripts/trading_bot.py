@@ -532,6 +532,9 @@ class TradingBot:
                     }
                     try:
                         self.signal_publisher.publish_signal(signal_data)
+                        # Increment signal counter
+                        if self.status_publisher:
+                            self.status_publisher.increment_signal()
                     except Exception as e:
                         logger.warning(f"⚠️ Signal publishing failed: {e}")
                 
@@ -583,6 +586,9 @@ class TradingBot:
                     }
                     try:
                         self.signal_publisher.publish_signal(signal_data)
+                        # Increment signal counter
+                        if self.status_publisher:
+                            self.status_publisher.increment_signal()
                     except Exception as e:
                         logger.warning(f"⚠️ Signal publishing failed: {e}")
                 
@@ -626,6 +632,10 @@ class TradingBot:
             if deal_reference:
                 logger.info(f"✅ Order placed successfully: {deal_reference}")
                 
+                # Increment order counter
+                if self.status_publisher:
+                    self.status_publisher.increment_order()
+                
                 # Track position
                 self.current_position = {
                     'deal_reference': deal_reference,
@@ -662,14 +672,28 @@ class TradingBot:
             return
 
         deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
+        entry_price = self.current_position.get('entry_price', 0)
+        direction = self.current_position.get('direction', 'BUY')
+        
         logger.info(f"🔚 Closing position: {deal_id}")
         try:
-            self.rest_client.close_position(deal_id)
-            logger.info(f"✅ Position closed: {deal_id}")
+            # Get current price before closing (for P&L calculation)
+            close_price = self.last_mid_price if hasattr(self, 'last_mid_price') else entry_price
             
-            # Update position status in Firestore
+            self.rest_client.close_position(deal_id)
+            logger.info(f"✅ Position closed: {deal_id} at {close_price}")
+            
+            # Increment positions closed counter
+            if self.status_publisher:
+                self.status_publisher.increment_position_closed()
+            
+            # Update position status in Firestore with close price
             if self.position_publisher:
-                self.position_publisher.close_position(deal_id)
+                self.position_publisher.close_position(
+                    deal_id=deal_id,
+                    close_price=close_price,
+                    close_reason='SIGNAL'
+                )
                 
         except Exception as e:
             logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
@@ -717,6 +741,9 @@ class TradingBot:
         current_price = quote.get('mid')
         if current_price is None:
             return
+        
+        # Store last price for close_position() to use
+        self.last_mid_price = current_price
         
         # Update P&L in Firestore (if publisher enabled)
         if self.position_publisher:

@@ -216,7 +216,7 @@ class PositionPublisher:
         close_reason: Optional[str] = None
     ) -> bool:
         """
-        Mark position as closed
+        Close position and remove from active positions
         
         Args:
             deal_id: Position ID
@@ -233,37 +233,45 @@ class PositionPublisher:
         try:
             doc_ref = self.firestore_client.collection(self.collection).document(deal_id)
             
+            # Get existing position data
+            doc = doc_ref.get()
+            if not doc.exists:
+                logger.warning(f"⚠️ Position {deal_id} not found in active_positions")
+                return False
+            
+            position_data = doc.to_dict()
+            
             # Calculate realized P&L if not provided
             if realized_pnl is None:
-                doc = doc_ref.get()
-                if doc.exists:
-                    data = doc.to_dict()
-                    entry_price = data.get('entry_price')
-                    size = data.get('size')
-                    direction = data.get('direction')
-                    
-                    if entry_price and size and direction:
-                        if direction == 'BUY':
-                            realized_pnl = (close_price - entry_price) * size
-                        else:  # SELL
-                            realized_pnl = (entry_price - close_price) * size
+                entry_price = position_data.get('entry_price')
+                size = position_data.get('size')
+                direction = position_data.get('direction')
+                
+                if entry_price and size and direction:
+                    if direction == 'BUY':
+                        realized_pnl = (close_price - entry_price) * size
+                    else:  # SELL
+                        realized_pnl = (entry_price - close_price) * size
             
-            # Update position to CLOSED
-            close_doc = {
-                'status': PositionStatus.CLOSED.value,
-                'close_price': close_price,
-                'closed_at': datetime.now().isoformat(),
-                'last_updated': datetime.now().isoformat()
-            }
+            # Save to position history (optional - for record keeping)
+            try:
+                history_doc = position_data.copy()
+                history_doc.update({
+                    'status': PositionStatus.CLOSED.value,
+                    'close_price': close_price,
+                    'closed_at': datetime.now().isoformat(),
+                    'realized_pnl': round(realized_pnl, 2) if realized_pnl is not None else None,
+                    'close_reason': close_reason
+                })
+                self.firestore_client.collection('position_history').document(deal_id).set(history_doc)
+                logger.debug(f"📝 Position saved to history: {deal_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to save position history: {e}")
             
-            if realized_pnl is not None:
-                close_doc['realized_pnl'] = round(realized_pnl, 2)
-            if close_reason:
-                close_doc['close_reason'] = close_reason
+            # DELETE from active_positions (this is the key fix!)
+            doc_ref.delete()
             
-            doc_ref.set(close_doc, merge=True)
-            
-            logger.info(f"✅ Position closed: {deal_id} (price: {close_price}, pnl: {realized_pnl})")
+            logger.info(f"✅ Position closed and removed: {deal_id} (price: {close_price}, pnl: {realized_pnl})")
             return True
             
         except Exception as e:
@@ -320,3 +328,35 @@ class PositionPublisher:
         except Exception as e:
             logger.error(f"❌ Position delete failed: {e}")
             return False
+    
+    def cleanup_closed_positions(self) -> int:
+        """
+        Remove all closed positions from active_positions collection
+        
+        Returns:
+            Number of positions removed
+        """
+        if not self.firestore_client:
+            return 0
+        
+        try:
+            # Query for CLOSED positions
+            query = self.firestore_client.collection(self.collection).where('status', '==', PositionStatus.CLOSED.value)
+            docs = query.stream()
+            
+            count = 0
+            for doc in docs:
+                doc.reference.delete()
+                count += 1
+                logger.info(f"🗑️ Removed closed position: {doc.id}")
+            
+            if count > 0:
+                logger.info(f"✅ Cleaned up {count} closed position(s)")
+            else:
+                logger.info("✅ No closed positions to clean up")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"❌ Cleanup failed: {e}")
+            return 0

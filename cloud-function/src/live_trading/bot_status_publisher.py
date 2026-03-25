@@ -232,6 +232,18 @@ class BotStatusPublisher:
             logger.warning(f"⚠️ Unknown statistic: {stat_name}")
             return False
     
+    def increment_signal(self) -> bool:
+        """Increment signals_generated counter"""
+        return self.increment_stat('signals_generated')
+    
+    def increment_order(self) -> bool:
+        """Increment orders_placed counter"""
+        return self.increment_stat('orders_placed')
+    
+    def increment_position_closed(self) -> bool:
+        """Increment positions_closed counter"""
+        return self.increment_stat('positions_closed')
+    
     def get_current_status(self) -> Optional[Dict]:
         """
         Get current bot status from Firestore

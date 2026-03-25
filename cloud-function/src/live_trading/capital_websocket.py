@@ -205,7 +205,7 @@ class CapitalWebSocketClient:
                 }
                 
                 self.latest_candles[epic] = candle_data
-                logger.debug(
+                logger.info(
                     f"🕯️ {epic} {candle_data['resolution']} [{candle_data['price_type']}]: "
                     f"O={candle_data['open']} H={candle_data['high']} "
                     f"L={candle_data['low']} C={candle_data['close']}"
@@ -214,7 +214,7 @@ class CapitalWebSocketClient:
                 # Capital.com sends both BID and ASK/OFR candles — only process the offer
                 # (ASK/OFR = the price you pay to BUY, consistent with entry/exit levels)
                 # Use allowlist rather than denylist: Capital.com may use 'OFR' not 'ASK'
-                price_type = candle_data.get('price_type', '')
+                price_type = candle_data.get('price_type', '').upper()  # Case-insensitive check
                 if price_type not in ('ASK', 'OFR'):
                     logger.debug(f"⏭️ Skipping {price_type} candle for {epic}")
                     return

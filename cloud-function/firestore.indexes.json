@@ -37,7 +37,7 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "sequence",
+          "fieldPath": "timestamp",
           "order": "DESCENDING"
         }
       ]

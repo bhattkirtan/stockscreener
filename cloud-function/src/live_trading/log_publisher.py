@@ -110,12 +110,12 @@ class LogPublisher:
             log_entry = {
                 "bot_id": self.bot_id,
                 "run_id": self.run_id,
-                "timestamp": timestamp,
+                "timestamp": timestamp.isoformat(),  # Convert to ISO string for Firestore
                 "sequence": self.sequence_number,
                 "level": level,
                 "logger": logger_name,
                 "message": message,
-                "ttl": self.ttl_timestamp  # For Firestore TTL policy
+                "ttl": self.ttl_timestamp.isoformat()  # Convert to ISO string for Firestore
             }
             
             self.log_buffer.append(log_entry)

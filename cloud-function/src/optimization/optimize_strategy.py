@@ -101,8 +101,8 @@ class StrategyOptimizer:
             'tp_sl_strategy': ['fixed', 'atr'],
             'sl_pips': [10, 15, 20],
             'tp_pips': [20, 30, 40],
-            'atr_sl_multiplier': [1.5, 2.0],
-            'atr_tp_multiplier': [3.0, 4.0],
+            'atr_sl_multiplier': [0.3, 0.9,1.5, 2.0],
+            'atr_tp_multiplier': [1.0, 2.0, 3.0, 4.0],
 
             # Zone-hybrid knobs (only applied when strategy_type='zone_hybrid')
             'zone_block_distance': [0.5, 1.0, 1.5],
@@ -191,8 +191,8 @@ class StrategyOptimizer:
             'tp_sl_strategy': ['fixed', 'atr'],
             'sl_pips': [8, 10, 15],
             'tp_pips': [10, 15, 20, 30],
-            'atr_sl_multiplier': [1.5, 2.0],
-            'atr_tp_multiplier': [3.0, 4.0],
+            'atr_sl_multiplier': [0.3, 0.9, 1.5, 2.0],
+            'atr_tp_multiplier': [1.0, 2.0, 3.0, 4.0],
             'pip_value': [1.0],  # Fixed for medium mode
         }
     
@@ -309,8 +309,8 @@ class StrategyOptimizer:
             'tp_sl_strategy':    ['fixed', 'atr'],
             'sl_pips':           [15, 20],
             'tp_pips':           [30, 40],
-            'atr_sl_multiplier': [1.5, 2.0],
-            'atr_tp_multiplier': [3.0, 4.0],
+            'atr_sl_multiplier': [0.3, 0.9, 1.5, 2.0],
+            'atr_tp_multiplier': [1.0, 2.0, 3.0, 4.0],
 
             # Zone knobs — exhaustive sweep
             'zone_block_distance': [0.5, 1.0, 1.5, 2.0],

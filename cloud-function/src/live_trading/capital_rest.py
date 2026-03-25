@@ -77,8 +77,8 @@ class CapitalRestClient:
             'X-SECURITY-TOKEN': self.security_token
         }
     
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        """Make authenticated request to Capital.com API"""
+    def _request(self, method: str, path: str, retry_on_401: bool = True, **kwargs) -> requests.Response:
+        """Make authenticated request to Capital.com API with auto-refresh on 401"""
         tokens = self.get_tokens()
         headers = kwargs.pop('headers', {})
         headers.update({
@@ -95,6 +95,15 @@ class CapitalRestClient:
             if response.status_code == 429:
                 logger.error(f"❌ Rate limit hit on {path}")
                 raise Exception(f"Rate limit exceeded on {path}")
+            
+            # Handle 401 Unauthorized - session expired, refresh and retry once
+            if response.status_code == 401 and retry_on_401:
+                logger.warning(f"⚠️ 401 Unauthorized on {path} - refreshing session...")
+                # Clear tokens to force re-authentication
+                self.cst = None
+                self.security_token = None
+                # Retry request with new session (prevent infinite loop)
+                return self._request(method, path, retry_on_401=False, headers=headers, **kwargs)
             
             response.raise_for_status()
             return response

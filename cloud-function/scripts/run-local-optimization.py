@@ -200,6 +200,8 @@ def main():
                         help='Override pip_value values (comma-separated). e.g. "1.0" for ETH')
     parser.add_argument('--fixed-only', action='store_true',
                         help='Test fixed TP/SL only (skip ATR combos) — simpler and faster')
+    parser.add_argument('--atr-only', action='store_true',
+                        help='Test ATR-based TP/SL only (skip fixed combos)')
     parser.add_argument('--st-mult', default=None,
                         help='Supertrend multipliers, comma-separated. e.g. "1.0,1.5,2.0"')
     parser.add_argument('--sma-fast', default=None,
@@ -314,6 +316,8 @@ def main():
             grid['pip_value'] = [float(v) for v in args.pip_value.split(',')]
         if args.fixed_only:
             grid['tp_sl_strategy'] = ['fixed']
+        if args.atr_only:
+            grid['tp_sl_strategy'] = ['atr']
         if args.position_size is not None:
             grid['position_size'] = [args.position_size]
         if args.spread_usd is not None:
@@ -327,7 +331,7 @@ def main():
         return grid
 
     _has_overrides = any([
-        args.sl_pips, args.tp_pips, args.pip_value, args.fixed_only,
+        args.sl_pips, args.tp_pips, args.pip_value, args.fixed_only, args.atr_only,
         args.position_size is not None, args.spread_usd is not None,
         args.st_mult, args.sma_fast, args.sma_slow,
     ])
@@ -352,6 +356,7 @@ def main():
         if args.tp_pips:                    overrides.append(f'tp_pips={args.tp_pips}')
         if args.pip_value:                  overrides.append(f'pip_value={args.pip_value}')
         if args.fixed_only:                overrides.append('fixed TP/SL only')
+        if args.atr_only:                  overrides.append('ATR TP/SL only')
         if args.position_size is not None: overrides.append(f'position_size={args.position_size}')
         if args.spread_usd is not None:    overrides.append(f'spread_usd=${args.spread_usd}')
         print(f"   🔧 Grid overrides: {', '.join(overrides)}\n")

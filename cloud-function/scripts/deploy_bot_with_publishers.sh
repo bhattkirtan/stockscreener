@@ -10,12 +10,30 @@ BOT_DIR="/opt/trading-bot"
 echo "🚀 Deploying Trading Bot with Publishers"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Upload publisher modules
-echo "📦 Uploading publisher modules..."
+# Upload live trading modules
+echo "📦 Uploading live trading modules..."
 scp -i $SSH_KEY \
+    src/live_trading/config.py \
+    src/live_trading/capital_websocket.py \
+    src/live_trading/capital_rest.py \
+    src/live_trading/signal_publisher.py \
     src/live_trading/bot_status_publisher.py \
     src/live_trading/position_publisher.py \
+    src/live_trading/log_publisher.py \
     root@$SERVER_IP:$BOT_DIR/src/live_trading/
+
+# Upload core modules
+echo "📦 Uploading core modules..."
+scp -i $SSH_KEY \
+    src/core/strategy.py \
+    src/core/event_blocker.py \
+    root@$SERVER_IP:$BOT_DIR/src/core/
+
+# Upload data modules
+echo "📦 Uploading data modules..."
+scp -i $SSH_KEY \
+    src/data/manual_calendar_adapter.py \
+    root@$SERVER_IP:$BOT_DIR/src/data/
 
 # Upload updated bot script
 echo "📦 Uploading trading bot..."
