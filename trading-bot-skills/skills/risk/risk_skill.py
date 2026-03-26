@@ -69,6 +69,11 @@ class RiskSkill(Skill):
         if not signal or signal not in ['BUY', 'SELL']:
             return
         
+        # Extract entry_price from signal (fallback to indicators if missing)
+        entry_price = event.payload.get('entry_price')
+        if not entry_price:
+            entry_price = event.payload.get('indicators', {}).get('current_price', 0)
+        
         # 1. Circuit breaker check
         if self.circuit_breaker:
             from core.circuit_breakers import CircuitBreakerStatus
@@ -103,18 +108,19 @@ class RiskSkill(Skill):
         # 6. Calculate position size
         position_size = self._calculate_position_size()
         
-        # 7. Calculate SL/TP levels
-        current_price = event.payload.get('indicators', {}).get('current_price', 0)
+        # 7. Calculate SL/TP levels (use entry_price if no current_price)
+        current_price = entry_price or event.payload.get('indicators', {}).get('current_price', 0)
         sl_pips = self.config.get('sl_pips', 20)
         tp_pips = self.config.get('tp_pips', 40)
         
         stop_loss, take_profit = self._calculate_sl_tp(current_price, signal, sl_pips, tp_pips)
         
         # ALL CHECKS PASSED - Publish RISK_APPROVED
-        await self._publish_risk_approved(event, signal, position_size, stop_loss, take_profit)
+        await self._publish_risk_approved(event, signal, position_size, entry_price, stop_loss, take_profit)
     
     async def _publish_risk_approved(self, event: 'Event', signal: str, 
-                                     position_size: float, stop_loss: float, take_profit: float):
+                                     position_size: float, entry_price: float,
+                                     stop_loss: float, take_profit: float):
         """Publish RISK_APPROVED event"""
         if not self.event_bus:
             return
@@ -124,13 +130,14 @@ class RiskSkill(Skill):
             create_risk_approved_event(
                 signal=signal,
                 position_size=position_size,
+                entry_price=entry_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 instrument=event.instrument,
                 correlation_id=event.correlation_id
             )
         )
-        print(f"✅ Risk approved: {signal} @ size={position_size} SL={stop_loss} TP={take_profit}")
+        print(f"✅ Risk approved: {signal} @ entry={entry_price} size={position_size} SL={stop_loss} TP={take_profit}")
     
     async def _publish_risk_rejected(self, event: 'Event', reason: str):
         """Publish RISK_REJECTED event"""

@@ -78,8 +78,14 @@ class ExecutionSkill(Skill):
         # Extract order parameters from event
         signal = event.payload.get('signal')
         position_size = event.payload.get('position_size')
+        entry_price = event.payload.get('entry_price')
         stop_loss = event.payload.get('stop_loss')
         take_profit = event.payload.get('take_profit')
+        
+        # Validate signal
+        if not signal or signal not in ['BUY', 'SELL']:
+            logger.warning(f"⚠️ Invalid signal: {signal}")
+            return
         
         # Create order request with idempotency
         if self.idempotency:
@@ -109,10 +115,10 @@ class ExecutionSkill(Skill):
             if self.retry_policy:
                 result = await self.retry_policy.execute_with_retry(
                     self._place_order_api,
-                    signal, position_size, stop_loss, take_profit
+                    signal, position_size, entry_price, stop_loss, take_profit
                 )
             else:
-                result = await self._place_order_api(signal, position_size, stop_loss, take_profit)
+                result = await self._place_order_api(signal, position_size, entry_price, stop_loss, take_profit)
             
             # Register fill
             if self.idempotency and result:
@@ -177,18 +183,23 @@ class ExecutionSkill(Skill):
         entry_price: float,
         stop_loss: float,
         take_profit: float
-    ) -> Optional[str]:
+    ) -> Optional[Dict]:
         """
         Place market order via Capital.com API (wrapped by retry policy)
         
         Returns:
-            deal_id if successful, None otherwise
+            dict with deal_id and entry_price if successful, None otherwise
         """
         if self.mock_mode or not self.rest_client:
-            # Mock mode - return fake deal_id
+            # Mock mode - return fake order result
             deal_id = f"DEAL{int(datetime.now().timestamp())}"
             logger.info(f"📤 [MOCK] Order placed: {direction} {size} @ {entry_price:.2f}")
-            return deal_id
+            return {
+                'deal_id': deal_id,
+                'entry_price': entry_price,
+                'direction': direction,
+                'size': size
+            }
         
         try:
             # Place real order via Capital.com API
@@ -209,7 +220,12 @@ class ExecutionSkill(Skill):
             # For now, use dealReference as the identifier
             logger.info(f"✅ Order placed: {direction} {size} {self.epic} (ref: {deal_reference})")
             
-            return deal_reference
+            return {
+                'deal_id': deal_reference,
+                'entry_price': entry_price,  # Would need to fetch actual fill price
+                'direction': direction,
+                'size': size
+            }
         
         except Exception as e:
             logger.error(f"❌ Failed to place order: {e}")

@@ -303,8 +303,8 @@ def create_signal_generated_event(signal: str, entry_price: float, sl: float, tp
 
 def create_risk_approved_event(signal: str, position_size: float, 
                                 correlation_id: str, instrument: str = None,
-                                stop_loss: float = None, take_profit: float = None,
-                                source: str = "risk") -> Event:
+                                entry_price: float = None, stop_loss: float = None, 
+                                take_profit: float = None, source: str = "risk") -> Event:
     """Create RISK_APPROVED event"""
     return Event(
         event_type=EventType.RISK_APPROVED,
@@ -314,6 +314,7 @@ def create_risk_approved_event(signal: str, position_size: float,
         payload={
             'signal': signal,
             'position_size': position_size,
+            'entry_price': entry_price,
             'stop_loss': stop_loss,
             'take_profit': take_profit
         }
@@ -335,7 +336,7 @@ def create_risk_rejected_event(reason: str, correlation_id: str,
 
 
 def create_order_filled_event(deal_id: str, instrument: str, direction: str,
-                               entry_price: float, size: float,
+                               entry_price: float, size: float, stop_loss: float, take_profit: float,
                                correlation_id: str, source: str = "execution") -> Event:
     """Create ORDER_FILLED event"""
     return Event(
@@ -347,7 +348,23 @@ def create_order_filled_event(deal_id: str, instrument: str, direction: str,
             'deal_id': deal_id,
             'direction': direction,
             'entry_price': entry_price,
-            'size': size
+            'size': size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit
+        }
+    )
+
+
+def create_order_rejected_event(instrument: str, reason: str,
+                                correlation_id: str, source: str = "execution") -> Event:
+    """Create ORDER_REJECTED event"""
+    return Event(
+        event_type=EventType.ORDER_REJECTED,
+        instrument=instrument,
+        source=source,
+        correlation_id=correlation_id,
+        payload={
+            'reason': reason
         }
     )
 
