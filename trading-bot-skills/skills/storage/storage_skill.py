@@ -24,15 +24,26 @@ class StorageSkill(Skill):
     - Log signals
     - Update bot status
     - Store trade history
+    
+    Event Subscriptions:
+    - SIGNAL_GENERATED: Log signal
+    - ORDER_FILLED: Save position
+    - POSITION_CLOSED: Close position
     """
     
-    def __init__(self, config: Dict):
-        super().__init__(config)
+    def __init__(self, config: Dict, event_bus: Optional['EventBus'] = None):
+        super().__init__(config, event_bus)
         
         self.backend = config.get('backend', 'firestore')
         firestore_config = config.get('firestore', {})
-        self.project_id = firestore_config.get('project_id')
-        self.collections = firestore_config.get('collections', {})
+        self.project_id = firestore_config.get('project_id') or config.get('project_id')
+        self.collections = firestore_config.get('collections', {}) or config.get('collections', {})
+        
+        # Collection shortcuts
+        self.positions_collection = self.collections.get('positions', 'test_positions')
+        self.signals_collection = self.collections.get('signals', 'test_signals')
+        self.trades_collection = self.collections.get('trade_history', 'test_trades')
+        
         self.mock_mode = config.get('mock_mode', False)
         
         # Initialize Firestore client
@@ -54,6 +65,118 @@ class StorageSkill(Skill):
             logger.warning("⚠️ Storage Skill running in MOCK MODE")
         
         print(f"💾 Storage Skill initialized: {self.backend}, project={self.project_id}")
+    
+    async def on_signal_generated(self, event: 'Event') -> None:
+        """
+        Handle SIGNAL_GENERATED event - log signal to Firestore.
+        
+        Args:
+            event: Event with signal data
+        """
+        collection = self.signals_collection
+        
+        signal_doc = {
+            'signal': event.payload.get('signal'),
+            'timestamp': event.timestamp.isoformat(),
+            'entry_price': event.payload.get('entry_price'),
+            'stop_loss': event.payload.get('stop_loss'),
+            'take_profit': event.payload.get('take_profit'),
+            'instrument': event.instrument
+        }
+        
+        logger.info(f"💾 Logging signal: {signal_doc['signal']}")
+        
+        # Log to Firestore
+        success = self.firestore_client.log_signal(
+            collection=collection,
+            signal_data=signal_doc
+        )
+        
+        if not success:
+            logger.error(f"❌ Failed to log signal")
+    
+    async def on_order_filled(self, event: 'Event') -> None:
+        """
+        Handle ORDER_FILLED event - save position to Firestore.
+        
+        Args:
+            event: Event with order filled details
+        """
+        deal_id = event.payload.get('deal_id')
+        if not deal_id:
+            logger.warning("⚠️ No deal_id in ORDER_FILLED event")
+            return
+        
+        collection = self.positions_collection
+        
+        document = {
+            'deal_id': deal_id,
+            'direction': event.payload.get('direction'),
+            'size': event.payload.get('size'),
+            'entry_price': event.payload.get('entry_price'),
+            'stop_loss': event.payload.get('stop_loss'),
+            'take_profit': event.payload.get('take_profit'),
+            'entry_time': event.timestamp.isoformat(),
+            'instrument': event.instrument,
+            'status': 'OPEN'
+        }
+        
+        logger.info(f"💾 Saving position to Firestore: {collection}/{deal_id}")
+        
+        # Save to Firestore
+        success = self.firestore_client.save_position(
+            collection=collection,
+            deal_id=deal_id,
+            position_data=document
+        )
+        
+        if success:
+            logger.info(f"✅ Position saved: {deal_id}")
+        else:
+            logger.error(f"❌ Failed to save position: {deal_id}")
+    
+    async def on_position_closed(self, event: 'Event') -> None:
+        """
+        Handle POSITION_CLOSED event - update position in Firestore.
+        
+        Args:
+            event: Event with position close details
+        """
+        deal_id = event.payload.get('deal_id')
+        if not deal_id:
+            logger.warning("⚠️ No deal_id in POSITION_CLOSED event")
+            return
+        
+        collection = self.positions_collection
+        close_price = event.payload.get('close_price')
+        close_reason = event.payload.get('close_reason')
+        
+        close_data = {
+            'close_price': close_price,
+            'close_reason': close_reason,
+            'close_time': event.timestamp.isoformat(),
+            'realized_pnl': event.payload.get('realized_pnl', 0),
+            'status': 'CLOSED'
+        }
+        
+        logger.info(f"💾 Closing position in Firestore: {collection}/{deal_id} ({close_reason})")
+        
+        try:
+            # CRITICAL: Always close in Firestore (even if API fails)
+            success = self.firestore_client.close_position(
+                collection=collection,
+                deal_id=deal_id,
+                close_data=close_data
+            )
+            
+            if success:
+                logger.info(f"✅ Firestore position closed: {deal_id}")
+            else:
+                logger.error(f"❌ Failed to close position in Firestore: {deal_id}")
+        
+        except Exception as e:
+            logger.error(f"⚠️ Firestore close exception: {e}")
+            # Don't rethrow - graceful degradation
     
     async def execute(self, context: Context) -> Context:
         """
