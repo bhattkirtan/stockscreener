@@ -11,10 +11,10 @@ import os
 # Add project directories to path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from skills.base_skill import Skill, Context
+from skills.base_skill import Skill
 from core.event_bus import EventBus, Event, EventType, create_candle_closed_event, create_bot_error_event
 from core.position_state import PositionStateManager, Position, PositionStatus
-from core.idempotency import IdempotencyManager, OrderRequest, RetryPolicy
+from core.idempotency import IdempotencyManager, RetryPolicy
 from core.circuit_breakers import CircuitBreaker, TradingSessionFilter, SpreadSlippageFilter, NewsEventKillSwitch
 from core.operational_monitoring import OperationalMonitor
 
@@ -262,42 +262,47 @@ class ProductionOrchestrator:
         """
         Wire event-driven communication between skills.
         
-        This decouples skills - they communicate via events, not direct calls.
+        WIRE ONLY - No trading logic here.
+        Skills handle events directly, orchestrator just connects them.
         """
-        # Market Data -> Analysis
+        # Market Data -> Analysis (skill handles it)
         if 'analysis' in self.skills:
             self.event_bus.subscribe(
                 EventType.CANDLE_CLOSED,
-                self._on_candle_closed_for_analysis
+                self.skills['analysis'].on_candle_closed
             )
         
-        # Analysis -> Risk
+        # Analysis -> Risk (skill handles it)
         if 'risk' in self.skills:
             self.event_bus.subscribe(
                 EventType.SIGNAL_GENERATED,
-                self._on_signal_for_risk_check
+                self.skills['risk'].on_signal_generated
             )
         
-        # Risk -> Execution
+        # Risk -> Execution (skill handles it)
         if 'execution' in self.skills:
             self.event_bus.subscribe(
                 EventType.RISK_APPROVED,
-                self._on_risk_approved_for_execution
+                self.skills['execution'].on_risk_approved
             )
         
-        # Execution -> Storage & Monitoring
+        # Position state management (orchestrator owns position state)
         self.event_bus.subscribe(
             EventType.ORDER_FILLED,
-            self._on_order_filled
+            self._on_order_filled_update_state
         )
         
         self.event_bus.subscribe(
             EventType.POSITION_CLOSED,
-            self._on_position_closed
+            self._on_position_closed_update_state
         )
         
-        # Errors -> Alerting
+        # Errors -> Alerting (skill handles it)
         if 'alerting' in self.skills:
+            self.event_bus.subscribe(
+                EventType.BOT_ERROR,
+                self.skills['alerting'].on_error
+            )
             self.event_bus.subscribe(
                 EventType.BOT_ERROR,
                 self._on_error_for_alerting
@@ -311,109 +316,9 @@ class ProductionOrchestrator:
         
         print(f"✅ Wired event subscriptions: {len(self.event_bus.subscribers)} event types")
     
-    # ========== Event Handlers ==========
+    # ========== Event Handlers (STATE MANAGEMENT ONLY) ==========
     
-    async def _on_candle_closed_for_analysis(self, event: Event) -> None:
-        """Handle candle closed -> run analysis"""
-        analysis_skill = self.skills.get('analysis')
-        if not analysis_skill:
-            return
-        
-        # Create context from event
-        context = Context(
-            current_candle=event.payload,
-            timestamp=event.timestamp
-        )
-        
-        # Execute analysis
-        context = await analysis_skill.execute(context)
-        
-        # If signal generated, publish event
-        if context.signal:
-            self.stats['signals_generated'] += 1
-            
-            # Publish SIGNAL_GENERATED event (will trigger risk check)
-            # Implementation would go here using event builders
-    
-    async def _on_signal_for_risk_check(self, event: Event) -> None:
-        """Handle signal -> run risk checks"""
-        # Check circuit breaker first
-        current_capital = self.config.get('initial_capital', 10000)  # TODO: Get from account
-        status, reason = self.circuit_breaker.check_status(current_capital)
-        
-        if status != CircuitBreakerStatus.CLOSED:
-            print(f"🚫 Circuit breaker OPEN: {reason}")
-            # Publish RISK_REJECTED event
-            return
-        
-        # Check trading session
-        allowed, reason = self.session_filter.is_trading_allowed()
-        if not allowed:
-            print(f"🚫 Trading session blocked: {reason}")
-            # Publish RISK_REJECTED event
-            return
-        
-        # Check news kill switch
-        allowed, reason = self.news_killswitch.is_trading_allowed()
-        if not allowed:
-            print(f"🚫 News kill switch active: {reason}")
-            # Publish RISK_REJECTED event
-            return
-        
-        # Run risk skill validation
-        risk_skill = self.skills.get('risk')
-        if risk_skill:
-            # Execute risk checks
-            # If approved, publish RISK_APPROVED event
-            pass
-    
-    async def _on_risk_approved_for_execution(self, event: Event) -> None:
-        """Handle risk approved -> execute order with idempotency"""
-        execution_skill = self.skills.get('execution')
-        if not execution_skill:
-            return
-        
-        # Create order request with idempotency
-        order = OrderRequest.create(
-            instrument=event.instrument,
-            direction=event.payload['signal'],
-            size=event.payload['position_size'],
-            stop_loss=event.payload['stop_loss'],
-            take_profit=event.payload['take_profit'],
-            signal_timestamp=event.timestamp
-        )
-        
-        # Check for duplicate
-        if self.idempotency.is_duplicate(order.idempotency_key):
-            cached = self.idempotency.get_cached_result(order.idempotency_key)
-            print(f"⚠️ Duplicate order detected: {order.idempotency_key}")
-            print(f"   Returning cached result: {cached.deal_id}")
-            return
-        
-        # Register submission
-        self.idempotency.register_submission(order)
-        
-        # Execute with retry
-        try:
-            result = await self.retry_policy.execute_with_retry(
-                execution_skill.place_order,
-                order
-            )
-            
-            # Register fill
-            self.idempotency.register_fill(order.idempotency_key, result['deal_id'])
-            
-            # Publish ORDER_FILLED event
-            # Implementation here
-            
-        except Exception as e:
-            # Register rejection
-            self.idempotency.register_rejection(order.idempotency_key, str(e))
-            self.circuit_breaker.record_execution_failure()
-            
-            print(f"❌ Order execution failed: {e}")
-    
-    async def _on_order_filled(self, event: Event) -> None:
+    async def _on_order_filled_update_state(self, event: Event) -> None:
         """Handle order filled -> update position state and storage"""
         # Create position in state manager
         position = Position(
@@ -435,8 +340,8 @@ class ProductionOrchestrator:
         # Save to storage
         await self.position_manager.save_snapshot()
     
-    async def _on_position_closed(self, event: Event) -> None:
-        """Handle position closed -> update state and circuit breaker"""
+    async def _on_position_closed_update_state(self, event: Event) -> None:
+        """Handle position closed -> update state and circuit breaker (STATE ONLY)"""
         # Close in position manager
         position = self.position_manager.close_position(
             deal_id=event.payload['deal_id'],
