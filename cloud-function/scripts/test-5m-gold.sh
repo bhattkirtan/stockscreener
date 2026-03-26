@@ -6,7 +6,7 @@ cd /Users/kirtanbhatt/code/stockScreener/cloud-function && python3 scripts/run-l
   --st-mult 2.0 \
   --sma-fast 25 \
   --sma-slow 30 \
-  --sl-pips 20 \
+  --sl-pips 10 \
   --tp-pips 40 \
   --pip-value 1.0 \
   --fixed-only \

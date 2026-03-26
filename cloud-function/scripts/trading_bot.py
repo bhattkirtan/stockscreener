@@ -411,6 +411,22 @@ class TradingBot:
             logger.info(f"⏳ Building history: {len(self.m5_history)}/{self.min_history_bars} bars")
             return
         
+        # Log current indicator values
+        try:
+            df = self.calculate_indicators()
+            latest = df.iloc[-1]
+            
+            if not pd.isna(latest['supertrend']) and not pd.isna(latest['sma_fast']):
+                st_dir = latest['direction']
+                close = latest['close']
+                ema = latest['ema']
+                sma_fast = latest['sma_fast']
+                sma_slow = latest['sma_slow']
+                
+                logger.info(f"📈 Indicators: ST={'🟢 UP' if st_dir == 1 else '🔴 DOWN'} | Close={close:.2f} | EMA={ema:.2f} | SMA_Fast={sma_fast:.2f} | SMA_Slow={sma_slow:.2f}")
+        except Exception as e:
+            logger.debug(f"Could not log indicators: {e}")
+        
         # Generate signal
         await self.generate_signal()
     
@@ -496,6 +512,9 @@ class TradingBot:
                 
                 return
             
+            # Debug: Log indicator values to diagnose why signals aren't generated
+            logger.info(f"📊 Indicators: ST_dir={supertrend_dir} close={close:.2f} ema={ema:.2f} sma_fast={sma_fast:.2f} sma_slow={sma_slow:.2f} last_signal={self.last_signal_state}")
+            
             # Determine current signal state
             current_signal = None
             if supertrend_dir == 1 and close > ema and sma_fast > sma_slow:
@@ -503,9 +522,16 @@ class TradingBot:
             elif supertrend_dir == -1 and close < ema and sma_fast < sma_slow:
                 current_signal = 'SELL'
             
+            # Log current signal evaluation
+            if current_signal:
+                logger.info(f"🔍 Signal conditions met: {current_signal} (last_signal={self.last_signal_state})")
+            else:
+                logger.info(f"🔍 No signal conditions met (ST:{supertrend_dir}, C>E:{close>ema}, F>S:{sma_fast>sma_slow}, C<E:{close<ema}, F<S:{sma_fast<sma_slow})")
+            
             # Signal Edge Detection: Only trade NEW signals, not continuous ones
             if current_signal == self.last_signal_state:
                 # Signal was already active on previous candle - skip
+                logger.info(f"⏭️ Skipping duplicate signal: {current_signal} (already active)")
                 return
             
             # Cooldown Check: After SL/TP hit, wait before re-entering same direction
@@ -763,19 +789,20 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"⚠️ Unable to verify position exists: {e}")
         
-        # Only attempt to close on Capital.com if position exists there
-        if position_exists:
-            try:
-                self.rest_client.close_position(deal_id)
-                logger.info(f"✅ Position closed on Capital.com: {deal_id} at {close_price}")
-                
-                # Increment positions closed counter
-                if self.status_publisher:
-                    self.status_publisher.increment_position_closed()
-            except Exception as e:
-                logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
-        else:
-            logger.info(f"ℹ️ Position {deal_id} not found on Capital.com (already closed or expired) — updating Firestore only")
+        try:
+            # Only attempt to close on Capital.com if position exists there
+            if position_exists:
+                try:
+                    self.rest_client.close_position(deal_id)
+                    logger.info(f"✅ Position closed on Capital.com: {deal_id} at {close_price}")
+                    
+                    # Increment positions closed counter
+                    if self.status_publisher:
+                        self.status_publisher.increment_position_closed()
+                except Exception as e:
+                    logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
+            else:
+                logger.info(f"ℹ️ Position {deal_id} not found on Capital.com (already closed or expired) — updating Firestore only")
         finally:
             # ALWAYS update Firestore even if REST API call failed (e.g., already closed by SL/TP)
             if self.position_publisher and deal_id:
