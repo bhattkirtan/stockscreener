@@ -7,11 +7,11 @@ import pytest
 import sys
 import os
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from skills.monitoring.monitoring_skill import MonitoringSkill
-from skills.base_skill import Context
 
 
 class TestMonitoringSkill:
@@ -27,24 +27,16 @@ class TestMonitoringSkill:
         }
     
     @pytest.fixture
-    def skill(self, config):
-        """Monitoring skill instance"""
-        return MonitoringSkill(config)
+    def mock_event_bus(self):
+        """Mock event bus"""
+        bus = AsyncMock()
+        bus.publish = AsyncMock()
+        return bus
     
     @pytest.fixture
-    def context(self):
-        """Fresh trading context"""
-        ctx = Context()
-        ctx.deal_id = 'TEST_DEAL_123'
-        ctx.position = {
-            'deal_id': 'TEST_DEAL_123',
-            'direction': 'BUY',
-            'entry_price': 1950.00,
-            'stop_loss': 1940.00,
-            'take_profit': 1980.00,
-            'size': 0.5
-        }
-        return ctx
+    def skill(self, config, mock_event_bus):
+        """Monitoring skill instance"""
+        return MonitoringSkill(config, event_bus=mock_event_bus)
     
     def test_initialization(self, skill):
         """Test skill initializes correctly"""
@@ -52,42 +44,62 @@ class TestMonitoringSkill:
         assert skill.track_win_rate == True
         assert skill.track_drawdown == True
     
-    def test_update_position(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_update_position(self, skill):
         """Test updating position tracking"""
-        skill.update_position(context)
+        # Create a simple context-like object
+        class MockContext:
+            deal_id = 'TEST_DEAL_123'
+            position = {
+                'deal_id': 'TEST_DEAL_123',
+                'direction': 'BUY',
+                'entry_price': 1950.00,
+                'size': 0.5
+            }
+        
+        context = MockContext()
+        await skill.update_position(context)
         
         # Should track position without errors
         assert True
     
-    def test_record_trade(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_record_trade(self, skill):
         """Test recording completed trade"""
-        context.pnl = 30.00
-        context.pnl_percent = 1.54
-        context.close_reason = 'TP_HIT'
+        # Create a simple context-like object
+        class MockContext:
+            pnl = 30.00
+            pnl_percent = 1.54
+            close_reason = 'TP_HIT'
         
-        skill.record_trade(context)
+        context = MockContext()
+        await skill.record_trade(context)
         
         # Should record trade
         assert True
     
-    def test_get_metrics_empty(self, skill, context):
+    def test_get_metrics_empty(self, skill):
         """Test getting metrics with no trades"""
-        metrics = skill.get_metrics(context)
+        metrics = skill.get_metrics()
         
         assert isinstance(metrics, dict)
         assert metrics.get('total_trades', 0) == 0
     
-    def test_get_metrics_with_trades(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_get_metrics_with_trades(self, skill):
         """Test metrics after recording trades"""
+        # Create mock contexts
+        class MockContext:
+            def __init__(self, pnl):
+                self.pnl = pnl
+        
         # Record winning trade
-        context.pnl = 30.00
-        skill.record_trade(context)
+        await skill.record_trade(MockContext(30.00))
         
         # Record losing trade
-        context.pnl = -10.00
-        skill.record_trade(context)
+        await skill.record_trade(MockContext(-10.00))
         
-        metrics = skill.get_metrics(context)
+        metrics = skill.get_metrics()
         
         assert metrics['total_trades'] == 2
         assert metrics['wins'] == 1
@@ -95,47 +107,55 @@ class TestMonitoringSkill:
         assert metrics['win_rate'] == 0.5
         assert metrics['total_pnl'] == 20.00
     
-    def test_calculate_win_rate(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_calculate_win_rate(self, skill):
         """Test win rate calculation"""
         # Record multiple trades
+        class MockContext:
+            def __init__(self, pnl):
+                self.pnl = pnl
+        
         trades = [30, -10, 25, -5, 40, -15, 20]
         
         for pnl in trades:
-            context.pnl = pnl
-            skill.record_trade(context)
+            await skill.record_trade(MockContext(pnl))
         
-        metrics = skill.get_metrics(context)
+        metrics = skill.get_metrics()
         
         assert metrics['total_trades'] == 7
         assert metrics['wins'] == 4
         assert metrics['losses'] == 3
         assert metrics['win_rate'] == pytest.approx(4/7, rel=0.01)
     
-    def test_calculate_drawdown(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_calculate_drawdown(self, skill):
         """Test drawdown tracking"""
         # Record trades with drawdown
-        context.pnl = 100
-        skill.record_trade(context)
+        class MockContext:
+            def __init__(self, pnl):
+                self.pnl = pnl
         
-        context.pnl = -50
-        skill.record_trade(context)
+        await skill.record_trade(MockContext(100))
+        await skill.record_trade(MockContext(-50))
+        await skill.record_trade(MockContext(-30))
         
-        context.pnl = -30
-        skill.record_trade(context)
-        
-        metrics = skill.get_metrics(context)
+        metrics = skill.get_metrics()
         
         assert metrics['total_pnl'] == 20
         # Drawdown calculation depends on implementation
     
-    def test_daily_pnl_tracking(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_daily_pnl_tracking(self, skill):
         """Test daily P&L accumulation"""
         # Record multiple trades in a day
-        for pnl in [10, 20, -5, 15]:
-            context.pnl = pnl
-            skill.record_trade(context)
+        class MockContext:
+            def __init__(self, pnl):
+                self.pnl = pnl
         
-        metrics = skill.get_metrics(context)
+        for pnl in [10, 20, -5, 15]:
+            await skill.record_trade(MockContext(pnl))
+        
+        metrics = skill.get_metrics()
         
         assert metrics['total_pnl'] == 40
 
