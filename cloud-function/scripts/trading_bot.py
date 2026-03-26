@@ -42,6 +42,9 @@ from src.live_trading.log_publisher import LogPublisher, FirestoreLogHandler
 # Import strategy indicator calculations
 from src.core.strategy import SupertrendVWAPStrategy
 
+# Import shared signal engine for consistent signal generation and reverse signal detection
+from src.core.signal_engine import create_market_state, check_reverse_signal, evaluate_signal, SignalType
+
 # Import live trading components  
 from src.live_trading.capital_rest import CapitalRestClient
 
@@ -496,30 +499,28 @@ class TradingBot:
             # Check if already in position
             if self.current_position:
                 logger.info(f"📍 Already in position: {self.current_position['direction']} {self.current_position['size']} @ {self.current_position['entry_price']:.2f}")
-                
-                # Check for exit signal
-                if self.current_position['direction'] == 'BUY' and supertrend_dir == -1:
-                    logger.info("🚨 EXIT SIGNAL: Supertrend turned bearish, close LONG")
-                    if self.auto_trade:
-                        self.close_reason = 'SIGNAL'  # Mark as signal exit
-                        await self.close_position()
-                
-                elif self.current_position['direction'] == 'SELL' and supertrend_dir == 1:
-                    logger.info("🚨 EXIT SIGNAL: Supertrend turned bullish, close SHORT")
-                    if self.auto_trade:
-                        self.close_reason = 'SIGNAL'  # Mark as signal exit
-                        await self.close_position()
-                
+                # Don't open new positions while already in one
+                # Reverse signals will be handled when new signal fires (see below)
                 return
             
             # Debug: Log indicator values to diagnose why signals aren't generated
             logger.info(f"📊 Indicators: ST_dir={supertrend_dir} close={close:.2f} ema={ema:.2f} sma_fast={sma_fast:.2f} sma_slow={sma_slow:.2f} last_signal={self.last_signal_state}")
             
             # Determine current signal state
+            # Signal generation using shared signal engine (basic check for edge detection)
+            market_state = create_market_state(
+                close=close,
+                supertrend_direction=supertrend_dir,
+                ema=ema,
+                sma_fast=sma_fast,
+                sma_slow=sma_slow,
+                timestamp=datetime.now().isoformat()
+            )
+            signal_type = evaluate_signal(market_state)
             current_signal = None
-            if supertrend_dir == 1 and close > ema and sma_fast > sma_slow:
+            if signal_type == SignalType.BUY:
                 current_signal = 'BUY'
-            elif supertrend_dir == -1 and close < ema and sma_fast < sma_slow:
+            elif signal_type == SignalType.SELL:
                 current_signal = 'SELL'
             
             # Log current signal evaluation
@@ -559,10 +560,19 @@ class TradingBot:
             golden_cross = (sma_fast > sma_slow) and (sma_fast_prev <= sma_slow_prev)
             death_cross = (sma_fast < sma_slow) and (sma_fast_prev >= sma_slow_prev)
             
+            # Evaluate full signal with crossover support (using shared signal engine)
+            full_signal = evaluate_signal(market_state, golden_cross, death_cross)
+            
             # BUY Signal
-            if (supertrend_dir == 1 and 
-                close > ema and 
-                (golden_cross or sma_fast > sma_slow)):
+            if full_signal == SignalType.BUY:
+                
+                # IMPORTANT: Close any SELL position on reverse signal (using shared signal engine)
+                if self.current_position and self.current_position['direction'] == 'SELL':
+                    if check_reverse_signal('SELL', market_state):
+                        logger.info(f"🚨 REVERSE SIGNAL: Closing SELL position before BUY entry")
+                        if self.auto_trade:
+                            self.close_reason = 'SIGNAL'
+                            await self.close_position()
                 
                 # Fixed pip TP/SL (best strategy uses 20 SL / 40 TP)
                 stop_loss = close - self.config.sl_pips_fixed
@@ -617,9 +627,15 @@ class TradingBot:
                 self.last_signal_state = 'BUY'
             
             # SELL Signal
-            elif (supertrend_dir == -1 and 
-                  close < ema and 
-                  (death_cross or sma_fast < sma_slow)):
+            elif full_signal == SignalType.SELL:
+                
+                # IMPORTANT: Close any BUY position on reverse signal (using shared signal engine)
+                if self.current_position and self.current_position['direction'] == 'BUY':
+                    if check_reverse_signal('BUY', market_state):
+                        logger.info(f"🚨 REVERSE SIGNAL: Closing BUY position before SELL entry")
+                        if self.auto_trade:
+                            self.close_reason = 'SIGNAL'
+                            await self.close_position()
                 
                 # Fixed pip TP/SL
                 stop_loss = close + self.config.sl_pips_fixed

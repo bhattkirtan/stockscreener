@@ -302,15 +302,34 @@ def create_signal_generated_event(signal: str, entry_price: float, sl: float, tp
 
 
 def create_risk_approved_event(signal: str, position_size: float, 
-                                correlation_id: str, source: str = "risk") -> Event:
+                                correlation_id: str, instrument: str = None,
+                                stop_loss: float = None, take_profit: float = None,
+                                source: str = "risk") -> Event:
     """Create RISK_APPROVED event"""
     return Event(
         event_type=EventType.RISK_APPROVED,
+        instrument=instrument,
         source=source,
         correlation_id=correlation_id,
         payload={
             'signal': signal,
-            'position_size': position_size
+            'position_size': position_size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit
+        }
+    )
+
+
+def create_risk_rejected_event(reason: str, correlation_id: str,
+                               instrument: str = None, source: str = "risk") -> Event:
+    """Create RISK_REJECTED event"""
+    return Event(
+        event_type=EventType.RISK_REJECTED,
+        instrument=instrument,
+        source=source,
+        correlation_id=correlation_id,
+        payload={
+            'reason': reason
         }
     )
 

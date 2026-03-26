@@ -1095,6 +1095,107 @@ class TestStopLossEnforcement(unittest.TestCase):
 
         self.assertEqual(len(bt.trades), 1, "Only 1 trade must ever exist — second BUY signal must be ignored")
 
+    def test_reverse_signal_exits_are_legitimate(self):
+        """
+        CRITICAL: Verify that every 'Reverse Signal' exit is triggered by an actual opposite signal.
+        This test ensures the backtester doesn't spuriously close positions as 'Reverse Signal'
+        when no opposite signal was actually generated at that timestamp.
+        """
+        # Create a realistic scenario with multiple alternating signals
+        ts = [datetime(2024, 1, 1, 10, i * 5) for i in range(12)]
+        df = self._make_ohlcv([
+            (ts[0],  2000, 2005, 1998, 2002),  # BUY signal
+            (ts[1],  2002, 2007, 2000, 2005),  # No signal (hold)
+            (ts[2],  2005, 2008, 2003, 2006),  # No signal (hold)
+            (ts[3],  2006, 2009, 2004, 2004),  # SELL signal → should close BUY and open SELL
+            (ts[4],  2004, 2006, 2001, 2003),  # No signal (hold SELL)
+            (ts[5],  2003, 2005, 2000, 2002),  # No signal (hold SELL)
+            (ts[6],  2002, 2007, 2001, 2005),  # BUY signal → should close SELL and open BUY
+            (ts[7],  2005, 2010, 2003, 2008),  # No signal (hold BUY)
+            (ts[8],  2008, 2011, 2006, 2009),  # No signal (hold BUY)
+            (ts[9],  2009, 2012, 2007, 2008),  # SELL signal → should close BUY and open SELL
+            (ts[10], 2008, 2010, 2005, 2007),  # No signal (hold SELL)
+            (ts[11], 2007, 2009, 2004, 2006),  # No signal (hold SELL)
+        ])
+        
+        # Signal pattern: BUY → hold → hold → SELL → hold → hold → BUY → hold → hold → SELL → hold → hold
+        signals = [1, 0, 0, -1, 0, 0, 1, 0, 0, -1, 0, 0]
+        sigs = self._make_signals(df, signals)
+        
+        # Set SL/TP for each signal bar (set high SL/TP so they don't interfere with reverse signals)
+        for i, sig in enumerate(signals):
+            if sig == 1:  # BUY
+                sigs.loc[ts[i], 'stop_loss'] = df.iloc[i]['close'] - 100.0
+                sigs.loc[ts[i], 'take_profit'] = df.iloc[i]['close'] + 100.0
+            elif sig == -1:  # SELL
+                sigs.loc[ts[i], 'stop_loss'] = df.iloc[i]['close'] + 100.0
+                sigs.loc[ts[i], 'take_profit'] = df.iloc[i]['close'] - 100.0
+
+        bt = self._make_backtester(use_tick_data=False)
+        bt.run(df, sigs, timeframe_minutes=5)
+
+        # At minimum we should have some trades with reverse signal exits
+        self.assertGreater(len(bt.trades), 0, "Must have at least some trades")
+        
+        # The CRITICAL test: verify every "Reverse Signal" exit has the correct opposite signal
+        reverse_exits = [t for t in bt.trades if t.exit_reason == 'Reverse Signal']
+        self.assertGreater(len(reverse_exits), 0, "Must have at least one Reverse Signal exit for this test")
+        
+        # For each reverse signal exit, verify there was an actual opposite signal at that time
+        for trade in reverse_exits:
+            # Find the signal at the exit time
+            exit_idx = df.index.get_loc(trade.exit_time)
+            exit_signal = signals[exit_idx]
+            
+            # Verify the signal is opposite to the trade direction
+            if trade.side == OrderSide.BUY:
+                self.assertEqual(exit_signal, -1, 
+                    f"BUY trade exiting at {trade.exit_time} must have SELL signal (-1), got {exit_signal}")
+            else:  # SELL
+                self.assertEqual(exit_signal, 1,
+                    f"SELL trade exiting at {trade.exit_time} must have BUY signal (1), got {exit_signal}")
+                    
+        # Additional check: signal=0 should never trigger a reverse signal exit
+        for i, sig in enumerate(signals):
+            if sig == 0:  # No signal
+                # Check if any trade exited at this timestamp with "Reverse Signal"
+                trades_at_this_time = [t for t in reverse_exits if t.exit_time == ts[i]]
+                self.assertEqual(len(trades_at_this_time), 0,
+                    f"No trade should exit as 'Reverse Signal' when signal=0 at {ts[i]}")
+
+    def test_reverse_signal_must_not_fire_on_zero_signals(self):
+        """
+        CRITICAL: Ensure reverse signal logic doesn't fire when signal=0 (no signal).
+        A trade should only be closed as 'Reverse Signal' when an OPPOSITE signal (1→-1 or -1→1) fires,
+        never when signal goes to 0.
+        """
+        ts = [datetime(2024, 1, 1, 10, i * 5) for i in range(5)]
+        df = self._make_ohlcv([
+            (ts[0], 2000, 2005, 1998, 2002),  # BUY signal
+            (ts[1], 2002, 2007, 2000, 2005),  # No signal (hold)
+            (ts[2], 2005, 2008, 2003, 2006),  # No signal (hold)
+            (ts[3], 2006, 2009, 2004, 2007),  # No signal (hold)
+            (ts[4], 2007, 2011, 2005, 2009),  # No signal (hold)
+        ])
+        
+        # Signal pattern: BUY → 0 → 0 → 0 → 0 (no opposite signal, only zeros)
+        sigs = self._make_signals(df, [1, 0, 0, 0, 0])
+        sigs.loc[ts[0], 'stop_loss'] = 1980.0
+        sigs.loc[ts[0], 'take_profit'] = 2030.0
+
+        bt = self._make_backtester(use_tick_data=False)
+        bt.run(df, sigs, timeframe_minutes=5)
+
+        # Must have exactly 1 trade
+        self.assertEqual(len(bt.trades), 1, "Only one trade: BUY @ ts[0]")
+        
+        trade = bt.trades[0]
+        self.assertEqual(trade.side, OrderSide.BUY)
+        self.assertNotEqual(trade.exit_reason, 'Reverse Signal', 
+            "Trade must NOT exit as 'Reverse Signal' when no opposite signal is present")
+        self.assertEqual(trade.exit_reason, 'End of Backtest',
+            "Trade should remain open until end of backtest")
+
 
 def run_tests():
     """Run all tests"""

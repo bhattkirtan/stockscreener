@@ -48,7 +48,15 @@ class RiskSkill(Skill):
         
         # Cooldown settings
         self.sl_cooldown_minutes = config.get('sl_cooldown_minutes', 15)
+        self.tp_cooldown_minutes = config.get('tp_cooldown_minutes', 5)
         self.current_capital = config.get('initial_capital', 10000)  # Track current capital
+        
+        # Position sizing
+        self.position_size_pct = config.get('position_size_pct', 2.0)
+        
+        # Position tracking for cooldown
+        self.last_closed_position = None
+        self.has_open_position = False
         
     async def on_signal_generated(self, event: 'Event') -> None:
         """
@@ -114,12 +122,11 @@ class RiskSkill(Skill):
         from core.event_bus import create_risk_approved_event
         await self.event_bus.publish(
             create_risk_approved_event(
-                instrument=event.instrument,
                 signal=signal,
                 position_size=position_size,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                indicators=event.payload.get('indicators', {}),
+                instrument=event.instrument,
                 correlation_id=event.correlation_id
             )
         )
@@ -133,9 +140,8 @@ class RiskSkill(Skill):
         from core.event_bus import create_risk_rejected_event
         await self.event_bus.publish(
             create_risk_rejected_event(
-                instrument=event.instrument,
-                signal=event.payload.get('signal'),
                 reason=reason,
+                instrument=event.instrument,
                 correlation_id=event.correlation_id
             )
         )

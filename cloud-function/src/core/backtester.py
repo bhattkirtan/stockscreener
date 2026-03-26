@@ -31,6 +31,13 @@ except ImportError:
     TradingEconomicsAdapter = None
     logger.debug("Event blocking components not available")
 
+# Import shared signal engine for consistent signal logic
+from .signal_engine import (
+    SignalType,
+    create_market_state,
+    check_reverse_signal
+)
+
 
 class NoEntryBeforeEOD:
     """Blocks new entries X hours before EOD close."""
@@ -901,16 +908,24 @@ class IntraCandleBacktester:
             #    close the existing position at the current candle open before entering.
             #    Same-direction signals while already in a trade are silently skipped
             #    (max_positions=1 guard in open_position() will raise if violated).
-            if signal_value == 1:
+            
+            if signal_value == 1:  # BUY signal
+                # IMPORTANT: Use shared signal engine for reverse signal detection
+                # Close any SELL positions if BUY signal fires
                 for trade in self.open_positions.copy():
                     if trade.side == OrderSide.SELL:
-                        self.close_position(trade, timestamp, candle['open'], 'Reverse Signal')
-            elif signal_value == -1:
-                for trade in self.open_positions.copy():
-                    if trade.side == OrderSide.BUY:
-                        self.close_position(trade, timestamp, candle['open'], 'Reverse Signal')
-
-            if signal_value == 1:  # BUY signal
+                        # Verify using shared signal engine (should always be true since signal_value==1)
+                        market_state = create_market_state(
+                            close=candle['close'],
+                            supertrend_direction=int(candle.get('direction', 0)),
+                            ema=candle.get('ema', candle['close']),
+                            sma_fast=candle.get('sma_fast', candle['close']),
+                            sma_slow=candle.get('sma_slow', candle['close']),
+                            timestamp=str(timestamp)
+                        )
+                        if check_reverse_signal('SELL', market_state):
+                            self.close_position(trade, timestamp, candle['open'], 'Reverse Signal')
+                
                 # Check EOD blackout window
                 if not no_entry_eod.can_enter_trade(timestamp):
                     if self.config.verbose:
@@ -925,6 +940,8 @@ class IntraCandleBacktester:
                     last_close_time = self.last_closed_position.get('close_time')
                     last_close_reason = self.last_closed_position.get('close_reason', '')
                     
+                    # Only apply cooldown for SAME direction (BUY → BUY)
+                    # For reverse signals (SELL → BUY), allow entry without cooldown
                     if last_side == OrderSide.BUY and last_close_time:
                         minutes_since_close = (timestamp - last_close_time).total_seconds() / 60
                         
@@ -937,6 +954,31 @@ class IntraCandleBacktester:
                                 logger.debug(f"🚫 Cooldown: BUY TP hit {minutes_since_close:.1f}m ago, need {self.config.tp_cooldown_minutes}m")
                         # No cooldown - allow entry
                         elif event_blocker is not None and self.config.enable_event_blocking:
+                            is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
+                            if not is_allowed:
+                                if self.config.verbose:
+                                    logger.debug(f"🚫 Skipping BUY signal at {timestamp}: {block_reason}")
+                            elif len(self.open_positions) < self.config.max_positions:
+                                partial_exit.reset()
+                                self.open_position(
+                                    timestamp=timestamp,
+                                    price=candle['close'],
+                                    side=OrderSide.BUY,
+                                    stop_loss=stop_loss,
+                                    take_profit=take_profit
+                                )
+                        elif len(self.open_positions) < self.config.max_positions:
+                            partial_exit.reset()
+                            self.open_position(
+                                timestamp=timestamp,
+                                price=candle['close'],
+                                side=OrderSide.BUY,
+                                stop_loss=stop_loss,
+                                take_profit=take_profit
+                            )
+                    else:
+                        # Reverse signal (SELL → BUY): no cooldown, allow entry
+                        if event_blocker is not None and self.config.enable_event_blocking:
                             is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
                             if not is_allowed:
                                 if self.config.verbose:
@@ -992,6 +1034,26 @@ class IntraCandleBacktester:
             elif signal_value == -1:  # SELL signal
                 # Check EOD blackout window
                 if not no_entry_eod.can_enter_trade(timestamp):
+                    continue
+                
+                # IMPORTANT: Use shared signal engine for reverse signal detection
+                # Close any BUY positions if SELL signal fires
+                for trade in self.open_positions.copy():
+                    if trade.side == OrderSide.BUY:
+                        # Verify using shared signal engine (should always be true since signal_value==-1)
+                        market_state = create_market_state(
+                            close=candle['close'],
+                            supertrend_direction=int(candle.get('direction', 0)),
+                            ema=candle.get('ema', candle['close']),
+                            sma_fast=candle.get('sma_fast', candle['close']),
+                            sma_slow=candle.get('sma_slow', candle['close']),
+                            timestamp=str(timestamp)
+                        )
+                        if check_reverse_signal('BUY', market_state):
+                            self.close_position(trade, timestamp, candle['open'], 'Reverse Signal')
+                
+                # Check EOD blackout window
+                if not no_entry_eod.can_enter_trade(timestamp):
                     if self.config.verbose:
                         logger.debug(f"🚫 Skipping SELL signal at {timestamp}: In EOD blackout window")
                 # Check Friday filter
@@ -1004,6 +1066,8 @@ class IntraCandleBacktester:
                     last_close_time = self.last_closed_position.get('close_time')
                     last_close_reason = self.last_closed_position.get('close_reason', '')
                     
+                    # Only apply cooldown for SAME direction (SELL → SELL)
+                    # For reverse signals (BUY → SELL), allow entry without cooldown
                     if last_side == OrderSide.SELL and last_close_time:
                         minutes_since_close = (timestamp - last_close_time).total_seconds() / 60
                         
@@ -1016,6 +1080,31 @@ class IntraCandleBacktester:
                                 logger.debug(f"🚫 Cooldown: SELL TP hit {minutes_since_close:.1f}m ago, need {self.config.tp_cooldown_minutes}m")
                         # No cooldown - allow entry
                         elif event_blocker is not None and self.config.enable_event_blocking:
+                            is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
+                            if not is_allowed:
+                                if self.config.verbose:
+                                    logger.debug(f"🚫 Skipping SELL signal at {timestamp}: {block_reason}")
+                            elif len(self.open_positions) < self.config.max_positions:
+                                partial_exit.reset()
+                                self.open_position(
+                                    timestamp=timestamp,
+                                    price=candle['close'],
+                                    side=OrderSide.SELL,
+                                    stop_loss=stop_loss,
+                                    take_profit=take_profit
+                                )
+                        elif len(self.open_positions) < self.config.max_positions:
+                            partial_exit.reset()
+                            self.open_position(
+                                timestamp=timestamp,
+                                price=candle['close'],
+                                side=OrderSide.SELL,
+                                stop_loss=stop_loss,
+                                take_profit=take_profit
+                            )
+                    else:
+                        # Reverse signal (BUY → SELL): no cooldown, allow entry
+                        if event_blocker is not None and self.config.enable_event_blocking:
                             is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
                             if not is_allowed:
                                 if self.config.verbose:
