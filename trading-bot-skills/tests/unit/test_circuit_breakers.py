@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from core.circuit_breakers import (
     CircuitBreaker, CircuitBreakerStatus,
-    TradingSessionFilter, TradingSession,
+    TradingSessionFilter,
     SpreadSlippageFilter,
     NewsEventKillSwitch,
     LossTracker

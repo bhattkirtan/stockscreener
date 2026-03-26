@@ -747,19 +747,35 @@ class TradingBot:
         direction = self.current_position.get('direction', 'BUY')
         
         logger.info(f"🔚 Closing position: {deal_id}")
+        
+        # Get current price before closing (for P&L calculation)
+        close_price = self.last_mid_price if hasattr(self, 'last_mid_price') else entry_price
+        
+        # Check if position exists on Capital.com before attempting to close
+        position_exists = False
         try:
-            # Get current price before closing (for P&L calculation)
-            close_price = self.last_mid_price if hasattr(self, 'last_mid_price') else entry_price
-            
-            self.rest_client.close_position(deal_id)
-            logger.info(f"✅ Position closed: {deal_id} at {close_price}")
-            
-            # Increment positions closed counter
-            if self.status_publisher:
-                self.status_publisher.increment_position_closed()
-                
+            open_positions = self.rest_client.get_open_positions()
+            for item in open_positions:
+                pos = item.get('position', {})
+                if pos.get('dealId') == deal_id:
+                    position_exists = True
+                    break
         except Exception as e:
-            logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
+            logger.warning(f"⚠️ Unable to verify position exists: {e}")
+        
+        # Only attempt to close on Capital.com if position exists there
+        if position_exists:
+            try:
+                self.rest_client.close_position(deal_id)
+                logger.info(f"✅ Position closed on Capital.com: {deal_id} at {close_price}")
+                
+                # Increment positions closed counter
+                if self.status_publisher:
+                    self.status_publisher.increment_position_closed()
+            except Exception as e:
+                logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
+        else:
+            logger.info(f"ℹ️ Position {deal_id} not found on Capital.com (already closed or expired) — updating Firestore only")
         finally:
             # ALWAYS update Firestore even if REST API call failed (e.g., already closed by SL/TP)
             if self.position_publisher and deal_id:

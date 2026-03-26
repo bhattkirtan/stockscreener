@@ -21,9 +21,12 @@ class TestAlertingSkill:
     def config(self):
         """Alerting configuration (mock mode)"""
         return {
-            'enabled': True,
-            'token': 'test_token',
-            'chat_id': 'test_chat_id'
+            'telegram': {
+                'enabled': True,
+                'token': 'test_token',
+                'chat_id': 'test_chat_id'
+            },
+            'mock_mode': True
         }
     
     @pytest.fixture
@@ -48,7 +51,7 @@ class TestAlertingSkill:
     
     def test_initialization(self, skill):
         """Test skill initializes correctly"""
-        assert skill.enabled == True
+        assert skill.telegram_enabled == True
         assert skill.telegram_token == 'test_token'
         assert skill.telegram_chat_id == 'test_chat_id'
     

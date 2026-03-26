@@ -53,7 +53,10 @@ class AnalysisSkill(Skill):
         # EMA settings
         self.ema_period = config.get('ema_period', 30)
         
-        # Signon_candle_closed(self, event: 'Event') -> None:
+        # Signal state tracking (for edge detection)
+        self.last_signal_state = None
+    
+    async def on_candle_closed(self, event: 'Event') -> None:
         """
         Handle CANDLE_CLOSED event - calculate indicators and generate signal.
         
@@ -70,15 +73,11 @@ class AnalysisSkill(Skill):
             return
         
         # Convert to DataFrame
-        df = pd.DataFrame(ory or len(context.candle_history) < 50:
-            context.signal = None
-            return context
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(context.candle_history)
+        df = pd.DataFrame(candle_history)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
-        Extract indicators
+        
+        # Extract indicators
         latest = df.iloc[-1]
         indicators = {
             'supertrend': float(latest['supertrend']),
@@ -110,14 +109,7 @@ class AnalysisSkill(Skill):
                         indicators=indicators,
                         correlation_id=event.correlation_id
                     )
-                )gnal = None  # Continuous signal, skip
-        else:
-            context.signal = signal
-            self.last_signal_state = signal
-            if signal:
-                print(f"🎯 New signal: {signal}")
-        
-        return context
+                )
     
     def _calculate_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Supertrend indicator"""

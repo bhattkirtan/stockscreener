@@ -67,7 +67,8 @@ class ExecutionSkill(Skill):
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Capital.com client: {e}")
                 logger.warning("⚠️ Falling back to mock mode")
-              on_risk_approved(self, event: 'Event') -> None:
+    
+    async def on_risk_approved(self, event: 'Event') -> None:
         """
         Handle RISK_APPROVED event - place order with idempotency.
         
@@ -173,19 +174,12 @@ class ExecutionSkill(Skill):
         self,
         direction: str,
         size: float,
-        stop_loss: float,
-        take_profit: float
-    ) -> Dict
-    async def _place_order(
-        self,
-        direction: str,
-        size: float,
         entry_price: float,
         stop_loss: float,
         take_profit: float
     ) -> Optional[str]:
         """
-        Place market order via Capital.com API
+        Place market order via Capital.com API (wrapped by retry policy)
         
         Returns:
             deal_id if successful, None otherwise
