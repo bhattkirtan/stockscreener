@@ -24,10 +24,15 @@ class AlertingSkill(Skill):
     - Send error alerts
     - Send drawdown warnings
     - Send daily performance summary
+    
+    Event Subscriptions:
+    - ORDER_FILLED: Send trade opened alert
+    - POSITION_CLOSED: Send trade closed alert
+    - BOT_ERROR: Send error alert
     """
     
-    def __init__(self, config: Dict):
-        super().__init__(config)
+    def __init__(self, config: Dict, event_bus: Optional['EventBus'] = None):
+        super().__init__(config, event_bus)
         
         # Telegram settings
         telegram_config = config.get('telegram', {})
@@ -63,6 +68,105 @@ class AlertingSkill(Skill):
             logger.warning("⚠️ Alerting Skill running in MOCK MODE")
         
         print(f"📢 Alerting Skill initialized: telegram={self.telegram_enabled}")
+    
+    async def on_order_filled(self, event: 'Event') -> None:
+        """
+        Handle ORDER_FILLED event - send trade opened alert.
+        
+        Args:
+            event: Event with order details
+        """
+        if not self.alert_on_trade_opened:
+            return
+        
+        # Extract order details from event payload
+        deal_id = event.payload.get('deal_id', 'UNKNOWN')
+        direction = event.payload.get('direction', 'UNKNOWN')
+        entry_price = event.payload.get('entry_price', 0)
+        stop_loss = event.payload.get('stop_loss', 0)
+        take_profit = event.payload.get('take_profit', 0)
+        size = event.payload.get('size', 0)
+        timestamp = event.timestamp
+        
+        # Send via Telegram client
+        success = self.telegram_client.send_trade_opened(
+            direction=direction,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            size=size,
+            deal_id=deal_id,
+            timestamp=timestamp
+        )
+        
+        if success:
+            logger.info(f"✅ Trade opened alert sent: {deal_id}")
+        else:
+            logger.error(f"❌ Failed to send trade opened alert: {deal_id}")
+    
+    async def on_position_closed(self, event: 'Event') -> None:
+        """
+        Handle POSITION_CLOSED event - send trade closed alert.
+        
+        Args:
+            event: Event with position close details
+        """
+        if not self.alert_on_trade_closed:
+            return
+        
+        # Extract close details from event payload
+        deal_id = event.payload.get('deal_id', 'UNKNOWN')
+        close_price = event.payload.get('close_price', 0)
+        realized_pnl = event.payload.get('realized_pnl', 0)
+        close_reason = event.payload.get('close_reason', 'UNKNOWN')
+        
+        # Calculate additional metrics (would come from position state in real system)
+        direction = event.payload.get('direction', 'UNKNOWN')
+        entry_price = event.payload.get('entry_price', 0)
+        pnl_percent = event.payload.get('pnl_percent', 0)
+        duration = event.payload.get('duration', '0m')
+        
+        # Send via Telegram client
+        success = self.telegram_client.send_trade_closed(
+            direction=direction,
+            entry_price=entry_price,
+            close_price=close_price,
+            close_reason=close_reason,
+            pnl=realized_pnl,
+            pnl_percent=pnl_percent,
+            duration=duration,
+            deal_id=deal_id
+        )
+        
+        if success:
+            logger.info(f"✅ Trade closed alert sent: {deal_id}")
+        else:
+            logger.error(f"❌ Failed to send trade closed alert: {deal_id}")
+    
+    async def on_bot_error(self, event: 'Event') -> None:
+        """
+        Handle BOT_ERROR event - send error alert.
+        
+        Args:
+            event: Event with error details
+        """
+        if not self.alert_on_error:
+            return
+        
+        # Extract error details from event payload
+        error_message = event.payload.get('error_message', 'Unknown error')
+        location = event.payload.get('location', 'unknown')
+        timestamp = event.timestamp
+        
+        # Send via Telegram client
+        success = self.telegram_client.send_error_alert(
+            error_type=location,
+            error_message=error_message,
+            context={'timestamp': timestamp}
+        )
+        
+        if not success:
+            logger.error(f"❌ Failed to send error alert: {location}")
     
     async def execute(self, context: Context) -> Context:
         """
