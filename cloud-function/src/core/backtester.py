@@ -282,6 +282,11 @@ class BacktestConfig:
     event_pre_window_minutes: int = 15       # Block before high-impact event (15 min)
     event_post_window_minutes: int = 15      # Block after high-impact event (15 min)
     
+    # Signal debouncing: prevent duplicate trades after SL/TP
+    enable_signal_debouncing: bool = True    # Enable/disable cooldown after SL/TP
+    sl_cooldown_minutes: int = 15            # Wait 15 minutes (3 M5 candles) after SL hit before same direction
+    tp_cooldown_minutes: int = 5             # Wait 5 minutes (1 M5 candle) after TP hit before same direction
+    
     # Logging
     verbose: bool = True
     trade_log_file: Optional[str] = None  # Path to write per-order trace CSV (None = disabled)
@@ -354,6 +359,9 @@ class IntraCandleBacktester:
         self.trades: List[Trade] = []
         self.open_positions: List[Trade] = []
         self.closed_positions: List[Trade] = []
+        
+        # Signal debouncing tracking
+        self.last_closed_position: Optional[Dict] = None  # Track last closed position for cooldown
         
         # Performance tracking
         self.total_pnl = 0.0
@@ -683,6 +691,15 @@ class IntraCandleBacktester:
         self.open_positions.remove(trade)
         self.closed_positions.append(trade)
         
+        # Track last closed position for debouncing
+        self.last_closed_position = {
+            'side': trade.side,
+            'close_time': timestamp,
+            'close_reason': reason,
+            'entry_price': trade.entry_price,
+            'exit_price': adjusted_price
+        }
+        
         if self.config.verbose:
             logger.info(f"💰 Closed {trade.side.value} position: P&L={trade.pnl:.2f} ({trade.pnl_pct:.2f}%) - Reason: {reason}")
 
@@ -902,6 +919,46 @@ class IntraCandleBacktester:
                 elif not friday_filter.can_enter_trade(timestamp):
                     if self.config.verbose:
                         logger.debug(f"🚫 Skipping BUY signal at {timestamp}: Friday after {self.config.friday_cutoff_hour}:00")
+                # Check signal debouncing cooldown
+                elif self.config.enable_signal_debouncing and self.last_closed_position:
+                    last_side = self.last_closed_position.get('side')
+                    last_close_time = self.last_closed_position.get('close_time')
+                    last_close_reason = self.last_closed_position.get('close_reason', '')
+                    
+                    if last_side == OrderSide.BUY and last_close_time:
+                        minutes_since_close = (timestamp - last_close_time).total_seconds() / 60
+                        
+                        # Apply cooldown if SL or TP hit
+                        if 'SL' in last_close_reason and minutes_since_close < self.config.sl_cooldown_minutes:
+                            if self.config.verbose:
+                                logger.debug(f"🚫 Cooldown: BUY SL hit {minutes_since_close:.1f}m ago, need {self.config.sl_cooldown_minutes}m")
+                        elif 'TP' in last_close_reason and minutes_since_close < self.config.tp_cooldown_minutes:
+                            if self.config.verbose:
+                                logger.debug(f"🚫 Cooldown: BUY TP hit {minutes_since_close:.1f}m ago, need {self.config.tp_cooldown_minutes}m")
+                        # No cooldown - allow entry
+                        elif event_blocker is not None and self.config.enable_event_blocking:
+                            is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
+                            if not is_allowed:
+                                if self.config.verbose:
+                                    logger.debug(f"🚫 Skipping BUY signal at {timestamp}: {block_reason}")
+                            elif len(self.open_positions) < self.config.max_positions:
+                                partial_exit.reset()
+                                self.open_position(
+                                    timestamp=timestamp,
+                                    price=candle['close'],
+                                    side=OrderSide.BUY,
+                                    stop_loss=stop_loss,
+                                    take_profit=take_profit
+                                )
+                        elif len(self.open_positions) < self.config.max_positions:
+                            partial_exit.reset()
+                            self.open_position(
+                                timestamp=timestamp,
+                                price=candle['close'],
+                                side=OrderSide.BUY,
+                                stop_loss=stop_loss,
+                                take_profit=take_profit
+                            )
                 # Check event blocking (if enabled)
                 elif event_blocker is not None and self.config.enable_event_blocking:
                     is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
@@ -941,6 +998,46 @@ class IntraCandleBacktester:
                 elif not friday_filter.can_enter_trade(timestamp):
                     if self.config.verbose:
                         logger.debug(f"🚫 Skipping SELL signal at {timestamp}: Friday after {self.config.friday_cutoff_hour}:00")
+                # Check signal debouncing cooldown
+                elif self.config.enable_signal_debouncing and self.last_closed_position:
+                    last_side = self.last_closed_position.get('side')
+                    last_close_time = self.last_closed_position.get('close_time')
+                    last_close_reason = self.last_closed_position.get('close_reason', '')
+                    
+                    if last_side == OrderSide.SELL and last_close_time:
+                        minutes_since_close = (timestamp - last_close_time).total_seconds() / 60
+                        
+                        # Apply cooldown if SL or TP hit
+                        if 'SL' in last_close_reason and minutes_since_close < self.config.sl_cooldown_minutes:
+                            if self.config.verbose:
+                                logger.debug(f"🚫 Cooldown: SELL SL hit {minutes_since_close:.1f}m ago, need {self.config.sl_cooldown_minutes}m")
+                        elif 'TP' in last_close_reason and minutes_since_close < self.config.tp_cooldown_minutes:
+                            if self.config.verbose:
+                                logger.debug(f"🚫 Cooldown: SELL TP hit {minutes_since_close:.1f}m ago, need {self.config.tp_cooldown_minutes}m")
+                        # No cooldown - allow entry
+                        elif event_blocker is not None and self.config.enable_event_blocking:
+                            is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
+                            if not is_allowed:
+                                if self.config.verbose:
+                                    logger.debug(f"🚫 Skipping SELL signal at {timestamp}: {block_reason}")
+                            elif len(self.open_positions) < self.config.max_positions:
+                                partial_exit.reset()
+                                self.open_position(
+                                    timestamp=timestamp,
+                                    price=candle['close'],
+                                    side=OrderSide.SELL,
+                                    stop_loss=stop_loss,
+                                    take_profit=take_profit
+                                )
+                        elif len(self.open_positions) < self.config.max_positions:
+                            partial_exit.reset()
+                            self.open_position(
+                                timestamp=timestamp,
+                                price=candle['close'],
+                                side=OrderSide.SELL,
+                                stop_loss=stop_loss,
+                                take_profit=take_profit
+                            )
                 # Check event blocking (if enabled)
                 elif event_blocker is not None and self.config.enable_event_blocking:
                     is_allowed, block_reason = event_blocker.is_trading_allowed(timestamp)
@@ -961,12 +1058,12 @@ class IntraCandleBacktester:
                     # Reset partial exit state for new trade
                     partial_exit.reset()
                     self.open_position(
-                        timestamp=timestamp,
-                        price=candle['close'],
-                        side=OrderSide.SELL,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit
-                    )
+                                timestamp=timestamp,
+                            price=candle['close'],
+                            side=OrderSide.SELL,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit
+                        )
             
             # 4. Update equity curve
             self.update_equity_curve(timestamp, {'instrument': candle['close']})

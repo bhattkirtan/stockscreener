@@ -1,0 +1,135 @@
+"""
+Base Skill Interface
+All skills must implement this abstract base class to ensure consistent interface.
+"""
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass
+class Context:
+    """
+    Shared data structure passed between skills.
+    Each skill reads/writes to this context during execution.
+    """
+    # Market data
+    current_candle: Optional[Dict] = None
+    candle_history: list = None
+    
+    # Analysis
+    indicators: Dict = None
+    signal: Optional[str] = None  # 'BUY', 'SELL', 'EXIT', None
+    signal_timestamp: Optional[datetime] = None
+    
+    # Risk
+    position_size: float = 0.0
+    is_allowed: bool = False
+    risk_reason: str = ""
+    
+    # Execution
+    order_id: Optional[str] = None
+    deal_id: Optional[str] = None
+    current_position: Optional[Dict] = None
+    
+    # Monitoring
+    pnl: float = 0.0
+    total_trades: int = 0
+    win_rate: float = 0.0
+    
+    # Metadata
+    timestamp: datetime = None
+    errors: list = None
+    
+    def __post_init__(self):
+        if self.candle_history is None:
+            self.candle_history = []
+        if self.indicators is None:
+            self.indicators = {}
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+        if self.errors is None:
+            self.errors = []
+
+
+class Skill(ABC):
+    """
+    Abstract base class for all trading bot skills.
+    
+    Each skill:
+    1. Receives a Context object
+    2. Performs its specific task
+    3. Updates the Context with results
+    4. Returns the updated Context
+    
+    Skills should be:
+    - Stateless where possible (or use minimal state)
+    - Testable in isolation
+    - Focused on single responsibility
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize skill with configuration.
+        
+        Args:
+            config: Dictionary with skill-specific configuration
+        """
+        self.config = config
+        self.enabled = config.get('enabled', True)
+        self.name = self.__class__.__name__
+        
+    @abstractmethod
+    async def execute(self, context: Context) -> Context:
+        """
+        Main execution method - must be implemented by all skills.
+        
+        Args:
+            context: Shared context object with current state
+            
+        Returns:
+            Updated context object
+            
+        Raises:
+            SkillExecutionError: If skill execution fails
+        """
+        pass
+    
+    def validate_config(self) -> bool:
+        """
+        Validate that required configuration is present.
+        Override in subclass to check skill-specific config.
+        
+        Returns:
+            True if config is valid, False otherwise
+        """
+        return True
+    
+    def on_error(self, context: Context, error: Exception):
+        """
+        Error handler called when execute() raises an exception.
+        Override to implement custom error handling.
+        
+        Args:
+            context: Current context
+            error: Exception that was raised
+        """
+        context.errors.append({
+            'skill': self.name,
+            'error': str(error),
+            'timestamp': datetime.now()
+        })
+    
+    def __repr__(self):
+        return f"<{self.name} enabled={self.enabled}>"
+
+
+class SkillExecutionError(Exception):
+    """Custom exception for skill execution failures"""
+    pass
+
+
+class SkillConfigError(Exception):
+    """Custom exception for skill configuration errors"""
+    pass

@@ -188,6 +188,17 @@ class TradingBot:
         self.current_position: Optional[Dict] = None
         self.last_signal_time: Optional[datetime] = None
         
+        # Signal debouncing: prevent duplicate trades after SL/TP
+        self.last_closed_position: Optional[Dict] = None  # Track last closed position
+        self.last_signal_state: Optional[str] = None  # Track previous signal ('BUY', 'SELL', or None)
+        self.sl_cooldown_minutes = 15  # Wait 15 minutes (3 M5 candles) after SL hit before same direction
+        self.tp_cooldown_minutes = 5   # Wait 5 minutes (1 M5 candle) after TP hit before same direction
+        self.close_reason: Optional[str] = None  # Track why position closed ('SL_HIT', 'TP_HIT', 'SIGNAL')
+        
+        # Rate limiting for Firestore position updates (prevent excessive writes)
+        self.last_position_update_time: Dict[str, datetime] = {}  # deal_id -> last update timestamp
+        self.position_update_interval = 60  # Update Firestore max once per 60 seconds
+        
         # Capital.com REST client for authentication
         self.rest_client = CapitalRestClient(config)
         
@@ -474,14 +485,47 @@ class TradingBot:
                 if self.current_position['direction'] == 'BUY' and supertrend_dir == -1:
                     logger.info("🚨 EXIT SIGNAL: Supertrend turned bearish, close LONG")
                     if self.auto_trade:
+                        self.close_reason = 'SIGNAL'  # Mark as signal exit
                         await self.close_position()
                 
                 elif self.current_position['direction'] == 'SELL' and supertrend_dir == 1:
                     logger.info("🚨 EXIT SIGNAL: Supertrend turned bullish, close SHORT")
                     if self.auto_trade:
+                        self.close_reason = 'SIGNAL'  # Mark as signal exit
                         await self.close_position()
                 
                 return
+            
+            # Determine current signal state
+            current_signal = None
+            if supertrend_dir == 1 and close > ema and sma_fast > sma_slow:
+                current_signal = 'BUY'
+            elif supertrend_dir == -1 and close < ema and sma_fast < sma_slow:
+                current_signal = 'SELL'
+            
+            # Signal Edge Detection: Only trade NEW signals, not continuous ones
+            if current_signal == self.last_signal_state:
+                # Signal was already active on previous candle - skip
+                return
+            
+            # Cooldown Check: After SL/TP hit, wait before re-entering same direction
+            if self.last_closed_position and current_signal:
+                last_direction = self.last_closed_position.get('direction')
+                last_close_time = self.last_closed_position.get('close_time')
+                last_close_reason = self.last_closed_position.get('close_reason')
+                
+                if current_signal == last_direction and last_close_time:
+                    minutes_since_close = (datetime.now() - last_close_time).total_seconds() / 60
+                    
+                    # Apply cooldown based on close reason
+                    if last_close_reason == 'SL_HIT' and minutes_since_close < self.sl_cooldown_minutes:
+                        logger.info(f"🚫 Cooldown active: SL hit {minutes_since_close:.1f}m ago, need {self.sl_cooldown_minutes}m before {current_signal} again")
+                        self.last_signal_state = current_signal  # Update state to prevent log spam
+                        return
+                    elif last_close_reason == 'TP_HIT' and minutes_since_close < self.tp_cooldown_minutes:
+                        logger.info(f"🚫 Cooldown active: TP hit {minutes_since_close:.1f}m ago, need {self.tp_cooldown_minutes}m before {current_signal} again")
+                        self.last_signal_state = current_signal
+                        return
             
             # Check for crossovers
             sma_fast_prev = df.iloc[-2]['sma_fast']
@@ -542,6 +586,9 @@ class TradingBot:
                     await self.place_order('BUY', close, stop_loss, take_profit)
                 else:
                     logger.info("📋 SIGNAL-ONLY MODE: No order placed (manual execution required)")
+                
+                # Update signal state after processing
+                self.last_signal_state = 'BUY'
             
             # SELL Signal
             elif (supertrend_dir == -1 and 
@@ -596,6 +643,13 @@ class TradingBot:
                     await self.place_order('SELL', close, stop_loss, take_profit)
                 else:
                     logger.info("📋 SIGNAL-ONLY MODE: No order placed (manual execution required)")
+                
+                # Update signal state after processing
+                self.last_signal_state = 'SELL'
+            
+            else:
+                # No signal detected - clear signal state
+                self.last_signal_state = None
         
         except Exception as e:
             logger.error(f"❌ Signal generation failed: {e}", exc_info=True)
@@ -636,8 +690,25 @@ class TradingBot:
                 if self.status_publisher:
                     self.status_publisher.increment_order()
                 
+                # Get the actual dealId from Capital.com (may differ from dealReference)
+                # dealReference has "p_" prefix, but dealId doesn't
+                deal_id = None
+                try:
+                    # Fetch open positions to get the dealId
+                    positions = self.rest_client.get_open_positions()
+                    for item in positions:
+                        pos = item.get('position', {})
+                        if pos.get('dealReference') == deal_reference:
+                            deal_id = pos.get('dealId')
+                            logger.info(f"📋 Got dealId: {deal_id} for dealReference: {deal_reference}")
+                            break
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not fetch dealId, using dealReference: {e}")
+                    deal_id = deal_reference  # Fallback to dealReference
+                
                 # Track position
                 self.current_position = {
+                    'deal_id': deal_id or deal_reference,
                     'deal_reference': deal_reference,
                     'direction': direction,
                     'size': position_size,
@@ -647,10 +718,10 @@ class TradingBot:
                     'entry_time': datetime.now()
                 }
                 
-                # Publish position to Firestore
+                # Publish position to Firestore using the actual dealId
                 if self.position_publisher:
                     self.position_publisher.publish_position({
-                        'deal_id': deal_reference,
+                        'deal_id': deal_id or deal_reference,
                         'epic': self.epic,
                         'direction': direction,
                         'size': position_size,
@@ -686,20 +757,40 @@ class TradingBot:
             # Increment positions closed counter
             if self.status_publisher:
                 self.status_publisher.increment_position_closed()
-            
-            # Update position status in Firestore with close price
-            if self.position_publisher:
-                self.position_publisher.close_position(
-                    deal_id=deal_id,
-                    close_price=close_price,
-                    close_reason='SIGNAL'
-                )
                 
         except Exception as e:
             logger.error(f"❌ Close position error: {e} — clearing local tracking anyway")
         finally:
+            # ALWAYS update Firestore even if REST API call failed (e.g., already closed by SL/TP)
+            if self.position_publisher and deal_id:
+                try:
+                    self.position_publisher.close_position(
+                        deal_id=deal_id,
+                        close_price=close_price,
+                        close_reason=self.close_reason or 'SIGNAL'
+                    )
+                    logger.info(f"🔥 Firestore position closed: {deal_id}")
+                except Exception as fs_error:
+                    logger.error(f"⚠️ Firestore close failed: {fs_error}")
+            
+            # Store closed position info for cooldown tracking
+            if self.current_position:
+                self.last_closed_position = {
+                    'direction': self.current_position.get('direction'),
+                    'close_time': datetime.now(),
+                    'close_reason': self.close_reason or 'UNKNOWN',
+                    'entry_price': self.current_position.get('entry_price'),
+                    'close_price': close_price
+                }
+                logger.info(f"📝 Closed {self.last_closed_position['direction']} position (reason: {self.last_closed_position['close_reason']})")
+            
             # Always clear local state — Capital.com may have already closed it via SL/TP
             self.current_position = None
+            self.close_reason = None  # Reset close reason
+            
+            # Clean up rate limiting tracking for closed position
+            if deal_id and deal_id in self.last_position_update_time:
+                del self.last_position_update_time[deal_id]
 
     async def _sync_open_position(self):
         """On startup, re-hydrate self.current_position from any live open position on Capital.com."""
@@ -746,10 +837,17 @@ class TradingBot:
         self.last_mid_price = current_price
         
         # Update P&L in Firestore (if publisher enabled)
+        # Rate limit: only update once per 60 seconds to avoid excessive writes
         if self.position_publisher:
             deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
             if deal_id:
-                self.position_publisher.update_pnl(deal_id, current_price=current_price)
+                now = datetime.now()
+                last_update = self.last_position_update_time.get(deal_id)
+                
+                # Only update if 60 seconds have passed since last update
+                if last_update is None or (now - last_update).total_seconds() >= self.position_update_interval:
+                    self.position_publisher.update_pnl(deal_id, current_price=current_price)
+                    self.last_position_update_time[deal_id] = now
 
         stop_loss = self.current_position.get('stop_loss')
         take_profit = self.current_position.get('take_profit')
@@ -758,18 +856,22 @@ class TradingBot:
         if self.current_position['direction'] == 'BUY':
             if stop_loss and current_price <= stop_loss:
                 logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} <= {stop_loss:.2f}")
+                self.close_reason = 'SL_HIT'
                 await self.close_position()
             elif take_profit and current_price >= take_profit:
                 logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} >= {take_profit:.2f}")
+                self.close_reason = 'TP_HIT'
                 await self.close_position()
 
         # Check SHORT position
         elif self.current_position['direction'] == 'SELL':
             if stop_loss and current_price >= stop_loss:
                 logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} >= {stop_loss:.2f}")
+                self.close_reason = 'SL_HIT'
                 await self.close_position()
             elif take_profit and current_price <= take_profit:
                 logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} <= {take_profit:.2f}")
+                self.close_reason = 'TP_HIT'
                 await self.close_position()
     
     async def stop(self):

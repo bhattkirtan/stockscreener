@@ -1,0 +1,191 @@
+# Trading Bot Configuration with API Credentials
+# Copy this to trading_config.yaml and fill in your credentials
+
+# ────────────────────────────────────────────────────────────────────
+#  General Settings
+# ────────────────────────────────────────────────────────────────────
+mode: demo  # 'demo', 'live', or 'backtest'
+bot_name: Gold Trading Bot
+version: 1.0.0
+timezone: UTC
+
+# Mock mode (disable real APIs for testing)
+mock_mode: false  # Set to true to test without real API calls
+
+# ────────────────────────────────────────────────────────────────────
+#  Capital.com API (Execution Skill)
+# ────────────────────────────────────────────────────────────────────
+capital_com:
+  # Get these from Capital.com dashboard: https://capital.com/trading/platform/
+  username: your_email@example.com
+  password: your_password_here
+  api_key: your_api_key_here
+  
+  environment: demo  # 'demo' or 'live'
+  
+  # Market settings
+  epic: CS.D.CFDGOLD.CFD.IP  # GOLD epic code
+  
+  # Order settings
+  position_size: 0.5  # Position size (e.g., 0.5 = 0.5 lots)
+  sl_pips: 20  # Stop loss in pips
+  tp_pips: 40  # Take profit in pips
+
+# ────────────────────────────────────────────────────────────────────
+#  Firestore (Storage Skill)
+# ────────────────────────────────────────────────────────────────────
+firestore:
+  # GCP project ID
+  project_id: your-gcp-project-id
+  
+  # Path to service account JSON (optional if using default credentials)
+  credentials_path: /path/to/serviceAccount.json  # Leave empty to use GOOGLE_APPLICATION_CREDENTIALS env var
+  
+  # Firestore collections
+  collections:
+    positions: active_positions  # Open positions
+    signals: trading_signals     # Signal history
+    trade_history: trade_history # Closed trades
+    bot_status: bot_status       # Bot heartbeat
+
+# ────────────────────────────────────────────────────────────────────
+#  Telegram (Alerting Skill)
+# ────────────────────────────────────────────────────────────────────
+telegram:
+  enabled: true  # Enable/disable Telegram alerts
+  
+  # Get bot token from @BotFather on Telegram
+  token: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+  
+  # Your Telegram chat ID (get from @userinfobot)
+  chat_id: 123456789
+  
+  # Alert preferences
+  trade_opened: true   # Alert when trade opens
+  trade_closed: true   # Alert when trade closes
+  sl_hit: true         # Alert on stop loss hit
+  tp_hit: true         # Alert on take profit hit
+  error: true          # Alert on errors
+  daily_summary: true  # Send daily performance summary
+
+# ────────────────────────────────────────────────────────────────────
+#  Market Data Skill
+# ────────────────────────────────────────────────────────────────────
+market_data:
+  symbol: GOLD
+  source_timeframe: M5  # Source candle timeframe
+  buffer_size: 100      # Number of candles to keep in buffer
+  dedup_enabled: true   # Enable timestamp deduplication
+
+# ────────────────────────────────────────────────────────────────────
+#  Analysis Skill (Indicators)
+# ────────────────────────────────────────────────────────────────────
+analysis:
+  indicators:
+    supertrend:
+      enabled: true
+      period: 10
+      multiplier: 3
+    
+    sma:
+      enabled: true
+      periods: [20, 50, 200]
+    
+    ema:
+      enabled: true
+      periods: [9, 21]
+    
+    bollinger_bands:
+      enabled: true
+      period: 20
+      std: 2
+  
+  # Signal generation
+  require_trend_confirmation: true
+  min_candles_for_signal: 50
+
+# ────────────────────────────────────────────────────────────────────
+#  Risk Skill (Cooldown & Position Sizing)
+# ────────────────────────────────────────────────────────────────────
+risk:
+  # Cooldown settings (minutes)
+  sl_cooldown_minutes: 15  # Wait 15min after SL hit
+  tp_cooldown_minutes: 5   # Wait 5min after TP hit
+  
+  # Position sizing
+  position_size: 0.5
+  max_daily_loss: 500  # Max loss per day ($)
+  max_open_positions: 1
+  
+  # Risk limits
+  max_drawdown_percent: 20  # Stop trading if drawdown > 20%
+
+# ────────────────────────────────────────────────────────────────────
+#  Monitoring Skill
+# ────────────────────────────────────────────────────────────────────
+monitoring:
+  track_pnl: true
+  track_win_rate: true
+  track_drawdown: true
+  heartbeat_interval: 300  # Send heartbeat every 5min
+
+# ────────────────────────────────────────────────────────────────────
+#  Backtesting Skill
+# ────────────────────────────────────────────────────────────────────
+backtesting:
+  initial_capital: 10000  # Starting capital
+  
+  # Transaction costs
+  spread: 0.50  # $0.50 spread per trade
+  slippage: 0.05  # $0.05 slippage per trade
+  
+  # Simulation settings
+  use_intra_candle: true  # Simulate SL/TP within candle
+
+# ────────────────────────────────────────────────────────────────────
+#  Reporting Skill
+# ────────────────────────────────────────────────────────────────────
+reporting:
+  enabled: true
+  
+  # Export formats
+  formats:
+    - json
+    - csv
+    - html
+  
+  # Report output directory
+  output_dir: ./results
+  
+  # Include performance metrics
+  include_equity_curve: true
+  include_trade_distribution: true
+  include_monthly_breakdown: true
+
+# ────────────────────────────────────────────────────────────────────
+#  Skill Execution Order (automatic registration)
+# ────────────────────────────────────────────────────────────────────
+# Skills are executed in this order:
+# 1. Market Data → 2. Analysis → 3. Risk → 4. Execution → 
+# 5. Storage → 6. Monitoring → 7. Alerting → 8. Backtesting → 9. Reporting
+
+# ────────────────────────────────────────────────────────────────────
+#  Security Best Practices
+# ────────────────────────────────────────────────────────────────────
+# 1. NEVER commit this file with real credentials to git
+# 2. Use environment variables for sensitive data:
+#    - CAPITAL_USERNAME, CAPITAL_PASSWORD, CAPITAL_API_KEY
+#    - TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+#    - GOOGLE_APPLICATION_CREDENTIALS (path to JSON)
+# 3. Store credentials in a secure vault (e.g., AWS Secrets Manager)
+# 4. Rotate API keys regularly
+# 5. Use demo environment for testing
+
+# ────────────────────────────────────────────────────────────────────
+#  Quick Start
+# ────────────────────────────────────────────────────────────────────
+# 1. Copy this file: cp config/trading_config_example.yaml config/trading_config.yaml
+# 2. Fill in your credentials
+# 3. Test in mock mode first: mock_mode: true
+# 4. Test with demo environment: capital_com.environment: demo
+# 5. Once validated, switch to live: capital_com.environment: live

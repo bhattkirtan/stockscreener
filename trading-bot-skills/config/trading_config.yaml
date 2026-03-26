@@ -1,0 +1,228 @@
+# Trading Bot Configuration
+# Skill-based architecture configuration
+
+# General bot settings
+bot:
+  name: "GOLD M5 SupertrendVWAP Bot"
+  mode: AUTO  # AUTO (opens trades) or SIGNAL_ONLY (logs signals)
+  
+# Market data skill configuration
+market_data:
+  enabled: true
+  instrument: GOLD
+  timeframe: M5
+  buffer_size: 100  # Keep last 100 candles in memory
+  data_source: capital_com
+  websocket:
+    reconnect_delay_seconds: 5
+    max_reconnect_attempts: 10
+  rest_api:
+    base_url: "https://api-capital.backend-capital.com"
+    timeout_seconds: 30
+
+# Analysis skill configuration
+analysis:
+  enabled: true
+  strategy: supertrend_vwap
+  
+  # Supertrend indicator
+  supertrend:
+    atr_period: 10
+    multiplier: 2.0  # ST2.0
+  
+  # Moving averages
+  sma:
+    fast_period: 25
+    slow_period: 30
+  
+  # Bollinger Bands
+  bollinger:
+    period: 20
+    std_dev: 2.0
+  
+  # VWAP (Volume Weighted Average Price)
+  vwap:
+    enabled: true
+  
+  # Signal generation rules
+  signal_rules:
+    require_supertrend: true
+    require_sma_confirmation: true
+    require_bb_confirmation: false
+    edge_detection: true  # Only trade on signal transitions
+
+# Risk management skill configuration
+risk:
+  enabled: true
+  
+  # Cooldown periods (prevent duplicate trades)
+  sl_cooldown_minutes: 15  # Wait 15min after SL before same direction
+  tp_cooldown_minutes: 5   # Wait 5min after TP before same direction
+  
+  # Position sizing
+  position_size_pct: 2.0  # 2% of capital per trade
+  max_position_size: 10.0  # Max 10 contracts
+  position_sizing_method: fixed  # fixed, kelly, or percent_volatility
+  
+  # Risk limits
+  max_drawdown_pct: 20.0  # Stop trading if DD > 20%
+  max_positions: 1  # Only 1 position at a time
+  max_daily_loss: 1000.0  # Stop trading if daily loss > $1000
+  
+  # Exposure limits
+  max_exposure_per_symbol: 50.0  # Max 50% of capital in one symbol
+
+# Execution skill configuration
+execution:
+  enabled: true
+  broker: capital_com
+  
+  # Order parameters
+  sl_pips: 20  # Stop loss 20 pips
+  tp_pips: 40  # Take profit 40 pips
+  
+  # Capital.com credentials (use environment variables in production)
+  api_key: ${CAPITAL_API_KEY}
+  identifier: ${CAPITAL_IDENTIFIER}
+  password: ${CAPITAL_PASSWORD}
+  demo: false  # Set to true for demo account
+  
+  # Order management
+  order_type: MARKET
+  guaranteed_stop: false
+  trailing_stop: false
+
+# Storage skill configuration
+storage:
+  enabled: true
+  backend: firestore
+  
+  # Firestore settings
+  firestore:
+    project_id: "stockscreener-123"
+    credentials_path: ${GOOGLE_APPLICATION_CREDENTIALS}
+    collections:
+      positions: "active_positions"
+      signals: "signals"
+      trades: "trade_history"
+      bot_logs: "bot_logs"
+  
+  # Batch settings
+  batch_write: true
+  batch_size: 10
+  flush_interval_seconds: 30
+
+# Monitoring skill configuration
+monitoring:
+  enabled: true
+  
+  # P&L tracking
+  track_pnl: true
+  update_interval_seconds: 60
+  
+  # Performance metrics
+  calculate_sharpe: true
+  calculate_profit_factor: true
+  calculate_win_rate: true
+  
+  # Health checks
+  health_check_interval_seconds: 300  # 5 minutes
+  heartbeat_url: null  # Optional: HTTP endpoint for heartbeat
+
+# Alerting skill configuration
+alerting:
+  enabled: true
+  
+  # Telegram notifications
+  telegram:
+    enabled: true
+    token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+    
+    # Alert on these events
+    trade_opened: true
+    trade_closed: true
+    sl_hit: true
+    tp_hit: true
+    error: true
+    daily_summary: true
+  
+  # Email notifications
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    username: ${EMAIL_USERNAME}
+    password: ${EMAIL_PASSWORD}
+    to_address: "your@email.com"
+  
+  # Slack notifications
+  slack:
+    enabled: false
+    webhook_url: ${SLACK_WEBHOOK_URL}
+
+# Backtesting skill configuration (used for strategy validation)
+backtesting:
+  enabled: false  # Only enable when running backtest
+  
+  data:
+    file_path: "data/GOLD_M5_150000bars.csv"
+    date_column: "timestamp"
+    ohlcv_columns:
+      open: "open"
+      high: "high"
+      low: "low"
+      close: "close"
+      volume: "volume"
+  
+  # Simulation settings
+  initial_capital: 10000.0
+  commission_per_trade: 0.0  # Capital.com has spread, not commission
+  slippage_pips: 0.5
+  
+  # Event blocking (economic calendar)
+  event_blocking:
+    enabled: true
+    block_before_minutes: 30
+    block_after_minutes: 30
+  
+  # Parallel processing
+  workers: 12
+
+# Reporting skill configuration
+reporting:
+  enabled: true
+  
+  # Report generation
+  daily_report: true
+  weekly_report: true
+  monthly_report: true
+  
+  # Report content
+  include_charts: true
+  include_trade_list: true
+  include_metrics: true
+  
+  # Output formats
+  formats:
+    - pdf
+    - html
+  
+  output_directory: "reports/"
+
+# Logging configuration
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # File logging
+  file:
+    enabled: true
+    path: "/tmp/bot.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  
+  # Console logging
+  console:
+    enabled: true
+    colorize: true
