@@ -7,11 +7,11 @@ import pytest
 import sys
 import os
 from datetime import datetime, timezone, timedelta
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from skills.market_data.market_data_skill import MarketDataSkill
-from skills.base_skill import Context
 
 
 class TestMarketDataSkill:
@@ -21,30 +21,33 @@ class TestMarketDataSkill:
     def config(self):
         """Market data configuration"""
         return {
-            'symbol': 'GOLD',
-            'timeframe': '5min',
+            'instrument': 'GOLD',
+            'timeframe': 'M5',
             'buffer_size': 100,
             'dedup_enabled': True
         }
     
     @pytest.fixture
-    def skill(self, config):
-        """Market data skill instance"""
-        return MarketDataSkill(config)
+    def mock_event_bus(self):
+        """Mock event bus"""
+        bus = AsyncMock()
+        bus.publish = AsyncMock()
+        return bus
     
     @pytest.fixture
-    def context(self):
-        """Fresh trading context"""
-        return Context()
+    def skill(self, config, mock_event_bus):
+        """Market data skill instance"""
+        return MarketDataSkill(config, event_bus=mock_event_bus)
     
     def test_initialization(self, skill):
         """Test skill initializes correctly"""
         assert skill.symbol == 'GOLD'
-        assert skill.timeframe == '5min'
+        assert skill.timeframe == 'M5'
         assert skill.buffer_size == 100
         assert skill.dedup_enabled == True
     
-    def test_single_candle_processing(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_single_candle_processing(self, skill):
         """Test processing a single candle"""
         candle = {
             'timestamp': datetime.now(timezone.utc),
@@ -55,12 +58,13 @@ class TestMarketDataSkill:
             'volume': 1000
         }
         
-        skill.process_candle(context, candle)
+        await skill.process_candle(candle)
         
-        assert len(context.candles) == 1
-        assert context.candles[0]['close'] == 1952.00
+        assert len(skill.m5_history) == 1
+        assert skill.m5_history[0]['close'] == 1952.00
     
-    def test_multiple_candles_processing(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_multiple_candles_processing(self, skill):
         """Test processing multiple candles"""
         candles = [
             {'timestamp': datetime.now(timezone.utc) - timedelta(minutes=10), 'open': 1940, 'high': 1945, 'low': 1935, 'close': 1942, 'volume': 1000},
@@ -69,12 +73,13 @@ class TestMarketDataSkill:
         ]
         
         for candle in candles:
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
-        assert len(context.candles) == 3
-        assert context.candles[-1]['close'] == 1952.00
+        assert len(skill.m5_history) == 3
+        assert skill.m5_history[-1]['close'] == 1952.00
     
-    def test_candle_deduplication(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_candle_deduplication(self, skill):
         """Test that duplicate candles are filtered"""
         candle = {
             'timestamp': datetime.now(timezone.utc),
@@ -86,12 +91,13 @@ class TestMarketDataSkill:
         }
         
         # Process same candle twice
-        skill.process_candle(context, candle)
-        skill.process_candle(context, candle)
+        await skill.process_candle(candle)
+        await skill.process_candle(candle)
         
-        assert len(context.candles) == 1  # Should only add once
+        assert len(skill.m5_history) == 1  # Should only add once
     
-    def test_buffer_size_enforcement(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_buffer_size_enforcement(self, skill):
         """Test buffer maintains max size"""
         # Process more candles than buffer size
         for i in range(150):
@@ -103,11 +109,12 @@ class TestMarketDataSkill:
                 'close': 1952.00 + i,
                 'volume': 1000
             }
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
-        assert len(context.candles) <= skill.buffer_size
+        assert len(skill.m5_history) <= skill.buffer_size
     
-    def test_candle_ordering(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_candle_ordering(self, skill):
         """Test candles are ordered by timestamp"""
         candles = [
             {'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952, 'volume': 1000},
@@ -116,13 +123,14 @@ class TestMarketDataSkill:
         ]
         
         for candle in candles:
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
         # Verify ordering (oldest first)
-        for i in range(len(context.candles) - 1):
-            assert context.candles[i]['timestamp'] <= context.candles[i+1]['timestamp']
+        for i in range(len(skill.m5_history) - 1):
+            assert skill.m5_history[i]['timestamp'] <= skill.m5_history[i+1]['timestamp']
     
-    def test_invalid_candle_rejection(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_invalid_candle_rejection(self, skill):
         """Test invalid candles are rejected"""
         invalid_candles = [
             {'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952},  # Missing timestamp
@@ -131,11 +139,12 @@ class TestMarketDataSkill:
         ]
         
         for candle in invalid_candles:
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
-        assert len(context.candles) == 0  # No invalid candles added
+        assert len(skill.m5_history) == 0  # No invalid candles added
     
-    def test_get_latest_candle(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_get_latest_candle(self, skill):
         """Test retrieving latest candle"""
         candles = [
             {'timestamp': datetime.now(timezone.utc) - timedelta(minutes=10), 'open': 1940, 'high': 1945, 'low': 1935, 'close': 1942, 'volume': 1000},
@@ -144,28 +153,35 @@ class TestMarketDataSkill:
         ]
         
         for candle in candles:
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
-        latest = context.candles[-1]
+        latest = skill.m5_history[-1]
         assert latest['close'] == 1952.00
     
-    def test_candle_aggregation_by_timeframe(self, skill, context):
+    @pytest.mark.asyncio
+    async def test_candle_aggregation_by_timeframe(self, config, mock_event_bus):
         """Test candles are aggregated correctly by timeframe"""
-        # Add multiple 1-min candles to be aggregated into 5-min
-        base_time = datetime.now(timezone.utc)
-        for i in range(5):
+        # Create skill with M15 timeframe
+        config['timeframe'] = 'M15'
+        skill = MarketDataSkill(config, event_bus=mock_event_bus)
+        
+        # Add 3 M5 candles at M15-aligned times (last one at 10:15 triggers M15 bar)
+        base_time = datetime(2024, 1, 1, 10, 5, tzinfo=timezone.utc)
+        for i in range(3):
             candle = {
-                'timestamp': base_time + timedelta(minutes=i),
+                'timestamp': base_time + timedelta(minutes=i*5),
                 'open': 1950.00 + i,
                 'high': 1955.00 + i,
                 'low': 1945.00 + i,
                 'close': 1952.00 + i,
                 'volume': 200
             }
-            skill.process_candle(context, candle)
+            await skill.process_candle(candle)
         
-        # Verify candles are stored
-        assert len(context.candles) > 0
+        # Verify M5 candles are stored
+        assert len(skill.m5_history) == 3
+        # Verify M15 bar was created (last candle at 10:15 aligns with M15 boundary)
+        assert len(skill.m15_history) == 1
 
 
 if __name__ == '__main__':

@@ -70,14 +70,17 @@ class MarketDataSkill(Skill):
     - Aggregate M5 to M15 if needed
     - Deduplicate candles
     - Provide quote updates
+    - Publish CANDLE_CLOSED events
     """
     
-    def __init__(self, config: Dict):
-        super().__init__(config)
+    def __init__(self, config: Dict, event_bus: Optional['EventBus'] = None):
+        super().__init__(config, event_bus)
         
         self.instrument = config.get('instrument', 'GOLD')
+        self.symbol = self.instrument  # Alias for tests
         self.timeframe = config.get('timeframe', 'M5')
         self.buffer_size = config.get('buffer_size', 100)
+        self.dedup_enabled = config.get('dedup_enabled', True)
         
         # Candle history buffers
         self.m5_history: List[Dict] = []
@@ -93,6 +96,76 @@ class MarketDataSkill(Skill):
         self.last_quote: Optional[Dict] = None
         
         print(f"📊 Market Data Skill initialized: {self.instrument} {self.timeframe}, buffer={self.buffer_size}")
+    
+    async def process_candle(self, candle: Dict) -> None:
+        """
+        Process incoming candle and publish CANDLE_CLOSED event.
+        
+        Args:
+            candle: Dict with timestamp, open, high, low, close, volume
+        """
+        # Validate candle
+        required_fields = ['timestamp', 'open', 'high', 'low', 'close']
+        if not all(field in candle for field in required_fields):
+            print(f"⚠️ Invalid candle (missing fields): {candle.keys()}")
+            return
+        
+        # Deduplicate
+        if self.dedup_enabled:
+            candle_ts = candle.get('timestamp')
+            if candle_ts == self.last_candle_timestamp:
+                print(f"⏭️ Skipping duplicate candle: {candle_ts}")
+                return
+            
+            self.last_candle_timestamp = candle_ts
+        
+        # Add to M5 history
+        self.m5_history.append(candle)
+        
+        # Trim buffer
+        if len(self.m5_history) > self.buffer_size:
+            self.m5_history = self.m5_history[-self.buffer_size:]
+        
+        # Sort by timestamp to maintain order
+        self.m5_history.sort(key=lambda c: c.get('timestamp'))
+        
+        # If using M15, aggregate M5 to M15
+        published_candle = candle
+        if self.timeframe == 'M15':
+            m15_bar = self.aggregator.add_m5_candle(candle)
+            if m15_bar:
+                self.m15_history.append(m15_bar)
+                if len(self.m15_history) > self.buffer_size:
+                    self.m15_history = self.m15_history[-self.buffer_size:]
+                
+                print(f"✅ M15 bar created: {m15_bar['timestamp']}")
+                published_candle = m15_bar
+            else:
+                # Not enough M5 candles yet for M15 bar
+                return  # Don't publish partial M15
+        
+        # Publish CANDLE_CLOSED event
+        if self.event_bus:
+            from core.event_bus import Event, EventType
+            event = Event(
+                event_type=EventType.CANDLE_CLOSED,
+                instrument=self.instrument,
+                source='market_data',
+                payload={
+                    'candle': published_candle,
+                    'timeframe': self.timeframe
+                }
+            )
+            await self.event_bus.publish(event)
+        
+        print(f"📊 Candle: {published_candle.get('timestamp')} O:{published_candle['open']:.2f} C:{published_candle['close']:.2f}")
+    
+    def get_candle_history(self) -> List[Dict]:
+        """Get current candle history based on timeframe"""
+        if self.timeframe == 'M15':
+            return self.m15_history
+        else:
+            return self.m5_history
     
     async def execute(self, context: Context) -> Context:
         """
