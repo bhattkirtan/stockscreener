@@ -77,6 +77,12 @@ class AnalysisSkill(Skill):
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
         
+        # Calculate all indicators
+        df = self._calculate_supertrend(df)
+        df = self._calculate_sma(df)
+        df = self._calculate_ema(df)
+        df = self._calculate_bollinger_bands(df)
+        
         # Extract indicators
         latest = df.iloc[-1]
         indicators = {
@@ -99,15 +105,27 @@ class AnalysisSkill(Skill):
             self.last_signal_state = signal
             print(f"🎯 New signal: {signal}")
             
+            # Calculate entry/sl/tp based on indicators
+            entry_price = float(latest['close'])
+            supertrend = float(latest['supertrend'])
+            
+            if signal == 'BUY':
+                sl = supertrend  # Stop below supertrend
+                tp = entry_price + 2 * (entry_price - sl)  # 2:1 reward:risk
+            else:  # SELL
+                sl = supertrend  # Stop above supertrend
+                tp = entry_price - 2 * (sl - entry_price)  # 2:1 reward:risk
+            
             # Publish SIGNAL_GENERATED event
             if self.event_bus:
                 from core.event_bus import create_signal_generated_event
                 await self.event_bus.publish(
                     create_signal_generated_event(
-                        instrument=event.instrument,
                         signal=signal,
-                        indicators=indicators,
-                        correlation_id=event.correlation_id
+                        entry_price=entry_price,
+                        sl=sl,
+                        tp=tp,
+                        instrument=event.instrument
                     )
                 )
     

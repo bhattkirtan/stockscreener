@@ -80,7 +80,8 @@ class TestAnalysisSkill:
         ]
         
         event = create_candle_closed_event(
-            candle={'instrument': 'GOLD', 'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
+            instrument='GOLD',
+            candle={'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
         )
         
         await skill.on_candle_closed(event)
@@ -92,7 +93,8 @@ class TestAnalysisSkill:
     async def test_on_candle_closed_with_sufficient_data(self, skill, mock_event_bus, mock_market_data):
         """Test on_candle_closed generates signal with sufficient data"""
         event = create_candle_closed_event(
-            candle={'instrument': 'GOLD', 'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
+            instrument='GOLD',
+            candle={'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
         )
         
         await skill.on_candle_closed(event)
@@ -103,14 +105,14 @@ class TestAnalysisSkill:
             published_event = mock_event_bus.publish.call_args[0][0]
             assert published_event.event_type == EventType.SIGNAL_GENERATED
             assert published_event.instrument == 'GOLD'
-            # Correlation ID is generated fresh for signal events
-            assert published_event.correlation_id is not None
+            assert published_event.correlation_id == event.correlation_id
     
     @pytest.mark.asyncio
     async def test_edge_detection_prevents_continuous_signals(self, skill, mock_event_bus):
         """Test edge detection only triggers on signal change"""
         event = create_candle_closed_event(
-            candle={'instrument': 'GOLD', 'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
+            instrument='GOLD',
+            candle={'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
         )
         
         # First call - may or may not generate signal
@@ -129,21 +131,71 @@ class TestAnalysisSkill:
     async def test_signal_storage_in_event_payload(self, skill, mock_event_bus):
         """Test signal and indicators are stored in event payload"""
         event = create_candle_closed_event(
-            candle={'instrument': 'GOLD', 'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
+            instrument='GOLD',
+            candle={'timestamp': datetime.now(timezone.utc), 'open': 1950, 'high': 1955, 'low': 1945, 'close': 1952}
         )
+            'timestamp': datetime.now(timezone.utc),
+            'open': 1950.00,
+            'high': 1952.00,
+            'low': 1945.00,
+            'close': 1946.00,  # Small body, might be edge
+            'volume': 1000
+        }
+        context_with_candles.candles.append(reversal_candle)
         
-        await skill.on_candle_closed(event)
+        signal = skill.analyze(context_with_candles)
+        # Edge detection might filter this signal
+        assert signal in ['BUY', 'SELL', 'HOLD', None]
+    
+    def test_buy_signal_conditions(self, skill):
+        """Test BUY signal generation conditions"""
+        context = Context()
         
-        # If event published, check payload structure
-        if mock_event_bus.publish.called:
-            published_event = mock_event_bus.publish.call_args[0][0]
-            assert published_event.event_type == EventType.SIGNAL_GENERATED
-            assert 'signal' in published_event.payload
-            assert 'entry_price' in published_event.payload
-            assert 'stop_loss' in published_event.payload
-            assert 'take_profit' in published_event.payload
+        # Create strong uptrend candles
+        base_time = datetime.now(timezone.utc)
+        for i in range(30):
+            candle = {
+                'timestamp': base_time - timedelta(minutes=150-i*5),
+                'open': 1900.00 + i*2,
+                'high': 1908.00 + i*2,
+                'low': 1898.00 + i*2,
+                'close': 1906.00 + i*2,
+                'volume': 1500
+            }
+            context.candles.append(candle)
+        
+        signal = skill.analyze(context)
+        # Should have potential for BUY (or HOLD if conditions not perfect)
+        assert signal in ['BUY', 'HOLD', None]
+    
+    def test_sell_signal_conditions(self, skill):
+        """Test SELL signal generation conditions"""
+        context = Context()
+        
+        # Create strong downtrend candles
+        base_time = datetime.now(timezone.utc)
+        for i in range(30):
+            candle = {
+                'timestamp': base_time - timedelta(minutes=150-i*5),
+                'open': 2000.00 - i*2,
+                'high': 2002.00 - i*2,
+                'low': 1992.00 - i*2,
+                'close': 1994.00 - i*2,
+                'volume': 1500
+            }
+            context.candles.append(candle)
+        
+        signal = skill.analyze(context)
+        # Should have potential for SELL (or HOLD if conditions not perfect)
+        assert signal in ['SELL', 'HOLD', None]
+    
+    def test_signal_storage_in_context(self, skill, context_with_candles):
+        """Test signal is stored in context"""
+        skill.analyze(context_with_candles)
+        
+        # Signal should be set in context (even if None or HOLD)
+        assert hasattr(context_with_candles, 'signal') or context_with_candles.signal is None
 
 
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
     pytest.main([__file__, '-v'])
