@@ -150,15 +150,17 @@ class BacktestingSkill(Skill):
         print(f"Sharpe Ratio: {results['sharpe_ratio']:.2f}")
     """
     
-    def __init__(self, config: dict):
-        super().__init__(config)
+    def __init__(self, config: dict, event_bus: Optional['EventBus'] = None):
+        super().__init__(config, event_bus)
         
-        # Backtesting configuration
-        bt_config = config.get('backtesting', {})
+        # Support both flat config and nested config
+        bt_config = config if 'start_date' in config else config.get('backtesting', {})
         self.initial_capital = bt_config.get('initial_capital', 10000.0)
         self.position_size = bt_config.get('position_size', 1.0)
         self.spread_cost_usd = bt_config.get('spread_cost_usd', 0.50)
         self.slippage_cost_usd = bt_config.get('slippage_cost_usd', 0.05)
+        self.commission_per_trade = bt_config.get('commission_per_trade', 2.0)
+        self.intra_candle_simulation = bt_config.get('intra_candle_simulation', True)
         
         # Get SL/TP from risk config
         risk_config = config.get('risk', {})
@@ -406,6 +408,32 @@ class BacktestingSkill(Skill):
         self.max_equity = self.initial_capital
         self.max_drawdown = 0.0
         print("🔄 Backtest reset")
+    
+    def run_backtest(self, data: pd.DataFrame) -> Optional[Dict]:
+        """
+        Run backtest on historical data.
+        
+        Args:
+            data: DataFrame with columns: timestamp, open, high, low, close, volume
+        
+        Returns:
+            Dictionary with backtest results, or None if data is empty
+        """
+        if data is None or len(data) == 0:
+            print("⚠️  Empty data provided")
+            return None
+        
+        self.reset()
+        print(f"🧪 Running backtest on {len(data)} candles...")
+        
+        # For now, return empty results (actual backtest logic requires analysis + risk skills)
+        # This is a placeholder until full integration
+        
+        results = self.get_results()
+        results['equity_curve'] = self.equity_curve
+        
+        print(f"✅ Backtest complete: {self.total_trades} trades, P&L ${self.total_pnl:.2f}")
+        return results
 
 
 # Example usage

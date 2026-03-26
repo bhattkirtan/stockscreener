@@ -7,12 +7,12 @@ import pytest
 import sys
 import os
 from datetime import datetime, timezone, timedelta
+from unittest.mock import AsyncMock
 import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from skills.backtesting.backtesting_skill import BacktestingSkill
-from skills.base_skill import Context
 
 
 class TestBacktestingSkill:
@@ -30,9 +30,16 @@ class TestBacktestingSkill:
         }
     
     @pytest.fixture
-    def skill(self, config):
+    def mock_event_bus(self):
+        """Mock event bus"""
+        bus = AsyncMock()
+        bus.publish = AsyncMock()
+        return bus
+    
+    @pytest.fixture
+    def skill(self, config, mock_event_bus):
         """Backtesting skill instance"""
-        return BacktestingSkill(config)
+        return BacktestingSkill(config, event_bus=mock_event_bus)
     
     @pytest.fixture
     def sample_data(self):
