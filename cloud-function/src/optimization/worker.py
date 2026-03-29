@@ -68,6 +68,11 @@ def build_backtest_config(params: dict, initial_capital: float) -> BacktestConfi
         # Event blocking
         enable_event_blocking=params.get('enable_event_blocking', False),
         calendar_path=params.get('calendar_path', None),
+        # Trailing stops
+        enable_trailing_stop=params.get('enable_trailing_stop', False),
+        breakeven_after_pips=params.get('breakeven_after_pips', 0.0),
+        trail_stop_distance=params.get('trail_stop_distance', 5.0),
+        trail_trigger_pips=params.get('trail_trigger_pips', 10.0),
     )
 
 

@@ -38,6 +38,9 @@ from .signal_engine import (
     check_reverse_signal
 )
 
+# Import position management for trailing stops
+from .position_manager import PositionManager, PositionTracker, TrailingStopConfig
+
 
 class NoEntryBeforeEOD:
     """Blocks new entries X hours before EOD close."""
@@ -294,6 +297,12 @@ class BacktestConfig:
     sl_cooldown_minutes: int = 15            # Wait 15 minutes (3 M5 candles) after SL hit before same direction
     tp_cooldown_minutes: int = 5             # Wait 5 minutes (1 M5 candle) after TP hit before same direction
     
+    # Trailing stop loss (position management)
+    enable_trailing_stop: bool = False       # Enable/disable trailing stop loss
+    breakeven_after_pips: float = 0.0        # Move SL to entry after this profit (0 = disabled)
+    trail_stop_distance: float = 5.0         # Distance to move SL (X pips)
+    trail_trigger_pips: float = 10.0         # Trigger trailing every Y pips profit
+    
     # Logging
     verbose: bool = True
     trade_log_file: Optional[str] = None  # Path to write per-order trace CSV (None = disabled)
@@ -357,6 +366,23 @@ class IntraCandleBacktester:
                 logger.warning(f"⚠️  Failed to create event blocker: {e}")
                 self.config.enable_event_blocking = False
         
+        # Initialize position manager for trailing stops
+        self.position_manager = None
+        if self.config.enable_trailing_stop:
+            # Determine which strategies are enabled
+            breakeven_enabled = self.config.breakeven_after_pips > 0
+            step_trailing_enabled = self.config.trail_trigger_pips > 0 and self.config.trail_stop_distance > 0
+            
+            trailing_config = TrailingStopConfig(
+                breakeven_enabled=breakeven_enabled,
+                breakeven_trigger_pips=self.config.breakeven_after_pips,
+                step_trailing_enabled=step_trailing_enabled,
+                trail_step_pips=self.config.trail_trigger_pips,
+                trail_move_pips=self.config.trail_stop_distance
+            )
+            self.position_manager = PositionManager(trailing_config)
+            logger.info(f"🎯 Position Manager initialized (breakeven={self.config.breakeven_after_pips}p, trail={self.config.trail_stop_distance}p every {self.config.trail_trigger_pips}p)")
+        
         self.reset()
     
     def reset(self):
@@ -369,6 +395,9 @@ class IntraCandleBacktester:
         
         # Signal debouncing tracking
         self.last_closed_position: Optional[Dict] = None  # Track last closed position for cooldown
+        
+        # Position tracking for trailing stops
+        self.trade_trackers: Dict[int, PositionTracker] = {}  # Map trade IDs to their trackers
         
         # Performance tracking
         self.total_pnl = 0.0
@@ -462,7 +491,21 @@ class IntraCandleBacktester:
                 for idx, tick in ticks.iterrows():
                     tick_high = tick['high']
                     tick_low = tick['low']
+                    tick_close = tick.get('close', (tick_high + tick_low) / 2)  # Use close or mid-price
                     tick_ts = idx  # timestamp is the DatetimeIndex
+                    
+                    # Update trailing stop if enabled
+                    if self.position_manager and id(trade) in self.trade_trackers:
+                        tracker = self.trade_trackers[id(trade)]
+                        new_sl, should_update = self.position_manager.calculate_trailing_stop(
+                            tracker,
+                            tick_close
+                        )
+                        if should_update:
+                            old_sl = trade.stop_loss
+                            trade.stop_loss = new_sl
+                            if self.config.verbose:
+                                logger.debug(f"   🔄 Trailing stop: {old_sl:.2f} → {new_sl:.2f} @ {tick_close:.2f}")
                     
                     # Check stop loss
                     if trade.stop_loss is not None:
@@ -497,6 +540,19 @@ class IntraCandleBacktester:
             
             # Check each point in the path
             for price in price_path:
+                # Update trailing stop if enabled
+                if self.position_manager and id(trade) in self.trade_trackers:
+                    tracker = self.trade_trackers[id(trade)]
+                    new_sl, should_update = self.position_manager.calculate_trailing_stop(
+                        tracker,
+                        price
+                    )
+                    if should_update:
+                        old_sl = trade.stop_loss
+                        trade.stop_loss = new_sl
+                        if self.config.verbose:
+                            logger.debug(f"   🔄 Trailing stop: {old_sl:.2f} → {new_sl:.2f} @ {price:.2f}")
+                
                 # Check stop loss
                 if trade.stop_loss is not None:
                     if trade.side == OrderSide.BUY and price <= trade.stop_loss:
@@ -652,6 +708,18 @@ class IntraCandleBacktester:
                 size, '', '', ''
             ])
 
+        # Initialize trailing stop tracker if enabled
+        if self.position_manager and stop_loss is not None:
+            direction = 'BUY' if side == OrderSide.BUY else 'SELL'
+            self.trade_trackers[id(trade)] = PositionTracker(
+                direction=direction,
+                entry_price=adjusted_price,
+                current_sl=stop_loss,
+                current_tp=take_profit
+            )
+            if self.config.verbose:
+                logger.debug(f"🎯 Trailing stop tracker initialized for {direction} position")
+
         return trade
     
     def close_position(
@@ -697,6 +765,10 @@ class IntraCandleBacktester:
         # Move to closed positions
         self.open_positions.remove(trade)
         self.closed_positions.append(trade)
+        
+        # Remove trailing stop tracker
+        if id(trade) in self.trade_trackers:
+            del self.trade_trackers[id(trade)]
         
         # Track last closed position for debouncing
         self.last_closed_position = {

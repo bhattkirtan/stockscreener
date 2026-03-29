@@ -102,6 +102,11 @@ def _csv_row_to_params(row: pd.Series) -> dict:
         # Event blocking — always off by default; winners mode overrides below
         'enable_event_blocking':    False,
         'calendar_path':            None,
+        # Trailing stops
+        'enable_trailing_stop':     bool(row.get('enable_trailing_stop', False)),
+        'breakeven_after_pips':     float(row.get('breakeven_after_pips', 0.0)),
+        'trail_stop_distance':      float(row.get('trail_stop_distance', 5.0)),
+        'trail_trigger_pips':       float(row.get('trail_trigger_pips', 10.0)),
     }
 
 
@@ -212,6 +217,18 @@ def main():
                         help='Position size per trade. e.g. 1.0 for 1 ETH (default: 10.0)')
     parser.add_argument('--spread-usd', default=None, type=float,
                         help='Spread cost in USD per trade. e.g. 1.75 for ETH (default: 0.50 GOLD)')
+    parser.add_argument('--st-period', default=None,
+                        help='Supertrend periods, comma-separated. e.g. "10,14,20"')
+    
+    # Trailing stop parameters
+    parser.add_argument('--enable-trailing-stop', action='store_true',
+                        help='Enable trailing stop loss for all backtests')
+    parser.add_argument('--breakeven-pips', default=None, type=float,
+                        help='Pips profit before moving SL to breakeven (0 to disable)')
+    parser.add_argument('--trail-step-pips', default=None, type=float,
+                        help='Trail distance: move SL this many pips per step')
+    parser.add_argument('--trail-trigger-pips', default=None, type=float,
+                        help='Trail trigger: move SL after this many pips profit')
 
     args = parser.parse_args()
 
@@ -324,16 +341,28 @@ def main():
             grid['spread_usd'] = [args.spread_usd]
         if args.st_mult:
             grid['supertrend_multiplier'] = [float(v) for v in args.st_mult.split(',')]
+        if args.st_period:
+            grid['supertrend_period'] = [int(v) for v in args.st_period.split(',')]
         if args.sma_fast:
             grid['sma_fast'] = [int(v) for v in args.sma_fast.split(',')]
         if args.sma_slow:
             grid['sma_slow'] = [int(v) for v in args.sma_slow.split(',')]
+        # Trailing stops
+        if args.enable_trailing_stop:
+            grid['enable_trailing_stop'] = [True]
+            if args.breakeven_pips is not None:
+                grid['breakeven_after_pips'] = [args.breakeven_pips]
+            if args.trail_step_pips is not None:
+                grid['trail_stop_distance'] = [args.trail_step_pips]
+            if args.trail_trigger_pips is not None:
+                grid['trail_trigger_pips'] = [args.trail_trigger_pips]
         return grid
 
     _has_overrides = any([
         args.sl_pips, args.tp_pips, args.pip_value, args.fixed_only, args.atr_only,
         args.position_size is not None, args.spread_usd is not None,
-        args.st_mult, args.sma_fast, args.sma_slow,
+        args.st_mult, args.st_period, args.sma_fast, args.sma_slow,
+        args.enable_trailing_stop,
     ])
     if _has_overrides:
         _orig_short    = optimizer.define_short_grid
@@ -350,6 +379,7 @@ def main():
         optimizer.define_parameter_grid = lambda: _apply_grid_overrides(_orig_full())
         overrides = []
         if args.st_mult:                    overrides.append(f'st_mult={args.st_mult}')
+        if args.st_period:                  overrides.append(f'st_period={args.st_period}')
         if args.sma_fast:                   overrides.append(f'sma_fast={args.sma_fast}')
         if args.sma_slow:                   overrides.append(f'sma_slow={args.sma_slow}')
         if args.sl_pips:                    overrides.append(f'sl_pips={args.sl_pips}')
@@ -359,6 +389,12 @@ def main():
         if args.atr_only:                  overrides.append('ATR TP/SL only')
         if args.position_size is not None: overrides.append(f'position_size={args.position_size}')
         if args.spread_usd is not None:    overrides.append(f'spread_usd=${args.spread_usd}')
+        if args.enable_trailing_stop:
+            ts_parts = ['trailing_stop=ON']
+            if args.breakeven_pips is not None: ts_parts.append(f'BE@{args.breakeven_pips}')
+            if args.trail_step_pips is not None: ts_parts.append(f'step={args.trail_step_pips}')
+            if args.trail_trigger_pips is not None: ts_parts.append(f'trigger={args.trail_trigger_pips}')
+            overrides.append(' '.join(ts_parts))
         print(f"   🔧 Grid overrides: {', '.join(overrides)}\n")
 
     # ── ALL OTHER MODES ────────────────────────────────────────────────────

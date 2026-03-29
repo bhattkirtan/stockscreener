@@ -107,6 +107,12 @@ class StrategyOptimizer:
             # Zone-hybrid knobs (only applied when strategy_type='zone_hybrid')
             'zone_block_distance': [0.5, 1.0, 1.5],
             'enable_zone_stops': [False, True],
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
         }
 
     def define_parameter_grid(self) -> Dict[str, List]:
@@ -143,6 +149,12 @@ class StrategyOptimizer:
             # For ATR-based TP/SL
             'atr_sl_multiplier': [1.5, 2.0, 2.5],  # Used when tp_sl_strategy='atr'
             'atr_tp_multiplier': [3.0, 4.0, 5.0],  # Used when tp_sl_strategy='atr'
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
         }
     
     def define_quick_grid(self) -> Dict[str, List]:
@@ -171,6 +183,12 @@ class StrategyOptimizer:
             'atr_tp_multiplier': [2.0, 2.5, 3.0],  # 2.5 was previous best
             # CRITICAL: Small pip_value for INTRADAY (0.5-1.5 creates $15-$45 targets)
             'pip_value': [0.5, 1.0, 1.5],  # Reduced to 3 values for speed
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
         }
     
     def define_medium_grid(self) -> Dict[str, List]:
@@ -194,6 +212,12 @@ class StrategyOptimizer:
             'atr_sl_multiplier': [0.3, 0.9, 1.5, 2.0],
             'atr_tp_multiplier': [1.0, 2.0, 3.0, 4.0],
             'pip_value': [1.0],  # Fixed for medium mode
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
         }
     
     def define_intraday_grid(self) -> Dict[str, List]:
@@ -261,7 +285,13 @@ class StrategyOptimizer:
             
             # TEST: EOD blackout
             'enable_eod_blackout': [True, False],
-            'no_entry_before_eod_hours': [1]
+            'no_entry_before_eod_hours': [1],
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
             
             # PHASE 2/3 REMOVED: All failed (ADX, BB sizing: -25.85%, Dynamic TP/SL: -55%, MTF: +0.82%, S/R: -25.90%)
             # Only RSI filter survived: +23.36% avg test improvement
@@ -315,6 +345,12 @@ class StrategyOptimizer:
             # Zone knobs — exhaustive sweep
             'zone_block_distance': [0.5, 1.0, 1.5, 2.0],
             'enable_zone_stops':   [False, True],
+            
+            # Trailing stops (disabled by default, enable via CLI --enable-trailing-stop)
+            'enable_trailing_stop': [False],
+            'breakeven_after_pips': [0.0],
+            'trail_stop_distance': [5.0],
+            'trail_trigger_pips': [10.0],
         }
 
     def generate_combinations(self, grid: Dict[str, List]) -> List[Dict]:
@@ -338,8 +374,10 @@ class StrategyOptimizer:
         ]
         if 'strategy_type' not in grid:
             base_params.remove('strategy_type')
-        # Passthrough overrides (e.g. position_size, spread_usd) — single-value lists
-        for _passthrough in ('position_size', 'spread_usd', 'slippage_usd'):
+        # Passthrough overrides (e.g. position_size, spread_usd, trailing stops) — single-value lists
+        for _passthrough in ('position_size', 'spread_usd', 'slippage_usd',
+                              'enable_trailing_stop', 'breakeven_after_pips',
+                              'trail_stop_distance', 'trail_trigger_pips'):
             if _passthrough in grid and _passthrough not in base_params:
                 base_params.append(_passthrough)
         

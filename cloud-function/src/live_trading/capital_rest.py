@@ -149,6 +149,35 @@ class CapitalRestClient:
         response = self._request('GET', '/api/v1/positions')
         return response.json().get('positions', [])
     
+    def get_position_for_epic(self, epic: str) -> Optional[Dict]:
+        """
+        Get open position for specific epic (instrument).
+        Returns position dict if exists, None if no position.
+        
+        Args:
+            epic: Instrument epic code (e.g., 'GOLD')
+            
+        Returns:
+            Dict with position details if found, None otherwise
+            Position includes: dealId, dealReference, direction, size, level (entry), stopLevel, limitLevel
+        """
+        positions = self.get_open_positions()
+        for item in positions:
+            pos = item.get('position', {})
+            mkt = item.get('market', {})
+            if mkt.get('epic') == epic:
+                return {
+                    'deal_id': pos.get('dealId'),
+                    'deal_reference': pos.get('dealReference'),
+                    'direction': pos.get('direction'),
+                    'size': pos.get('size'),
+                    'entry_price': pos.get('level'),
+                    'stop_loss': pos.get('stopLevel'),
+                    'take_profit': pos.get('limitLevel'),
+                    'created_date': pos.get('createdDate')
+                }
+        return None
+    
     def create_position(
         self,
         epic: str,
