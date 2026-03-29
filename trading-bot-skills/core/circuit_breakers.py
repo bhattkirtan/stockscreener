@@ -18,17 +18,32 @@ class CircuitBreakerStatus(Enum):
 @dataclass
 class LossTracker:
     """Tracks losses over time periods"""
-    period_start: datetime
+    period_start: datetime = field(default_factory=datetime.now)
+    window_hours: int = 24
     total_pnl: float = 0.0
     winning_trades: int = 0
     losing_trades: int = 0
     consecutive_losses: int = 0
     max_consecutive_losses: int = 0
-    
-    def record_trade(self, pnl: float) -> None:
+    _trade_log: list = field(default_factory=list)  # [(timestamp, pnl), ...]
+
+    def get_win_count(self) -> int:
+        return self.winning_trades
+
+    def get_loss_count(self) -> int:
+        return self.losing_trades
+
+    def get_total_pnl(self) -> float:
+        """Return total P&L within the window"""
+        cutoff = datetime.now() - timedelta(hours=self.window_hours)
+        return sum(pnl for ts, pnl in self._trade_log if ts >= cutoff)
+
+    def record_trade(self, pnl: float, timestamp: Optional[datetime] = None) -> None:
         """Record trade result"""
+        ts = timestamp or datetime.now()
+        self._trade_log.append((ts, pnl))
         self.total_pnl += pnl
-        
+
         if pnl > 0:
             self.winning_trades += 1
             self.consecutive_losses = 0
@@ -39,17 +54,20 @@ class LossTracker:
                 self.max_consecutive_losses,
                 self.consecutive_losses
             )
-    
+
     def get_loss(self) -> float:
-        """Get total loss (negative P&L only)"""
-        return min(0, self.total_pnl)
-    
+        """Get sum of losses within the window (negative values only)"""
+        cutoff = datetime.now() - timedelta(hours=self.window_hours)
+        return sum(pnl for ts, pnl in self._trade_log if ts >= cutoff and pnl < 0)
+
     def reset(self) -> None:
         """Reset tracker for new period"""
         self.period_start = datetime.now()
         self.total_pnl = 0.0
         self.winning_trades = 0
         self.losing_trades = 0
+        self.consecutive_losses = 0
+        self._trade_log.clear()
         self.consecutive_losses = 0
 
 
@@ -90,7 +108,7 @@ class CircuitBreaker:
         self.failure_window_minutes = 30
         
         # Manual override
-        self.manual_override = False
+        self._manual_override_active = False
         self.override_reason: Optional[str] = None
     
     def check_status(self, current_capital: float) -> Tuple[CircuitBreakerStatus, Optional[str]]:
@@ -104,7 +122,7 @@ class CircuitBreaker:
             (status, reason) tuple
         """
         # Manual override always takes precedence
-        if self.manual_override:
+        if self._manual_override_active:
             return CircuitBreakerStatus.OPEN, f"Manual override: {self.override_reason}"
         
         # Auto-reset if new period
@@ -137,7 +155,7 @@ class CircuitBreaker:
         
         # All checks passed
         self.status = CircuitBreakerStatus.CLOSED
-        return self.status, None
+        return self.status, ''
     
     def record_trade(self, pnl: float) -> None:
         """
@@ -189,24 +207,36 @@ class CircuitBreaker:
             print(f"🔄 Weekly tracker reset (new week)")
             self.weekly_tracker.reset()
     
-    def manual_open(self, reason: str) -> None:
+    def manual_override(self, reason: str) -> None:
         """
         Manually open circuit breaker (emergency stop).
-        
+
         Args:
             reason: Reason for manual intervention
         """
-        self.manual_override = True
+        self._manual_override_active = True
         self.override_reason = reason
         self.status = CircuitBreakerStatus.OPEN
         print(f"🚨 Circuit breaker manually opened: {reason}")
-    
+
+    def manual_open(self, reason: str) -> None:
+        """Alias for manual_override"""
+        self.manual_override(reason)
+
     def manual_close(self) -> None:
         """Reset manual override and allow trading"""
-        self.manual_override = False
+        self._manual_override_active = False
         self.override_reason = None
         self.status = CircuitBreakerStatus.CLOSED
         print(f"✅ Circuit breaker manually closed - trading resumed")
+
+    def reset_daily(self) -> None:
+        """Force reset daily loss tracker"""
+        self.daily_tracker.reset()
+
+    def reset_weekly(self) -> None:
+        """Force reset weekly loss tracker"""
+        self.weekly_tracker.reset()
     
     def get_stats(self) -> Dict:
         """Get circuit breaker statistics"""
@@ -249,8 +279,11 @@ class TradingSessionFilter:
         - blackout_hours: List of (start_hour, end_hour) tuples to avoid
         """
         self.config = config
-        self.enabled = config.get('enabled', False)
-        
+        # Auto-enable if allowed_sessions or allowed_hours_utc is provided
+        self.enabled = config.get('enabled', bool(
+            config.get('allowed_sessions') or config.get('allowed_hours_utc')
+        ))
+
         # Session definitions (UTC)
         self.sessions = {
             'ASIAN': (time(23, 0), time(8, 0)),      # 11 PM - 8 AM UTC
@@ -299,8 +332,15 @@ class TradingSessionFilter:
             if not in_hours:
                 return False, f"Outside allowed trading hours"
         
-        # Check blackout periods
+        # Check blackout periods — support both tuple format and dict format
         blackout_hours = self.config.get('blackout_hours', [])
+        blackout_periods = self.config.get('blackout_periods', [])
+        # Normalize blackout_periods dicts ({start_hour, end_hour}) to tuples
+        for bp in blackout_periods:
+            if isinstance(bp, dict):
+                blackout_hours.append((bp['start_hour'], bp['end_hour']))
+            else:
+                blackout_hours.append(bp)
         for start, end in blackout_hours:
             if self._is_time_in_range(current_time, time(start, 0), time(end, 0)):
                 return False, f"In blackout period: {start}:00-{end}:00 UTC"
@@ -365,8 +405,13 @@ class SpreadSlippageFilter:
         spread = ask - bid
         spread_pct = (spread / ask) * 100
         
-        # Convert to pips (for forex, 1 pip = 0.0001)
-        pip_size = 0.0001 if 'USD' in instrument or 'EUR' in instrument else 0.01
+        # Convert to pips (1 pip = 0.0001 for forex, 0.1 for gold, 0.01 for others)
+        if 'USD' in instrument or 'EUR' in instrument or 'GBP' in instrument or 'JPY' in instrument:
+            pip_size = 0.0001  # Forex pairs
+        elif 'GOLD' in instrument or 'XAU' in instrument:
+            pip_size = 0.1  # Gold (~10 cents per pip)
+        else:
+            pip_size = 0.01  # Other commodities / indices
         spread_pips = spread / pip_size
         
         # Check limits
@@ -399,11 +444,11 @@ class NewsEventKillSwitch:
         - high_impact_only: Only block high-impact events
         """
         self.config = config
-        self.enabled = config.get('enabled', False)
+        self.enabled = config.get('enabled', True)
         self.blackout_window = config.get('blackout_window_minutes', 15)
-        
-        # Manual blackout periods
-        self.manual_blackouts: List[Tuple[datetime, datetime]] = []
+
+        # Manual blackout periods: stored as (start, end, reason)
+        self.manual_blackouts: List[Tuple[datetime, datetime, str]] = []
     
     def is_trading_allowed(self, timestamp: Optional[datetime] = None) -> Tuple[bool, str]:
         """
@@ -422,7 +467,8 @@ class NewsEventKillSwitch:
             timestamp = datetime.now()
         
         # Check manual blackouts
-        for start, end in self.manual_blackouts:
+        for entry in self.manual_blackouts:
+            start, end = entry[0], entry[1]
             if start <= timestamp <= end:
                 return False, f"Manual news blackout: {start} - {end}"
         
@@ -431,22 +477,36 @@ class NewsEventKillSwitch:
         
         return True, "No news events scheduled"
     
+    @property
+    def blackout_periods(self) -> List[Tuple[datetime, datetime, str]]:
+        """Return manual blackout periods (alias for manual_blackouts)"""
+        return self.manual_blackouts
+
     def add_blackout(self, start: datetime, end: datetime, reason: str = "News event") -> None:
         """
         Add manual blackout period.
-        
+
         Args:
             start: Blackout start time
             end: Blackout end time
             reason: Reason for blackout
         """
-        self.manual_blackouts.append((start, end))
+        self.manual_blackouts.append((start, end, reason))
         print(f"🚫 News blackout added: {start} - {end} ({reason})")
-    
+
+    def remove_blackout(self, reason: str) -> bool:
+        """Remove blackout period by reason. Returns True if found and removed."""
+        before = len(self.manual_blackouts)
+        self.manual_blackouts = [
+            entry for entry in self.manual_blackouts
+            if not (len(entry) > 2 and entry[2] == reason)
+        ]
+        return len(self.manual_blackouts) < before
+
     def clear_expired_blackouts(self) -> None:
         """Remove expired blackout periods"""
         now = datetime.now()
         self.manual_blackouts = [
-            (start, end) for start, end in self.manual_blackouts
-            if end > now
+            entry for entry in self.manual_blackouts
+            if entry[1] > now
         ]

@@ -74,14 +74,14 @@ def test_websocket_monitor_detects_missed_heartbeats(websocket_monitor):
     """Test WebSocket monitor detects missed heartbeats"""
     websocket_monitor.on_connect()
     websocket_monitor.on_heartbeat()
-    
-    # Simulate missed heartbeats (35 seconds ago, should have had heartbeat)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime.now() + timedelta(seconds=35)
-        
+
+    # Simulate missed heartbeats (50 seconds ago, should have had heartbeat)
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
+        mock_datetime.now.return_value = datetime.now() + timedelta(seconds=50)
+
         health = websocket_monitor.get_health()
-    
-    # Should detect 1 missed heartbeat (35s / 30s interval)
+
+    # Should detect 1 missed heartbeat (50s > 45s = 1.5 * 30s interval)
     assert websocket_monitor.missed_heartbeats >= 1
 
 
@@ -98,13 +98,13 @@ def test_websocket_monitor_detects_stale_data(websocket_monitor):
     """Test WebSocket monitor detects stale data"""
     websocket_monitor.on_connect()
     websocket_monitor.on_message('candle')
-    
+
     # Simulate stale data (6 minutes old, threshold is 5 minutes)
-    with patch('datetime.datetime') as mock_datetime:
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
         mock_datetime.now.return_value = datetime.now() + timedelta(minutes=6)
-        
+
         health = websocket_monitor.get_health()
-    
+
     assert health.status == 'DEGRADED'
     assert 'stale' in health.message.lower()
 
@@ -112,13 +112,14 @@ def test_websocket_monitor_detects_stale_data(websocket_monitor):
 def test_websocket_monitor_calculates_uptime(websocket_monitor):
     """Test WebSocket monitor calculates uptime"""
     websocket_monitor.on_connect()
-    
+
     # Simulate 10 minutes connected
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime.now() + timedelta(minutes=10)
-        
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
+        future_time = datetime.now() + timedelta(minutes=10)
+        mock_datetime.now.return_value = future_time
+
         uptime = websocket_monitor.get_uptime_seconds()
-    
+
     assert uptime >= 600  # 10 minutes
 
 
@@ -257,26 +258,26 @@ def test_freshness_monitor_records_update(freshness_monitor):
 def test_freshness_monitor_calculates_staleness(freshness_monitor):
     """Test freshness monitor calculates staleness"""
     freshness_monitor.record_update('candles')
-    
+
     # Simulate 5 minutes passing
-    with patch('datetime.datetime') as mock_datetime:
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
         future_time = datetime.now() + timedelta(minutes=5)
         mock_datetime.now.return_value = future_time
-        
+
         staleness = freshness_monitor.get_staleness('candles')
-    
+
     assert staleness >= 300  # 5 minutes in seconds
 
 
 def test_freshness_monitor_detects_stale_data(freshness_monitor):
     """Test freshness monitor detects stale data"""
     freshness_monitor.record_update('candles')
-    
+
     # Simulate 11 minutes passing (>10 minute threshold)
-    with patch('datetime.datetime') as mock_datetime:
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
         future_time = datetime.now() + timedelta(minutes=11)
         mock_datetime.now.return_value = future_time
-        
+
         is_stale = freshness_monitor.is_stale('candles')
     
     assert is_stale is True
@@ -285,11 +286,11 @@ def test_freshness_monitor_detects_stale_data(freshness_monitor):
 def test_freshness_monitor_health_degraded_on_stale_data(freshness_monitor):
     """Test freshness monitor reports DEGRADED on stale data"""
     freshness_monitor.record_update('candles')
-    
+
     # Make data stale
-    with patch('datetime.datetime') as mock_datetime:
+    with patch('core.operational_monitoring.datetime') as mock_datetime:
         mock_datetime.now.return_value = datetime.now() + timedelta(minutes=11)
-        
+
         health = freshness_monitor.get_health()
     
     assert health.status == 'DEGRADED'

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Deque
 from collections import deque
+from contextlib import asynccontextmanager
 import asyncio
 import time
 
@@ -17,6 +18,11 @@ class LatencyMetric:
     duration_ms: float
     timestamp: datetime
     success: bool
+
+    @property
+    def latency_ms(self) -> float:
+        """Alias for duration_ms."""
+        return self.duration_ms
 
 
 @dataclass
@@ -40,15 +46,28 @@ class WebSocketHealthMonitor:
     - Missed heartbeats
     """
     
-    def __init__(self, heartbeat_interval_seconds: int = 30, 
-                 missed_heartbeat_threshold: int = 3):
+    def __init__(self, heartbeat_interval_seconds: int = 30,
+                 missed_heartbeat_threshold: int = 3, config: Dict = None):
         """
         Initialize WebSocket health monitor.
-        
-        Args:
-            heartbeat_interval_seconds: Expected time between heartbeats
-            missed_heartbeat_threshold: Number of missed heartbeats before UNHEALTHY
+
+        Can be initialised with direct params or with a config dict::
+
+            WebSocketHealthMonitor(config={'heartbeat_interval_seconds': 30, ...})
+            WebSocketHealthMonitor({'heartbeat_interval_seconds': 30})  # positional dict
         """
+        # Support positional config dict
+        if isinstance(heartbeat_interval_seconds, dict):
+            config = heartbeat_interval_seconds
+            heartbeat_interval_seconds = 30
+            missed_heartbeat_threshold = 3
+        if config is not None:
+            heartbeat_interval_seconds = config.get('heartbeat_interval_seconds', heartbeat_interval_seconds)
+            missed_heartbeat_threshold = config.get('missed_heartbeat_threshold', missed_heartbeat_threshold)
+            self.stale_threshold = config.get('staleness_threshold_seconds', 300)
+        else:
+            self.stale_threshold = 300
+
         self.heartbeat_interval = heartbeat_interval_seconds
         self.missed_threshold = missed_heartbeat_threshold
         
@@ -89,10 +108,34 @@ class WebSocketHealthMonitor:
         self.last_heartbeat = datetime.now()
         self.consecutive_missed = 0
     
-    def on_message(self) -> None:
+    def on_message(self, msg_type: str = None) -> None:
         """Record message received"""
         self.messages_received += 1
         self.last_message = datetime.now()
+
+    # ---- property aliases for test/external code compatibility ----
+
+    @property
+    def connect_time(self) -> Optional[datetime]:
+        return self.connected_at
+
+    @property
+    def missed_heartbeats(self) -> int:
+        return self.consecutive_missed
+
+    @property
+    def last_message_time(self) -> Optional[datetime]:
+        return self.last_message
+
+    @property
+    def message_count(self) -> int:
+        return self.messages_received
+
+    def get_uptime_seconds(self) -> float:
+        """Return seconds since WebSocket connected, or 0 if not connected."""
+        if not self.connected_at:
+            return 0.0
+        return (datetime.now() - self.connected_at).total_seconds()
     
     def check_heartbeat(self) -> bool:
         """
@@ -147,12 +190,12 @@ class WebSocketHealthMonitor:
         # Check message staleness
         if self.last_message:
             staleness = (datetime.now() - self.last_message).total_seconds()
-            if staleness > 300:  # 5 minutes
+            if staleness > self.stale_threshold:
                 return HealthCheck(
                     component='websocket',
                     status='DEGRADED',
                     last_check=datetime.now(),
-                    message=f'No messages for {staleness:.1f}s',
+                    message=f'Stale data: no messages for {staleness:.1f}s',
                     details={
                         'last_message': self.last_message.isoformat(),
                         'messages_received': self.messages_received
@@ -186,14 +229,25 @@ class APILatencyMonitor:
     - Error patterns
     """
     
-    def __init__(self, window_size: int = 100, slow_threshold_ms: float = 1000):
+    def __init__(self, window_size: int = 100, slow_threshold_ms: float = 1000,
+                 config: Dict = None):
         """
         Initialize API latency monitor.
-        
-        Args:
-            window_size: Number of recent requests to track
-            slow_threshold_ms: Latency threshold for "slow" classification
+
+        Can be initialised with direct params or with a config dict::
+
+            APILatencyMonitor(config={'latency_window_size': 100, 'slow_threshold_ms': 1000})
+            APILatencyMonitor({'latency_window_size': 100})  # positional dict
         """
+        # Support positional config dict
+        if isinstance(window_size, dict):
+            config = window_size
+            window_size = 100
+            slow_threshold_ms = 1000
+        if config is not None:
+            window_size = config.get('latency_window_size', config.get('window_size', window_size))
+            slow_threshold_ms = config.get('slow_threshold_ms', config.get('latency_threshold_ms', slow_threshold_ms))
+
         self.window_size = window_size
         self.slow_threshold = slow_threshold_ms
         
@@ -203,15 +257,19 @@ class APILatencyMonitor:
         # Per-operation tracking
         self.operation_stats: Dict[str, Dict] = {}
     
-    def record_request(self, operation: str, duration_ms: float, success: bool) -> None:
+    def record_request(self, operation: str, duration_ms: float = None, success: bool = True,
+                        latency_ms: float = None) -> None:
         """
         Record API request completion.
-        
+
         Args:
             operation: Operation name (e.g., 'place_order', 'get_positions')
-            duration_ms: Request duration in milliseconds
+            duration_ms: Request duration in milliseconds (or use latency_ms alias)
             success: Whether request succeeded
+            latency_ms: Alias for duration_ms
         """
+        if duration_ms is None:
+            duration_ms = latency_ms if latency_ms is not None else 0.0
         metric = LatencyMetric(
             operation=operation,
             duration_ms=duration_ms,
@@ -244,6 +302,20 @@ class APILatencyMonitor:
             stats['slow_count'] += 1
             print(f"🐌 Slow API call: {operation} took {duration_ms:.1f}ms")
     
+    @property
+    def total_requests(self) -> int:
+        """Total number of requests recorded."""
+        return len(self.latencies)
+
+    def get_slow_queries(self, operation: str = None) -> List[LatencyMetric]:
+        """Return list of slow LatencyMetric objects (above slow_threshold)."""
+        metrics = [
+            m for m in self.latencies
+            if m.duration_ms > self.slow_threshold
+               and (operation is None or m.operation == operation)
+        ]
+        return metrics
+
     def get_average_latency(self, operation: Optional[str] = None) -> float:
         """
         Get average latency.
@@ -386,15 +458,26 @@ class DataFreshnessMonitor:
     Critical for detecting feed issues.
     """
     
-    def __init__(self, stale_threshold_seconds: int = 600):  # 10 minutes
+    def __init__(self, stale_threshold_seconds: int = 600, config: Dict = None):
         """
         Initialize freshness monitor.
-        
+
         Args:
-            stale_threshold_seconds: Seconds before data considered stale
+            stale_threshold_seconds: Seconds before data considered stale (or pass config dict)
         """
+        # Support positional config dict
+        if isinstance(stale_threshold_seconds, dict):
+            config = stale_threshold_seconds
+            stale_threshold_seconds = 600
+        if config is not None:
+            stale_threshold_seconds = config.get('staleness_threshold_seconds', stale_threshold_seconds)
         self.stale_threshold = stale_threshold_seconds
         self.last_updates: Dict[str, datetime] = {}
+
+    @property
+    def last_update(self) -> Dict[str, datetime]:
+        """Alias for last_updates."""
+        return self.last_updates
     
     def record_update(self, data_type: str) -> None:
         """
@@ -477,20 +560,19 @@ class OperationalMonitor:
         """
         self.config = config
         
+        ws_config = config.get('websocket', config)
+        api_config = config.get('api', config)
+        fresh_config = config.get('data_freshness', config)
+
         # Sub-monitors
-        self.websocket = WebSocketHealthMonitor(
-            heartbeat_interval_seconds=config.get('heartbeat_interval_seconds', 30),
-            missed_heartbeat_threshold=config.get('missed_heartbeat_threshold', 3)
-        )
-        
-        self.api = APILatencyMonitor(
-            window_size=config.get('latency_window_size', 100),
-            slow_threshold_ms=config.get('slow_threshold_ms', 1000)
-        )
-        
-        self.freshness = DataFreshnessMonitor(
-            stale_threshold_seconds=config.get('stale_threshold_seconds', 600)
-        )
+        self.websocket = WebSocketHealthMonitor(config=ws_config)
+        self.api = APILatencyMonitor(config=api_config)
+        self.freshness = DataFreshnessMonitor(config=fresh_config)
+
+        # Convenient name aliases expected by tests
+        self.websocket_monitor = self.websocket
+        self.api_latency_monitor = self.api
+        self.data_freshness_monitor = self.freshness
         
         # Overall health
         self.last_health_check: Optional[datetime] = None
@@ -498,28 +580,28 @@ class OperationalMonitor:
     async def run_health_checks(self) -> List[HealthCheck]:
         """
         Run all health checks.
-        
+
         Returns:
             List of health check results
         """
+        return self._collect_health_checks()
+
+    def _collect_health_checks(self) -> List[HealthCheck]:
         self.last_health_check = datetime.now()
-        
-        checks = [
+        return [
             self.websocket.get_health(),
             self.api.get_health(),
-            self.freshness.get_health()
+            self.freshness.get_health(),
         ]
-        
-        return checks
     
     def get_overall_status(self) -> str:
         """
         Get overall system status.
-        
+
         Returns:
             'HEALTHY', 'DEGRADED', or 'UNHEALTHY'
         """
-        checks = asyncio.run(self.run_health_checks())
+        checks = self._collect_health_checks()
         
         if any(c.status == 'UNHEALTHY' for c in checks):
             return 'UNHEALTHY'
@@ -567,7 +649,7 @@ def track_latency(monitor: APILatencyMonitor, operation: str):
         async def wrapper(*args, **kwargs):
             start = time.time()
             success = False
-            
+
             try:
                 result = await func(*args, **kwargs)
                 success = True
@@ -576,7 +658,7 @@ def track_latency(monitor: APILatencyMonitor, operation: str):
                 raise e
             finally:
                 duration_ms = (time.time() - start) * 1000
-                monitor.record_request(operation, duration_ms, success)
+                monitor.record_request(operation, duration_ms=duration_ms, success=success)
         
         return wrapper
     return decorator

@@ -157,8 +157,6 @@ class MarketDataSkill(Skill):
                 }
             )
             await self.event_bus.publish(event)
-        
-        print(f"📊 Candle: {published_candle.get('timestamp')} O:{published_candle['open']:.2f} C:{published_candle['close']:.2f}")
     
     def get_candle_history(self) -> List[Dict]:
         """Get current candle history based on timeframe"""
@@ -213,8 +211,6 @@ class MarketDataSkill(Skill):
                 # Using M5 directly
                 context.candle_history = self.m5_history
             
-            print(f"📊 Candle: {candle_ts} O:{candle['open']:.2f} H:{candle['high']:.2f} L:{candle['low']:.2f} C:{candle['close']:.2f}")
-        
         return context
     
     def validate_config(self) -> bool:

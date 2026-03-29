@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set
 from enum import Enum
 import asyncio
+import collections
 import uuid
 
 
@@ -127,24 +128,26 @@ class EventBus:
     This decouples skills - they communicate via events, not direct calls.
     """
     
-    def __init__(self, history_size: int = 1000):
+    def __init__(self, history_size: int = 1000, fast_mode: bool = False):
         """
         Initialize event bus.
-        
+
         Args:
             history_size: Number of events to keep in history
+            fast_mode: Skip event history tracking (for backtesting)
         """
         self.history_size = history_size
-        
+        self.fast_mode = fast_mode
+
         # Subscribers: event_type -> list of handlers
         self.subscribers: Dict[EventType, List[AsyncEventHandler]] = {}
-        
-        # Event history for replay/debugging
-        self.event_history: List[Event] = []
-        
+
+        # Event history for replay/debugging (deque for O(1) append+trim)
+        self.event_history = collections.deque(maxlen=history_size) if not fast_mode else None
+
         # Failed events (dead letter queue)
         self.dead_letter_queue: List[Tuple[Event, Exception]] = []
-        
+
         # Statistics
         self.stats = {
             'events_published': 0,
@@ -162,9 +165,10 @@ class EventBus:
         """
         if event_type not in self.subscribers:
             self.subscribers[event_type] = []
-        
+
         self.subscribers[event_type].append(handler)
-        print(f"✅ Subscribed to {event_type.value}: {handler.__name__}")
+        handler_name = getattr(handler, '__name__', repr(handler))
+        print(f"✅ Subscribed to {event_type.value}: {handler_name}")
     
     def unsubscribe(self, event_type: EventType, handler: AsyncEventHandler) -> None:
         """Unsubscribe from event type"""
@@ -181,33 +185,20 @@ class EventBus:
             event: Event to publish
         """
         self.stats['events_published'] += 1
-        
-        # Add to history
-        self.event_history.append(event)
-        if len(self.event_history) > self.history_size:
-            self.event_history.pop(0)
-        
+
+        # Track history unless in fast_mode (backtest)
+        if self.event_history is not None:
+            self.event_history.append(event)
+
         # Get subscribers
         handlers = self.subscribers.get(event.event_type, [])
         
         if not handlers:
-            print(f"ℹ️ No subscribers for {event.event_type.value}")
-            return
+            return  # No subscribers — silently skip
         
-        # Dispatch to handlers (in parallel)
-        tasks = []
+        # Dispatch to handlers sequentially (avoids create_task overhead in hot path)
         for handler in handlers:
-            try:
-                task = asyncio.create_task(self._safe_handler_call(handler, event))
-                tasks.append(task)
-            except Exception as e:
-                print(f"❌ Failed to create task for {handler.__name__}: {e}")
-                self.dead_letter_queue.append((event, e))
-                self.stats['handler_failures'] += 1
-        
-        # Wait for all handlers
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._safe_handler_call(handler, event)
         
         self.stats['events_processed'] += 1
     
@@ -220,12 +211,16 @@ class EventBus:
         try:
             await handler(event)
         except Exception as e:
-            print(f"❌ Handler {handler.__name__} failed for {event.event_type.value}: {e}")
+            handler_name = getattr(handler, '__name__', repr(handler))
+            print(f"❌ Handler {handler_name} failed for {event.event_type.value}: {e}")
             self.dead_letter_queue.append((event, e))
             self.stats['handler_failures'] += 1
     
     def get_history(self, event_type: Optional[EventType] = None, 
-                    limit: int = 100) -> List[Event]:
+                    limit: int = 100, count: int = None,
+                    filter_fn=None) -> List[Event]:
+        if count is not None:
+            limit = count
         """
         Get event history.
         
@@ -236,26 +231,30 @@ class EventBus:
         Returns:
             List of events (newest first)
         """
-        events = self.event_history
-        
+        events = list(self.event_history) if self.event_history is not None else []
+
         if event_type:
             events = [e for e in events if e.event_type == event_type]
-        
-        return list(reversed(events[-limit:]))
-    
+
+        if filter_fn:
+            events = [e for e in events if filter_fn(e)]
+
+        return events[-limit:]  # Return oldest-first (chronological)
+
     def get_stats(self) -> Dict:
         """Get event bus statistics"""
         return {
             **self.stats,
             'subscriber_count': sum(len(handlers) for handlers in self.subscribers.values()),
             'event_types_subscribed': len(self.subscribers),
-            'history_size': len(self.event_history),
+            'history_size': len(self.event_history) if self.event_history is not None else 0,
             'dead_letter_queue_size': len(self.dead_letter_queue)
         }
-    
+
     def clear_history(self) -> None:
         """Clear event history"""
-        self.event_history.clear()
+        if self.event_history is not None:
+            self.event_history.clear()
     
     def clear_dead_letter_queue(self) -> None:
         """Clear failed events"""
@@ -265,28 +264,26 @@ class EventBus:
 # ========== Event Builders ==========
 # Convenience functions for creating common events
 
-def create_candle_closed_event(candle: Dict, source: str = "market_data") -> Event:
+def create_candle_closed_event(candle: Dict, source: str = "market_data", instrument: str = None) -> Event:
     """Create CANDLE_CLOSED event"""
     return Event(
         event_type=EventType.CANDLE_CLOSED,
-        instrument=candle.get('instrument'),
+        instrument=instrument or candle.get('instrument'),
         source=source,
-        payload={
-            'open': candle['open'],
-            'high': candle['high'],
-            'low': candle['low'],
-            'close': candle['close'],
-            'volume': candle.get('volume'),
-            'timestamp': candle.get('timestamp')
-        }
+        payload=candle
     )
 
 
-def create_signal_generated_event(signal: str, entry_price: float, sl: float, tp: float,
-                                   instrument: str, source: str = "analysis") -> Event:
+def create_signal_generated_event(signal: str, entry_price: float = None, sl: float = None, tp: float = None,
+                                   instrument: str = None, source: str = "analysis",
+                                   timestamp=None, stop_loss: float = None, take_profit: float = None,
+                                   confidence: float = None, correlation_id: str = None) -> Event:
     """Create SIGNAL_GENERATED event"""
-    correlation_id = str(uuid.uuid4())  # Link signal to subsequent trades
-    
+    if correlation_id is None:
+        correlation_id = str(uuid.uuid4())  # Link signal to subsequent trades
+    sl = sl if sl is not None else stop_loss
+    tp = tp if tp is not None else take_profit
+
     return Event(
         event_type=EventType.SIGNAL_GENERATED,
         instrument=instrument,
@@ -296,7 +293,9 @@ def create_signal_generated_event(signal: str, entry_price: float, sl: float, tp
             'signal': signal,
             'entry_price': entry_price,
             'stop_loss': sl,
-            'take_profit': tp
+            'take_profit': tp,
+            'confidence': confidence,
+            'timestamp': timestamp,
         }
     )
 
@@ -337,21 +336,27 @@ def create_risk_rejected_event(reason: str, correlation_id: str,
 
 def create_order_filled_event(deal_id: str, instrument: str, direction: str,
                                entry_price: float, size: float, stop_loss: float, take_profit: float,
-                               correlation_id: str, source: str = "execution") -> Event:
+                               correlation_id: str, source: str = "execution",
+                               spread_cost: float = None, slippage_cost: float = None) -> Event:
     """Create ORDER_FILLED event"""
+    payload = {
+        'deal_id': deal_id,
+        'direction': direction,
+        'entry_price': entry_price,
+        'size': size,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit
+    }
+    if spread_cost is not None:
+        payload['spread_cost'] = spread_cost
+    if slippage_cost is not None:
+        payload['slippage_cost'] = slippage_cost
     return Event(
         event_type=EventType.ORDER_FILLED,
         instrument=instrument,
         source=source,
         correlation_id=correlation_id,
-        payload={
-            'deal_id': deal_id,
-            'direction': direction,
-            'entry_price': entry_price,
-            'size': size,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit
-        }
+        payload=payload
     )
 
 
@@ -370,9 +375,11 @@ def create_order_rejected_event(instrument: str, reason: str,
 
 
 def create_position_closed_event(deal_id: str, instrument: str, close_price: float,
-                                  realized_pnl: float, close_reason: str,
-                                  correlation_id: str, source: str = "execution") -> Event:
+                                  realized_pnl: float = None, close_reason: str = None,
+                                  correlation_id: str = None, source: str = "execution",
+                                  pnl: float = None) -> Event:
     """Create POSITION_CLOSED event"""
+    final_pnl = realized_pnl if realized_pnl is not None else pnl
     return Event(
         event_type=EventType.POSITION_CLOSED,
         instrument=instrument,
@@ -381,22 +388,23 @@ def create_position_closed_event(deal_id: str, instrument: str, close_price: flo
         payload={
             'deal_id': deal_id,
             'close_price': close_price,
-            'realized_pnl': realized_pnl,
+            'pnl': final_pnl,
+            'realized_pnl': final_pnl,
             'close_reason': close_reason
         }
     )
 
 
 def create_bot_error_event(error_message: str, location: str, 
-                           source: str = "orchestrator") -> Event:
+                           source: str = "orchestrator", severity: str = None) -> Event:
     """Create BOT_ERROR event"""
+    payload = {'error_message': error_message, 'location': location}
+    if severity is not None:
+        payload['severity'] = severity
     return Event(
         event_type=EventType.BOT_ERROR,
         source=source,
-        payload={
-            'error_message': error_message,
-            'location': location
-        }
+        payload=payload
     )
 
 
@@ -405,9 +413,28 @@ def create_bot_error_event(error_message: str, location: str,
 class EventFilter:
     """
     Filter events based on criteria.
-    Useful for conditional subscriptions.
+    Supports both instance-based matching and static filter functions.
     """
-    
+
+    def __init__(self, instrument: str = None, source: str = None,
+                 correlation_id: str = None, event_type: 'EventType' = None):
+        self.instrument = instrument
+        self.source = source
+        self.correlation_id = correlation_id
+        self.event_type = event_type
+
+    def matches(self, event: 'Event') -> bool:
+        """Return True if event matches all filter criteria"""
+        if self.instrument and event.instrument != self.instrument:
+            return False
+        if self.source and event.source != self.source:
+            return False
+        if self.correlation_id and event.correlation_id != self.correlation_id:
+            return False
+        if self.event_type and event.event_type != self.event_type:
+            return False
+        return True
+
     @staticmethod
     def by_instrument(instrument: str) -> Callable[[Event], bool]:
         """Filter events by instrument"""

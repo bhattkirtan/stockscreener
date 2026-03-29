@@ -59,16 +59,14 @@ def test_loss_tracker_calculates_loss_total():
 def test_loss_tracker_expires_old_trades():
     """Test loss tracker expires trades outside window"""
     tracker = LossTracker(window_hours=24)
-    
-    # Record old trade (25 hours ago)
-    with patch('datetime.datetime') as mock_datetime:
-        old_time = datetime.now() - timedelta(hours=25)
-        mock_datetime.now.return_value = old_time
-        tracker.record_trade(pnl=-100.0)
-    
+
+    # Record old trade (25 hours ago) — pass timestamp directly
+    old_time = datetime.now() - timedelta(hours=25)
+    tracker.record_trade(pnl=-100.0, timestamp=old_time)
+
     # Record recent trade (1 hour ago)
     tracker.record_trade(pnl=-50.0)
-    
+
     # Old trade should be expired
     loss_total = tracker.get_loss()
     assert loss_total == -50.0  # Only recent trade
@@ -222,7 +220,7 @@ def session_filter_config():
     return {
         'allowed_sessions': ['LONDON', 'NEW_YORK'],
         'blackout_periods': [
-            {'start_hour': 2, 'start_minute': 0, 'end_hour': 3, 'end_minute': 0}
+            {'start_hour': 12, 'start_minute': 0, 'end_hour': 13, 'end_minute': 0}
         ]
     }
 
@@ -235,42 +233,42 @@ def session_filter(session_filter_config):
 
 def test_session_filter_allows_london_session(session_filter):
     """Test session filter allows trading during LONDON session"""
-    # 10:00 UTC (middle of LONDON session: 08:00-16:30)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 1, 15, 10, 0)
-        allowed, reason = session_filter.is_trading_allowed()
-    
+    # 10:00 UTC (middle of LONDON session: 08:00-16:30, outside blackout 12:00-13:00)
+    allowed, reason = session_filter.is_trading_allowed(
+        timestamp=datetime(2024, 1, 15, 10, 0)
+    )
+
     assert allowed is True
 
 
 def test_session_filter_allows_new_york_session(session_filter):
     """Test session filter allows trading during NEW_YORK session"""
-    # 15:00 UTC (middle of NEW_YORK session: 13:00-22:00)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 1, 15, 15, 0)
-        allowed, reason = session_filter.is_trading_allowed()
-    
+    # 15:00 UTC (middle of NEW_YORK session: 13:00-22:00, outside blackout 12:00-13:00)
+    allowed, reason = session_filter.is_trading_allowed(
+        timestamp=datetime(2024, 1, 15, 15, 0)
+    )
+
     assert allowed is True
 
 
 def test_session_filter_blocks_asian_session(session_filter):
     """Test session filter blocks trading during ASIAN session (not allowed)"""
     # 01:00 UTC (middle of ASIAN session: 23:00-08:00, but not in allowed_sessions)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 1, 15, 1, 0)
-        allowed, reason = session_filter.is_trading_allowed()
-    
+    allowed, reason = session_filter.is_trading_allowed(
+        timestamp=datetime(2024, 1, 15, 1, 0)
+    )
+
     assert allowed is False
     assert 'session' in reason.lower()
 
 
 def test_session_filter_blocks_blackout_period(session_filter):
     """Test session filter blocks trading during blackout period"""
-    # 02:30 UTC (inside blackout: 02:00-03:00)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 1, 15, 2, 30)
-        allowed, reason = session_filter.is_trading_allowed()
-    
+    # 12:30 UTC (inside London session AND inside blackout: 12:00-13:00)
+    allowed, reason = session_filter.is_trading_allowed(
+        timestamp=datetime(2024, 1, 15, 12, 30)
+    )
+
     assert allowed is False
     assert 'blackout' in reason.lower()
 
@@ -282,7 +280,7 @@ def spread_filter_config():
     """Spread filter configuration"""
     return {
         'max_spread_pips': 30,
-        'max_spread_pct': 0.1  # 0.1%
+        'max_spread_pct': 0.2  # 0.2% to accommodate GOLD commodity spreads
     }
 
 

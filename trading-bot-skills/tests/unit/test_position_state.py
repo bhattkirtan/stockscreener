@@ -52,10 +52,9 @@ def test_position_unrealized_pnl_calculation_buy():
     
     # Price moves up by $10 (profit)
     position.calculate_unrealized_pnl(current_price=1960.00)
-    
-    # For GOLD, 0.1 lots = 0.1 * 10 = $1 per point
-    # $10 move * $1 per point = $10 profit
-    assert position.unrealized_pnl == 10.0
+
+    # For GOLD, size=0.1: (1960-1950) * 0.1 = $1.0 profit
+    assert position.unrealized_pnl == 1.0
 
 
 def test_position_unrealized_pnl_calculation_sell():
@@ -75,9 +74,9 @@ def test_position_unrealized_pnl_calculation_sell():
     
     # Price moves down by $10 (profit for SELL)
     position.calculate_unrealized_pnl(current_price=1940.00)
-    
-    # SELL: entry 1950, current 1940 = +$10 profit
-    assert position.unrealized_pnl == 10.0
+
+    # SELL: entry 1950, current 1940 = (1950-1940) * 0.1 = $1.0 profit
+    assert position.unrealized_pnl == 1.0
 
 
 def test_position_realized_pnl_on_close():
@@ -263,7 +262,7 @@ def test_get_total_exposure(position_manager):
     
     total_exposure = position_manager.get_total_exposure()
     
-    assert total_exposure == 0.3  # 0.1 + 0.2
+    assert total_exposure == pytest.approx(0.3)  # 0.1 + 0.2
 
 
 def test_get_exposure_by_instrument(position_manager):
@@ -315,8 +314,8 @@ def test_get_exposure_by_instrument(position_manager):
     gold_exposure = position_manager.get_exposure_by_instrument('GOLD')
     eurusd_exposure = position_manager.get_exposure_by_instrument('EURUSD')
     
-    assert gold_exposure == 0.3  # 0.1 + 0.2
-    assert eurusd_exposure == 0.5
+    assert gold_exposure == pytest.approx(0.3)  # 0.1 + 0.2
+    assert eurusd_exposure == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio

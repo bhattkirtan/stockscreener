@@ -5,8 +5,14 @@ Calculates technical indicators and generates trading signals.
 EVENT-DRIVEN:
 - Subscribes to: CANDLE_CLOSED
 - Publishes: SIGNAL_GENERATED (when new signal detected)
+
+ARCHITECTURE:
+- All indicator math lives in core/indicators.py (pure functions, no state)
+- All SL/TP math lives in core/sl_tp_engine.py (pure functions, dispatches by method)
+- This skill owns: signal evaluation logic, edge detection, event publishing
+- Signal rules are fully config-driven — no code change needed to tweak strategy
 """
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import pandas as pd
 import numpy as np
 import sys
@@ -21,275 +27,503 @@ if TYPE_CHECKING:
 
 class AnalysisSkill(Skill):
     """
-    Analysis skill that calculates indicators and generates signals.
-    
-    EVENT-DRIVEN HANDLERS:
-    - on_candle_closed(event): Calculate indicators and generate signal
-    
-    Responsibilities:
-    - Calculate Supertrend, SMA, EMA, Bollinger Bands
-    - Detect crossovers
-    - Generate BUY/SELL signals
-    - Track signal state (edge detection)
-    - Publish SIGNAL_GENERATED event when new signal detected
+    Analysis skill: computes indicators, evaluates signal, computes SL/TP, publishes event.
+
+    Config keys (all under 'analysis' section or passed directly):
+      indicators.supertrend.enabled / atr_period / multiplier
+      indicators.ema.enabled / period
+      indicators.sma.enabled / fast_period / slow_period
+      indicators.vwap.enabled
+      indicators.macd.enabled / fast / slow / signal_period
+      indicators.rsi.enabled / period / overbought / oversold
+      indicators.bollinger.enabled / period / std_dev
+      indicators.stochastic.enabled / k_period / d_period / overbought / oversold
+      indicators.volume.enabled / sma_period / min_ratio
+      signal_rules.require_supertrend
+      signal_rules.require_ema
+      signal_rules.require_sma / strict_sma_cross
+      signal_rules.require_vwap
+      signal_rules.require_rsi
+      signal_rules.require_macd
+      signal_rules.require_bb
+      signal_rules.require_stochastic
+      signal_rules.require_volume
+      signal_rules.edge_detection
+      sl_tp.method  (fixed | atr | fibonacci | supertrend)
+      sl_tp.*       (forwarded to sl_tp_engine.compute_sl_tp)
     """
-    
+
     def __init__(self, config: Dict, event_bus: Optional['EventBus'] = None, market_data_skill=None):
         super().__init__(config, event_bus)
         self.market_data = market_data_skill
-        
-        # Supertrend settings
-        self.st_period = config.get('supertrend', {}).get('atr_period', 10)
-        self.st_multiplier = config.get('supertrend', {}).get('multiplier', 2.0)
-        
-        # SMA settings
-        self.sma_fast = config.get('sma', {}).get('fast_period', 25)
-        self.sma_slow = config.get('sma', {}).get('slow_period', 30)
-        
-        # Bollinger settings
-        self.bb_period = config.get('bollinger', {}).get('period', 20)
-        self.bb_std = config.get('bollinger', {}).get('std_dev', 2.0)
-        
-        # EMA settings
-        self.ema_period = config.get('ema_period', 30)
-        
-        # Signal state tracking (for edge detection)
+
+        ind = config.get('indicators', config)  # Fall back to top-level config if no 'indicators' key
+
+        # -- Supertrend --------------------------------------------------------
+        st = ind.get('supertrend', {})
+        self.st_enabled    = st.get('enabled', True)
+        self.st_period     = st.get('period', st.get('atr_period', 7))
+        self.st_multiplier = st.get('multiplier', 2.0)
+
+        # -- EMA ---------------------------------------------------------------
+        ema = ind.get('ema', {})
+        self.ema_enabled = ema.get('enabled', True)
+        self.ema_period  = ema.get('period', 21)
+
+        # -- SMA ---------------------------------------------------------------
+        sma = ind.get('sma', {})
+        self.sma_enabled     = sma.get('enabled', True)
+        self.sma_fast_period = sma.get('fast_period', 25)
+        self.sma_slow_period = sma.get('slow_period', 30)
+        self.sma_fast        = self.sma_fast_period  # alias
+        self.sma_slow        = self.sma_slow_period  # alias
+
+        # -- VWAP --------------------------------------------------------------
+        vwap = ind.get('vwap', {})
+        self.vwap_enabled = vwap.get('enabled', False)
+
+        # -- MACD --------------------------------------------------------------
+        macd = ind.get('macd', {})
+        self.macd_enabled       = macd.get('enabled', False)
+        self.macd_fast          = macd.get('fast', 12)
+        self.macd_slow          = macd.get('slow', 26)
+        self.macd_signal_period = macd.get('signal_period', 9)
+
+        # -- RSI ---------------------------------------------------------------
+        rsi = ind.get('rsi', {})
+        self.rsi_enabled    = rsi.get('enabled', False)
+        self.rsi_period     = rsi.get('period', 14)
+        self.rsi_overbought = rsi.get('overbought', 70)
+        self.rsi_oversold   = rsi.get('oversold', 30)
+
+        # -- Bollinger Bands ---------------------------------------------------
+        bb = ind.get('bollinger', {})
+        self.bb_enabled = bb.get('enabled', True)
+        self.bb_period  = bb.get('period', 20)
+        self.bb_std     = bb.get('std_dev', 2.0)
+
+        # -- Stochastic --------------------------------------------------------
+        stoch = ind.get('stochastic', {})
+        self.stoch_enabled    = stoch.get('enabled', False)
+        self.stoch_k_period   = stoch.get('k_period', 14)
+        self.stoch_d_period   = stoch.get('d_period', 3)
+        self.stoch_overbought = stoch.get('overbought', 80)
+        self.stoch_oversold   = stoch.get('oversold', 20)
+
+        # -- Volume ------------------------------------------------------------
+        vol = ind.get('volume', {})
+        self.vol_enabled    = vol.get('enabled', False)
+        self.vol_sma_period = vol.get('sma_period', 20)
+        self.vol_min_ratio  = vol.get('min_ratio', 1.2)
+
+        # -- Signal rules (all AND) -------------------------------------------
+        self.rules = config.get('signal_rules', {})
+
+        # -- SL/TP config ------------------------------------------------------
+        self.sl_tp_config = config.get('sl_tp', {
+            'method': 'atr',
+            'atr_sl_multiplier': 1.5,
+            'atr_tp_multiplier': 3.0,
+            'stop_loss_pips': 20,
+            'take_profit_pips': 40,
+            'risk_reward_ratio': 2.0,
+            'swing_lookback': 20,
+        })
+
+        # -- Edge detection state ----------------------------------------------
         self.last_signal_state = None
-    
+
+        # Pre-computed indicators (set by backtest runner to avoid O(n²) per-candle recompute)
+        self.precomputed_df: Optional[pd.DataFrame] = None
+
+        # -- MTF Confluence (H1 BB + Daily SMA) ---------------------------------
+        mtf = ind.get('mtf', {})
+        self.mtf_h1_bb_period = mtf.get('h1_bb_period', 20)
+        self.mtf_h1_bb_std    = mtf.get('h1_bb_std', 2.0)
+        self.mtf_daily_sma    = mtf.get('daily_sma_period', 20)
+
+        self.require_h1_bb      = self.rules.get('require_h1_bb', False)
+        self.require_daily_bias = self.rules.get('require_daily_bias', False)
+        self.block_ranging_days = self.rules.get('block_ranging_days', False)
+
+        self.df_h1:    Optional[pd.DataFrame] = None  # set by backtest runner
+        self.df_daily: Optional[pd.DataFrame] = None  # set by backtest runner
+        self.mtf_rejections: Dict[str, int]   = {}   # reason → count
+
     async def on_candle_closed(self, event: 'Event') -> None:
-        """
-        Handle CANDLE_CLOSED event - calculate indicators and generate signal.
-        
-        Args:
-            event: Event with candle data
-        """
-        # Get candle history from market data skill
-        if not self.market_data:
-            print("⚠️ Analysis: No market data skill connected")
+        """Handle CANDLE_CLOSED: compute indicators → evaluate signal → publish."""
+        if self.precomputed_df is not None:
+            # Fast path: look up pre-computed row by candle timestamp
+            candle_payload = event.payload.get('candle', {})
+            ts = candle_payload.get('timestamp')
+            try:
+                ts_key = pd.Timestamp(ts)
+                if ts_key in self.precomputed_df.index:
+                    latest = self.precomputed_df.loc[ts_key]
+                    iloc_pos = self.precomputed_df.index.get_loc(ts_key)
+                    if iloc_pos < 1:
+                        return
+                    prev = self.precomputed_df.iloc[iloc_pos - 1]
+                    df = self.precomputed_df.iloc[max(0, iloc_pos - 100): iloc_pos + 1]
+                else:
+                    return
+            except Exception:
+                return
+        else:
+            # Live path: recompute on rolling buffer
+            if not self.market_data:
+                return
+            candle_history = self.market_data.get_candle_history()
+            min_bars = max(self.sma_slow_period, self.bb_period, self.st_period,
+                           self.macd_slow + self.macd_signal_period,
+                           self.rsi_period, self.stoch_k_period) + 5
+            if not candle_history or len(candle_history) < min_bars:
+                return
+            df = _to_dataframe(candle_history)
+            df = self._compute_indicators(df)
+            latest = df.iloc[-1]
+            prev   = df.iloc[-2]
+
+        ind = self._extract_indicators(df, latest, prev)
+        if ind is None:
+            return  # NaN in required indicators
+
+        signal = self._evaluate_signal(ind, latest, prev)
+        if not signal:
             return
-        
-        candle_history = self.market_data.get_candle_history()
-        if not candle_history or len(candle_history) < 50:
+
+        # Edge detection: only publish on signal state change
+        if self.rules.get('edge_detection', True) and signal == self.last_signal_state:
             return
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(candle_history)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df.set_index('timestamp', inplace=True)
-        
-        # Calculate all indicators
-        df = self._calculate_supertrend(df)
-        df = self._calculate_sma(df)
-        df = self._calculate_ema(df)
-        df = self._calculate_bollinger_bands(df)
-        
-        # Extract indicators
-        latest = df.iloc[-1]
-        indicators = {
-            'supertrend': float(latest['supertrend']),
-            'supertrend_direction': int(latest['direction']),
-            'sma_fast': float(latest['sma_fast']),
-            'sma_slow': float(latest['sma_slow']),
-            'ema': float(latest['ema']),
-            'bb_upper': float(latest['bb_upper']),
-            'bb_middle': float(latest['bb_middle']),
-            'bb_lower': float(latest['bb_lower']),
-            'current_price': float(latest['close'])
-        }
-        
-        # Generate signal
-        signal = self._generate_signal(df)
-        
-        # Edge detection: only trigger on signal change
-        if signal and signal != self.last_signal_state:
-            self.last_signal_state = signal
-            print(f"🎯 New signal: {signal}")
-            
-            # Calculate entry/sl/tp based on indicators
-            entry_price = float(latest['close'])
-            supertrend = float(latest['supertrend'])
-            
-            if signal == 'BUY':
-                sl = supertrend  # Stop below supertrend
-                tp = entry_price + 2 * (entry_price - sl)  # 2:1 reward:risk
-            else:  # SELL
-                sl = supertrend  # Stop above supertrend
-                tp = entry_price - 2 * (sl - entry_price)  # 2:1 reward:risk
-            
-            # Publish SIGNAL_GENERATED event
-            if self.event_bus:
-                from core.event_bus import create_signal_generated_event
-                await self.event_bus.publish(
-                    create_signal_generated_event(
-                        signal=signal,
-                        entry_price=entry_price,
-                        sl=sl,
-                        tp=tp,
-                        instrument=event.instrument
-                    )
+        self.last_signal_state = signal
+
+        entry_price = float(latest['close'])
+        stop_loss, take_profit = self._compute_sl_tp(signal, entry_price, ind)
+
+        # Candle timestamp for RiskSkill trading-hours check
+        candle_timestamp = latest.name if hasattr(latest, 'name') else None
+
+        if self.event_bus:
+            from core.event_bus import create_signal_generated_event
+            await self.event_bus.publish(
+                create_signal_generated_event(
+                    signal=signal,
+                    entry_price=entry_price,
+                    sl=stop_loss,
+                    tp=take_profit,
+                    instrument=event.instrument,
+                    timestamp=candle_timestamp,
                 )
-    
-    def _calculate_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Supertrend indicator"""
-        # Calculate ATR
-        df['tr'] = pd.concat([
-            df['high'] - df['low'],
-            abs(df['high'] - df['close'].shift(1)),
-            abs(df['low'] - df['close'].shift(1))
-        ], axis=1).max(axis=1)
-        df['atr'] = df['tr'].rolling(self.st_period).mean()
-        
-        # Basic bands
-        hl_avg = (df['high'] + df['low']) / 2
-        df['basic_upper'] = hl_avg + (self.st_multiplier * df['atr'])
-        df['basic_lower'] = hl_avg - (self.st_multiplier * df['atr'])
-        
-        # Final bands
-        df['final_upper'] = df['basic_upper']
-        df['final_lower'] = df['basic_lower']
-        
-        for i in range(1, len(df)):
-            if df['close'].iloc[i-1] <= df['final_upper'].iloc[i-1]:
-                df.loc[df.index[i], 'final_upper'] = min(df['basic_upper'].iloc[i], df['final_upper'].iloc[i-1])
-            else:
-                df.loc[df.index[i], 'final_upper'] = df['basic_upper'].iloc[i]
-                
-            if df['close'].iloc[i-1] >= df['final_lower'].iloc[i-1]:
-                df.loc[df.index[i], 'final_lower'] = max(df['basic_lower'].iloc[i], df['final_lower'].iloc[i-1])
-            else:
-                df.loc[df.index[i], 'final_lower'] = df['basic_lower'].iloc[i]
-        
-        # Supertrend
-        df['supertrend'] = np.nan
-        df['direction'] = 1  # 1 = uptrend, -1 = downtrend
-        
-        for i in range(1, len(df)):
-            if df['close'].iloc[i] > df['final_upper'].iloc[i-1]:
-                df.loc[df.index[i], 'direction'] = 1
-            elif df['close'].iloc[i] < df['final_lower'].iloc[i-1]:
-                df.loc[df.index[i], 'direction'] = -1
-            else:
-                df.loc[df.index[i], 'direction'] = df['direction'].iloc[i-1]
-            
-            if df['direction'].iloc[i] == 1:
-                df.loc[df.index[i], 'supertrend'] = df['final_lower'].iloc[i]
-            else:
-                df.loc[df.index[i], 'supertrend'] = df['final_upper'].iloc[i]
-        
+            )
+
+    # ------------------------------------------------------------------
+    # Indicator computation
+    # ------------------------------------------------------------------
+
+    def _compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Delegate all indicator math to core/indicators.py pure functions."""
+        from core.indicators import (
+            calculate_atr, calculate_supertrend,
+            calculate_ema, calculate_sma,
+            calculate_vwap_daily,
+            calculate_macd,
+            calculate_rsi,
+            calculate_bollinger_bands,
+            calculate_stochastic,
+        )
+
+        # ATR — always needed (SL/TP + Supertrend). Pass full df.
+        df['atr'] = calculate_atr(df, self.st_period)
+
+        if self.st_enabled:
+            df['supertrend'], df['supertrend_direction'] = calculate_supertrend(
+                df, self.st_period, self.st_multiplier)
+
+        if self.ema_enabled:
+            df['ema'] = calculate_ema(df['close'], self.ema_period)
+
+        if self.sma_enabled:
+            df['sma_fast'] = calculate_sma(df['close'], self.sma_fast_period)
+            df['sma_slow'] = calculate_sma(df['close'], self.sma_slow_period)
+
+        if self.vwap_enabled:
+            df['vwap'] = calculate_vwap_daily(df)
+
+        if self.macd_enabled:
+            df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(
+                df['close'], self.macd_fast, self.macd_slow, self.macd_signal_period)
+
+        if self.rsi_enabled:
+            df['rsi'] = calculate_rsi(df['close'], self.rsi_period)
+
+        if self.bb_enabled:
+            df['bb_upper'], df['bb_middle'], df['bb_lower'] = calculate_bollinger_bands(
+                df['close'], self.bb_period, self.bb_std)
+
+        if self.stoch_enabled:
+            df['stoch_k'], df['stoch_d'] = calculate_stochastic(
+                df, self.stoch_k_period, self.stoch_d_period)
+
+        if self.vol_enabled and 'volume' in df.columns:
+            vol_sma = df['volume'].rolling(self.vol_sma_period, min_periods=self.vol_sma_period).mean()
+            df['vol_sma']   = vol_sma
+            df['vol_ratio'] = df['volume'] / vol_sma.replace(0, np.nan)
+
         return df
-    
-    def _calculate_sma(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Simple Moving Averages"""
-        df['sma_fast'] = df['close'].rolling(self.sma_fast).mean()
-        df['sma_slow'] = df['close'].rolling(self.sma_slow).mean()
-        return df
-    
-    def _calculate_ema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Exponential Moving Average"""
-        df['ema'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
-        return df
-    
-    def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Bollinger Bands"""
-        df['bb_middle'] = df['close'].rolling(self.bb_period).mean()
-        bb_std = df['close'].rolling(self.bb_period).std()
-        df['bb_upper'] = df['bb_middle'] + (self.bb_std * bb_std)
-        df['bb_lower'] = df['bb_middle'] - (self.bb_std * bb_std)
-        return df
-    
-    def _generate_signal(self, df: pd.DataFrame) -> Optional[str]:
+
+    def _extract_indicators(self, df: pd.DataFrame, latest, prev) -> Optional[Dict]:
         """
-        Generate trading signal from indicators
-        
-        Returns:
-            'BUY', 'SELL', or None
+        Extract indicator values into a flat dict.  Returns None if any
+        *required* (enabled) indicator is still NaN on the latest bar.
         """
-        if len(df) < 2:
+        ind: Dict = {'current_price': float(latest['close'])}
+
+        # ATR — always required
+        if 'atr' not in df.columns or pd.isna(latest['atr']):
             return None
-        
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # Check for NaN
-        if pd.isna(latest['supertrend']) or pd.isna(latest['sma_fast']):
+        ind['atr'] = float(latest['atr'])
+
+        if self.st_enabled:
+            if pd.isna(latest.get('supertrend')):
+                return None
+            ind['supertrend']           = float(latest['supertrend'])
+            ind['supertrend_direction'] = int(latest['supertrend_direction'])
+
+        if self.ema_enabled:
+            if pd.isna(latest.get('ema')):
+                return None
+            ind['ema'] = float(latest['ema'])
+
+        if self.sma_enabled:
+            if pd.isna(latest.get('sma_fast')) or pd.isna(latest.get('sma_slow')):
+                return None
+            ind['sma_fast']      = float(latest['sma_fast'])
+            ind['sma_slow']      = float(latest['sma_slow'])
+            ind['sma_fast_prev'] = float(prev['sma_fast']) if not pd.isna(prev.get('sma_fast')) else ind['sma_fast']
+            ind['sma_slow_prev'] = float(prev['sma_slow']) if not pd.isna(prev.get('sma_slow')) else ind['sma_slow']
+
+        if self.vwap_enabled and 'vwap' in df.columns:
+            ind['vwap'] = float(latest['vwap']) if not pd.isna(latest['vwap']) else None
+
+        if self.macd_enabled and 'macd' in df.columns:
+            if pd.isna(latest.get('macd')):
+                return None
+            ind['macd']        = float(latest['macd'])
+            ind['macd_signal'] = float(latest['macd_signal'])
+            ind['macd_hist']   = float(latest['macd_hist'])
+            ind['macd_hist_prev'] = float(prev['macd_hist']) if not pd.isna(prev.get('macd_hist')) else 0.0
+
+        if self.rsi_enabled and 'rsi' in df.columns:
+            if pd.isna(latest.get('rsi')):
+                return None
+            ind['rsi'] = float(latest['rsi'])
+
+        if self.bb_enabled and 'bb_upper' in df.columns:
+            if pd.isna(latest.get('bb_upper')):
+                return None
+            ind['bb_upper']  = float(latest['bb_upper'])
+            ind['bb_middle'] = float(latest['bb_middle'])
+            ind['bb_lower']  = float(latest['bb_lower'])
+
+        if self.stoch_enabled and 'stoch_k' in df.columns:
+            if pd.isna(latest.get('stoch_k')):
+                return None
+            ind['stoch_k'] = float(latest['stoch_k'])
+            ind['stoch_d'] = float(latest['stoch_d'])
+
+        if self.vol_enabled and 'vol_ratio' in df.columns:
+            ind['vol_ratio'] = float(latest['vol_ratio']) if not pd.isna(latest.get('vol_ratio')) else 0.0
+
+        # Swing high/low for Fibonacci SL/TP (last N bars)
+        lookback = self.sl_tp_config.get('swing_lookback', 20)
+        swing_slice = df.iloc[-lookback:]
+        ind['swing_high'] = float(swing_slice['high'].max())
+        ind['swing_low']  = float(swing_slice['low'].min())
+
+        return ind
+
+    # ------------------------------------------------------------------
+    # Signal evaluation  (AND logic — every enabled rule must pass)
+    # ------------------------------------------------------------------
+
+    def _evaluate_signal(self, ind: Dict, latest, prev) -> Optional[str]:
+        """
+        Evaluate all enabled indicator rules.  ALL must agree on direction.
+        Returns 'BUY', 'SELL', or None.
+        """
+        close = ind['current_price']
+
+        # Collect per-rule verdicts
+        buy_votes  = []
+        sell_votes = []
+
+        # --- Supertrend ---
+        if self.rules.get('require_supertrend', True) and self.st_enabled:
+            d = ind.get('supertrend_direction', 0)
+            buy_votes.append(d == 1)
+            sell_votes.append(d == -1)
+
+        # --- EMA ---
+        if self.rules.get('require_ema', True) and self.ema_enabled:
+            ema = ind.get('ema', close)
+            buy_votes.append(close > ema)
+            sell_votes.append(close < ema)
+
+        # --- SMA crossover / trend ---
+        if self.rules.get('require_sma', True) and self.sma_enabled:
+            sf, ss = ind['sma_fast'], ind['sma_slow']
+            sfp, ssp = ind['sma_fast_prev'], ind['sma_slow_prev']
+            if self.rules.get('strict_sma_cross', False):
+                # Only on the crossover candle
+                golden = (sf > ss) and (sfp <= ssp)
+                death  = (sf < ss) and (sfp >= ssp)
+                buy_votes.append(golden)
+                sell_votes.append(death)
+            else:
+                # Trend direction is enough
+                buy_votes.append(sf > ss)
+                sell_votes.append(sf < ss)
+
+        # --- VWAP ---
+        if self.rules.get('require_vwap', False) and self.vwap_enabled:
+            vwap = ind.get('vwap')
+            if vwap:
+                buy_votes.append(close > vwap)
+                sell_votes.append(close < vwap)
+
+        # --- RSI ---
+        if self.rules.get('require_rsi', False) and self.rsi_enabled:
+            rsi = ind.get('rsi', 50)
+            buy_votes.append(rsi < self.rsi_overbought)   # not overbought
+            sell_votes.append(rsi > self.rsi_oversold)    # not oversold
+
+        # --- MACD ---
+        if self.rules.get('require_macd', False) and self.macd_enabled:
+            hist      = ind.get('macd_hist', 0)
+            hist_prev = ind.get('macd_hist_prev', 0)
+            buy_votes.append(hist > 0 or (hist > hist_prev))   # positive or rising
+            sell_votes.append(hist < 0 or (hist < hist_prev))  # negative or falling
+
+        # --- Bollinger Bands ---
+        if self.rules.get('require_bb', False) and self.bb_enabled:
+            upper  = ind.get('bb_upper', close)
+            lower  = ind.get('bb_lower', close)
+            middle = ind.get('bb_middle', close)
+            buy_votes.append(close > middle and close < upper)   # inside upper half
+            sell_votes.append(close < middle and close > lower)  # inside lower half
+
+        # --- Stochastic ---
+        if self.rules.get('require_stochastic', False) and self.stoch_enabled:
+            k = ind.get('stoch_k', 50)
+            buy_votes.append(k < self.stoch_overbought)
+            sell_votes.append(k > self.stoch_oversold)
+
+        # --- Volume confirmation ---
+        if self.rules.get('require_volume', False) and self.vol_enabled:
+            ratio = ind.get('vol_ratio', 1.0)
+            buy_votes.append(ratio >= self.vol_min_ratio)
+            sell_votes.append(ratio >= self.vol_min_ratio)
+
+        if not buy_votes:   # no rules configured at all
             return None
-        
-        close = latest['close']
-        supertrend_dir = latest['direction']
-        sma_fast = latest['sma_fast']
-        sma_slow = latest['sma_slow']
-        ema = latest['ema']
-        
-        sma_fast_prev = prev['sma_fast']
-        sma_slow_prev = prev['sma_slow']
-        
-        # Detect crossovers
-        golden_cross = (sma_fast > sma_slow) and (sma_fast_prev <= sma_slow_prev)
-        death_cross = (sma_fast < sma_slow) and (sma_fast_prev >= sma_slow_prev)
-        
-        # BUY Signal
-        if (supertrend_dir == 1 and
-            close > ema and
-            (golden_cross or sma_fast > sma_slow)):
-            return 'BUY'
-        
-        # SELL Signal
-        elif (supertrend_dir == -1 and
-              close < ema and
-              (death_cross or sma_fast < sma_slow)):
-            return 'SELL'
-        
-        return None
-    
+
+        if all(buy_votes):
+            signal = 'BUY'
+        elif all(sell_votes):
+            signal = 'SELL'
+        else:
+            return None
+
+        # -- MTF Confluence gate (H1 BB zone + Daily SMA bias) ----------------
+        if self.require_h1_bb or self.require_daily_bias:
+            ts = latest.name if hasattr(latest, 'name') else None
+            if ts is not None:
+                ok, reason = self._check_mtf_confluence(pd.Timestamp(ts), signal)
+                if not ok:
+                    self.mtf_rejections[reason] = self.mtf_rejections.get(reason, 0) + 1
+                    return None
+
+        return signal
+
+    # ------------------------------------------------------------------
+    # MTF Confluence gate  (H1 BB zone + Daily SMA bias)
+    # ------------------------------------------------------------------
+
+    def _check_mtf_confluence(self, ts: pd.Timestamp, direction: str) -> Tuple[bool, str]:
+        """
+        Lookahead-safe multi-timeframe check using .asof() on pre-indexed frames.
+        Returns (allowed, rejection_reason).
+        """
+        # -- H1 Bollinger Band midline trend gate --
+        # BUY only when H1 close is above the H1 BB middle (bullish momentum)
+        # SELL only when H1 close is below the H1 BB middle (bearish momentum)
+        if self.require_h1_bb and self.df_h1 is not None:
+            try:
+                h1_row    = self.df_h1.asof(ts)
+                h1_middle = h1_row.get('h1_bb_middle', np.nan)
+                h1_close  = h1_row.get('close',         np.nan)
+                if not pd.isna(h1_middle) and not pd.isna(h1_close):
+                    if direction == 'BUY'  and h1_close < h1_middle:
+                        return False, 'h1_below_midline_long'
+                    if direction == 'SELL' and h1_close > h1_middle:
+                        return False, 'h1_above_midline_short'
+            except Exception:
+                pass  # Don't block if lookup fails
+
+        # -- Daily SMA bias --
+        if self.require_daily_bias and self.df_daily is not None:
+            try:
+                d_row       = self.df_daily.asof(ts)
+                daily_sma   = d_row.get('daily_sma', np.nan)
+                daily_close = d_row.get('close',     np.nan)
+                if not pd.isna(daily_sma) and not pd.isna(daily_close):
+                    if direction == 'BUY'  and daily_close < daily_sma:
+                        return False, 'daily_bias_bearish'
+                    if direction == 'SELL' and daily_close > daily_sma:
+                        return False, 'daily_bias_bullish'
+            except Exception:
+                pass
+
+        return True, 'ok'
+
+    # ------------------------------------------------------------------
+    # SL/TP  (delegates entirely to sl_tp_engine)
+    # ------------------------------------------------------------------
+
+    def _compute_sl_tp(self, signal: str, entry_price: float, ind: Dict) -> Tuple[float, float]:
+        """Compute stop-loss and take-profit using sl_tp_engine dispatcher."""
+        from core.sl_tp_engine import compute_sl_tp
+        return compute_sl_tp(
+            signal=signal,
+            entry_price=entry_price,
+            sl_tp_config=self.sl_tp_config,
+            atr=ind.get('atr'),
+            supertrend_value=ind.get('supertrend'),
+            swing_high=ind.get('swing_high'),
+            swing_low=ind.get('swing_low'),
+        )
+
     def validate_config(self) -> bool:
-        """Validate analysis configuration"""
-        if self.st_period < 1 or self.st_multiplier <= 0:
+        """Validate configuration."""
+        if self.st_enabled and (self.st_period < 1 or self.st_multiplier <= 0):
             raise SkillExecutionError("Invalid Supertrend parameters")
-        if self.sma_fast < 1 or self.sma_slow < 1:
+        if self.sma_enabled and (self.sma_fast_period < 1 or self.sma_slow_period < 1):
             raise SkillExecutionError("Invalid SMA parameters")
         return True
 
 
-# Example usage
-if __name__ == "__main__":
-    import asyncio
-    
-    config = {
-        'supertrend': {
-            'atr_period': 10,
-            'multiplier': 2.0
-        },
-        'sma': {
-            'fast_period': 25,
-            'slow_period': 30
-        },
-        'bollinger': {
-            'period': 20,
-            'std_dev': 2.0
-        },
-        'ema_period': 30
-    }
-    
-    skill = AnalysisSkill(config)
-    
-    async def test():
-        # Create sample candle history
-        candles = []
-        base_price = 2650
-        for i in range(100):
-            candles.append({
-                'timestamp': f'2024-01-15T{10+i//12:02d}:{(i%12)*5:02d}:00',
-                'open': base_price + i * 0.1,
-                'high': base_price + i * 0.1 + 2,
-                'low': base_price + i * 0.1 - 2,
-                'close': base_price + i * 0.1 + 1,
-                'volume': 1000
-            })
-        
-        context = Context(candle_history=candles)
-        context = await skill.execute(context)
-        
-        print(f"\nSignal: {context.signal}")
-        print(f"Indicators: {context.indicators}")
-    
-    asyncio.run(test())
+# ---------------------------------------------------------------------------
+# Module-level helper (shared with backtester)
+# ---------------------------------------------------------------------------
+
+def _to_dataframe(candle_history: List[Dict]) -> pd.DataFrame:
+    """Convert a list of candle dicts to a DatetimeIndex DataFrame."""
+    df = pd.DataFrame(candle_history)
+    if 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+    for col in ('open', 'high', 'low', 'close'):
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    if 'volume' in df.columns:
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
+    return df

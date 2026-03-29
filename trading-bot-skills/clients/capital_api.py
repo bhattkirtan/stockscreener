@@ -368,3 +368,126 @@ class CapitalAPIClient:
         except Exception as e:
             logger.error(f"❌ Failed to search markets: {e}")
             raise
+    
+    def get_historical_prices(
+        self,
+        epic: str,
+        resolution: str = 'MINUTE_5',
+        max_bars: int = 100,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Fetch historical OHLC candles from Capital.com API
+        
+        Args:
+            epic: Market identifier (e.g., 'CS.D.CFDGOLD.CFD.IP')
+            resolution: Candle resolution - MINUTE, MINUTE_5, MINUTE_15, HOUR, DAY, WEEK
+            max_bars: Maximum number of candles to fetch (default: 100, max: 1000)
+            from_date: Start date in ISO format 'YYYY-MM-DDTHH:MM:SS' (optional)
+            to_date: End date in ISO format 'YYYY-MM-DDTHH:MM:SS' (optional)
+            
+        Returns:
+            List of candle dicts with OHLC data:
+            [
+                {
+                    'timestamp': '2026-03-29T10:00:00',
+                    'open': 2650.5,
+                    'high': 2652.3,
+                    'low': 2649.8,
+                    'close': 2651.2,
+                    'volume': 1234
+                },
+                ...
+            ]
+            
+        Raises:
+            Exception on request failure
+            
+        Example:
+            # Get last 100 M5 candles for GOLD
+            candles = client.get_historical_prices('CS.D.CFDGOLD.CFD.IP', 'MINUTE_5', 100)
+            
+            # Get specific date range
+            candles = client.get_historical_prices(
+                'CS.D.CFDGOLD.CFD.IP',
+                'MINUTE_5',
+                max_bars=500,
+                from_date='2026-03-01T00:00:00',
+                to_date='2026-03-29T23:59:59'
+            )
+        """
+        from datetime import datetime, timedelta
+        
+        path = f'/api/v1/prices/{epic}'
+        
+        # Build query parameters
+        params = {
+            'resolution': resolution,
+            'max': min(max_bars, 1000)  # Capital.com max is 1000
+        }
+        
+        # If date range not provided, calculate based on resolution and bars
+        if not from_date:
+            to_dt = datetime.utcnow() if not to_date else datetime.fromisoformat(to_date.replace('Z', ''))
+            
+            # Calculate minutes per bar based on resolution
+            minutes_per_bar = {
+                'MINUTE': 1,
+                'MINUTE_5': 5,
+                'MINUTE_15': 15,
+                'MINUTE_30': 30,
+                'HOUR': 60,
+                'HOUR_4': 240,
+                'DAY': 1440,
+                'WEEK': 10080
+            }.get(resolution, 5)
+            
+            # Add 50% buffer for market closures/gaps
+            minutes_back = max_bars * minutes_per_bar * 1.5
+            from_dt = to_dt - timedelta(minutes=minutes_back)
+            
+            from_date = from_dt.strftime('%Y-%m-%dT%H:%M:%S')
+            if not to_date:
+                to_date = to_dt.strftime('%Y-%m-%dT%H:%M:%S')
+        
+        params['from'] = from_date
+        params['to'] = to_date
+        
+        try:
+            logger.info(f"📊 Fetching {max_bars} {resolution} candles for {epic}")
+            response = self._request('GET', path, params=params)
+            data = response.json()
+            
+            prices = data.get('prices', [])
+            
+            if not prices:
+                logger.warning(f"⚠️ No historical data returned for {epic}")
+                return []
+            
+            # Convert to standardized candle format
+            candles = []
+            for price in prices[-max_bars:]:  # Take last N candles
+                candle = {
+                    'timestamp': price.get('snapshotTime', price.get('snapshotTimeUTC', '')),
+                    'open': float(price.get('openPrice', {}).get('bid', 0)),
+                    'high': float(price.get('highPrice', {}).get('bid', 0)),
+                    'low': float(price.get('lowPrice', {}).get('bid', 0)),
+                    'close': float(price.get('closePrice', {}).get('bid', 0)),
+                    'volume': int(price.get('lastTradedVolume', 0))
+                }
+                candles.append(candle)
+            
+            logger.info(f"✅ Fetched {len(candles)} candles (oldest: {candles[0]['timestamp']}, newest: {candles[-1]['timestamp']})")
+            return candles
+        
+        except requests.exceptions.HTTPError as e:
+            if hasattr(e, 'response') and e.response.status_code == 404:
+                logger.error(f"❌ Epic '{epic}' not found or historical data unavailable")
+            else:
+                logger.error(f"❌ Failed to fetch historical prices: {e}")
+            raise
+        
+        except Exception as e:
+            logger.error(f"❌ Error fetching historical prices: {e}")
+            raise

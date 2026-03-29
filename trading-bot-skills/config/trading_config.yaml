@@ -11,6 +11,7 @@ market_data:
   enabled: true
   instrument: GOLD
   timeframe: M5
+  resample_to: M5   # Resample M5 bars to this timeframe before backtest (M5/M10/M15/M30). No extra data download needed.
   buffer_size: 100  # Keep last 100 candles in memory
   data_source: capital_com
   websocket:
@@ -23,41 +24,138 @@ market_data:
 # Analysis skill configuration
 analysis:
   enabled: true
-  strategy: supertrend_vwap
-  
-  # Supertrend indicator
-  supertrend:
-    atr_period: 10
-    multiplier: 2.0  # ST2.0
-  
-  # Moving averages
-  sma:
-    fast_period: 25
-    slow_period: 30
-  
-  # Bollinger Bands
-  bollinger:
-    period: 20
-    std_dev: 2.0
-  
-  # VWAP (Volume Weighted Average Price)
-  vwap:
-    enabled: true
-  
-  # Signal generation rules
+
+  # ── Indicators ──────────────────────────────────────────────────────
+  indicators:
+    supertrend:
+      enabled: true
+      atr_period: 7       # CRITICAL: must match backtest
+      multiplier: 2.0     # ST2.0
+
+    ema:
+      enabled: true
+      period: 21          # CRITICAL: must match backtest
+
+    sma:
+      enabled: true
+      fast_period: 25
+      slow_period: 30
+
+    vwap:
+      enabled: false      # set true to require VWAP filter
+
+    macd:
+      enabled: false
+      fast: 12
+      slow: 26
+      signal_period: 9
+
+    rsi:
+      enabled: false
+      period: 14
+      overbought: 70
+      oversold: 30
+
+    bollinger:
+      enabled: false
+      period: 20
+      std_dev: 2.0
+
+    mtf:                          # Multi-timeframe confluence
+      h1_bb_period: 20            # H1 Bollinger Band period
+      h1_bb_std: 2.0              # H1 BB std deviation
+      daily_sma_period: 20        # Daily SMA period for bias filter
+
+    stochastic:
+      enabled: false
+      k_period: 14
+      d_period: 3
+      overbought: 80
+      oversold: 20
+
+    volume:
+      enabled: false
+      sma_period: 20
+      min_ratio: 1.2      # require volume >= 1.2x average
+
+  # ── Signal rules (AND logic — all enabled rules must agree) ─────────
   signal_rules:
     require_supertrend: true
-    require_sma_confirmation: true
-    require_bb_confirmation: false
-    edge_detection: true  # Only trade on signal transitions
+    require_ema: true
+    require_sma: true
+    strict_sma_cross: false   # true = only on crossover candle
+    require_vwap: false
+    require_rsi: false
+    require_macd: false
+    require_bb: false
+    require_stochastic: false
+    require_volume: false
+    require_h1_bb: true            # H1 midline trend gate — BUY only above H1 BB mid, SELL only below
+    require_daily_bias: false      # Daily SMA bias gate — too restrictive, cuts 85% of trades
+    block_ranging_days: false      # Reserve: block low-range daily bars
+    edge_detection: true      # only fire on signal state change
+
+  # ── SL/TP computation ───────────────────────────────────────────────
+  sl_tp:
+    method: fixed            # fixed | pct | atr | fibonacci | supertrend
+
+    # Fixed pips (active — matches cloud-function rank01)
+    stop_loss_pips: 20
+    take_profit_pips: 60
+
+    # Percentage-based (switch method to 'pct' to use)
+    sl_pct: 0.005
+    tp_pct: 0.010
+
+    # ATR-based (switch method to 'atr' to use)
+    atr_sl_multiplier: 2.0
+    atr_tp_multiplier: 4.0
+    # Supertrend-based
+    risk_reward_ratio: 2.0
+    # Fibonacci swing detection
+    swing_lookback: 20       # bars to look back for swing high/low
+    sl_fib_level: 0.382
+    tp_fib_level: 1.618
 
 # Risk management skill configuration
 risk:
   enabled: true
   
-  # Cooldown periods (prevent duplicate trades)
-  sl_cooldown_minutes: 15  # Wait 15min after SL before same direction
-  tp_cooldown_minutes: 5   # Wait 5min after TP before same direction
+  # Trading Hours - GOLD market hours (Sunday 23:00 UTC to Friday 21:00 UTC)
+  trading_hours:
+    enabled: false    # disabled to match cloud-function optimizer (no hours filter)
+    timezone: UTC
+    
+    # Weekly schedule
+    monday_enabled: true
+    tuesday_enabled: true
+    wednesday_enabled: true
+    thursday_enabled: true
+    friday_enabled: true
+    saturday_enabled: false    # No trading on weekends
+    sunday_enabled: false       # No trading on weekends
+    
+    # Daily trading window (UTC time)
+    # GOLD trades 23:00 Sunday - 21:00 Friday with 1-hour break
+    start_hour: 0      # Start at midnight UTC (after Sunday 23:00 rollover)
+    end_hour: 23       # Trade until 23:00 UTC
+    
+    # Daily maintenance break (1 hour)
+    daily_break_enabled: false  # disabled to match cloud-function
+    break_start_hour: 21    # Break starts at 21:00 UTC
+    break_end_hour: 22      # Break ends at 22:00 UTC (1 hour break)
+    
+    # Friday early close
+    friday_close_hour: 21   # Close all positions by 21:00 UTC Friday
+    friday_no_new_trades_hour: 20  # Stop new entries after 20:00 Friday
+  
+  # Cooldown periods (prevent duplicate trades) — matches cloud-function defaults
+  sl_cooldown_minutes: 15  # Wait 15min (3 M5 candles) after SL hit before same-direction re-entry
+  tp_cooldown_minutes: 5   # Wait 5min (1 M5 candle) after TP hit before same-direction re-entry
+
+  # Hour filter — skip new entries during net-negative hours (UTC)
+  # Based on full 149k-bar analysis: 00h(-$1595), 07h(-$278), 10h(-$563), 17h(-$904), 19h(-$1697), 23h(-$424)
+  skip_hours: []  # disabled
   
   # Position sizing
   position_size_pct: 2.0  # 2% of capital per trade
@@ -72,6 +170,15 @@ risk:
   # Exposure limits
   max_exposure_per_symbol: 50.0  # Max 50% of capital in one symbol
 
+# Backtesting filters
+backtesting_filters:
+  # Set to true to disable reverse-signal exits (SL/TP only)
+  disable_reverse_exit: false
+
+  # Minimum hold time before a reverse-signal exit is allowed (minutes)
+  # Trades under 60 min have near-0% win rate — letting them breathe avoids noise reversals
+  min_hold_minutes: 0  # 795% baseline — SL=20 fires fast enough, no need to hold
+
 # Execution skill configuration
 execution:
   enabled: true
@@ -79,18 +186,28 @@ execution:
   
   # Order parameters
   sl_pips: 20  # Stop loss 20 pips
-  tp_pips: 40  # Take profit 40 pips
+  tp_pips: 60  # Take profit 60 pips
   
   # Capital.com credentials (use environment variables in production)
   api_key: ${CAPITAL_API_KEY}
   identifier: ${CAPITAL_IDENTIFIER}
   password: ${CAPITAL_PASSWORD}
-  demo: false  # Set to true for demo account
+  environment: demo  # 'demo' for paper trading, 'live' for real trading
   
   # Order management
   order_type: MARKET
   guaranteed_stop: false
   trailing_stop: false
+
+# Time-Based Exits (Phase 1 - Critical for Gold Trading)
+time_based_exits:
+  # IntraDayTimeExit: Force close positions after max holding time
+  max_hours: 0              # 0 = disabled; every cap tested (4/6/8/12/24h) hurts return
+  intraday_enabled: true    # Enable intraday time exit
+  
+  # EndOfDayClose: Force close all positions at EOD
+  eod_hour: 16              # Close all positions at 4 PM UTC (16:00)
+  eod_enabled: true         # Enable end-of-day close
 
 # Storage skill configuration
 storage:
@@ -177,7 +294,10 @@ backtesting:
   
   # Simulation settings
   initial_capital: 10000.0
-  commission_per_trade: 0.0  # Capital.com has spread, not commission
+  position_size: 10.0          # Match cloud-function optimization (10 contracts per trade)
+  spread_cost_usd: 0.50        # Capital.com Gold spread $0.50/contract
+  slippage_cost_usd: 0.05      # Slippage $0.05/contract
+  commission_per_trade: 0.0    # Capital.com uses spread, not commission
   slippage_pips: 0.5
   
   # Event blocking (economic calendar)

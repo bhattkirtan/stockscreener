@@ -35,11 +35,14 @@ class Context:
     signal: Optional[str] = None  # 'BUY', 'SELL', 'EXIT', None
     signal_timestamp: Optional[datetime] = None
     
-    # Risk
+    # Risk / Execution pricing
     position_size: float = 0.0
     is_allowed: bool = False
     risk_reason: str = ""
-    
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+
     # Execution
     order_id: Optional[str] = None
     deal_id: Optional[str] = None

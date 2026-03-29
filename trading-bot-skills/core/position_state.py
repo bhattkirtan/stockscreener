@@ -32,6 +32,7 @@ class OrderStatus(Enum):
 class Position:
     """
     Canonical position model - single source of truth.
+    Matches backtester Trade model for consistency.
     """
     # Identity
     deal_id: str
@@ -53,12 +54,17 @@ class Position:
     
     # P&L (calculated)
     current_price: Optional[float] = None
+    close_price: Optional[float] = None
     unrealized_pnl: float = 0.0
     realized_pnl: Optional[float] = None
     
+    # Transaction Costs (synced with backtester)
+    spread_cost: float = 0.0
+    slippage_cost: float = 0.0
+    
     # Metadata
     signal_timestamp: Optional[datetime] = None
-    close_reason: Optional[str] = None  # 'TP_HIT', 'SL_HIT', 'MANUAL', 'EXIT_SIGNAL'
+    close_reason: Optional[str] = None  # 'TP_HIT', 'SL_HIT', 'MANUAL', 'EXIT_SIGNAL', 'Reverse Signal'
     
     def calculate_unrealized_pnl(self, current_price: float) -> float:
         """Calculate current unrealized P&L"""
@@ -98,6 +104,8 @@ class Position:
             'current_price': self.current_price,
             'unrealized_pnl': self.unrealized_pnl,
             'realized_pnl': self.realized_pnl,
+            'spread_cost': self.spread_cost,
+            'slippage_cost': self.slippage_cost,
             'signal_timestamp': self.signal_timestamp.isoformat() if self.signal_timestamp else None,
             'close_reason': self.close_reason
         }
@@ -191,8 +199,14 @@ class PositionStateManager:
         print(f"✅ Added position to state: {position.deal_id} ({position.direction} {position.instrument})")
     
     def get_position(self, deal_id: str) -> Optional[Position]:
-        """Get position by deal_id"""
-        return self.positions.get(deal_id)
+        """Get position by deal_id (open or closed)"""
+        if deal_id in self.positions:
+            return self.positions[deal_id]
+        # Also search closed positions
+        for p in self.closed_positions:
+            if p.deal_id == deal_id:
+                return p
+        return None
     
     def get_open_positions(self) -> List[Position]:
         """Get all open positions"""
@@ -219,6 +233,7 @@ class PositionStateManager:
         position.status = PositionStatus.CLOSED
         position.closed_at = datetime.now()
         position.close_reason = close_reason
+        position.close_price = close_price
         position.calculate_realized_pnl(close_price)
         
         # Move to history
@@ -238,16 +253,21 @@ class PositionStateManager:
     # ========== Exposure & Risk Metrics ==========
     
     def get_total_exposure(self) -> float:
-        """Calculate total position exposure (sum of position sizes)"""
-        return sum(p.size * p.entry_price for p in self.get_open_positions())
-    
-    def get_exposure_by_instrument(self) -> Dict[str, float]:
-        """Get exposure breakdown by instrument"""
+        """Calculate total position exposure (sum of sizes)"""
+        return sum(p.size for p in self.get_open_positions())
+
+    def get_exposure_by_instrument(self, instrument: str = None):
+        """Get exposure breakdown by instrument.
+
+        If instrument is provided, returns the float exposure for that instrument.
+        Otherwise returns a dict mapping instrument -> exposure.
+        """
         exposure = {}
         for position in self.get_open_positions():
-            instrument = position.instrument
-            position_value = position.size * position.entry_price
-            exposure[instrument] = exposure.get(instrument, 0) + position_value
+            inst = position.instrument
+            exposure[inst] = exposure.get(inst, 0.0) + position.size
+        if instrument is not None:
+            return exposure.get(instrument, 0.0)
         return exposure
     
     def get_total_unrealized_pnl(self) -> float:
@@ -303,7 +323,10 @@ class PositionStateManager:
                 if bp.get('deal_id') not in local_deal_ids
             ]
             
-            result.missing_broker = list(local_deal_ids - broker_deal_ids)
+            result.missing_broker = [
+                self.positions[did]
+                for did in (local_deal_ids - broker_deal_ids)
+            ]
             
             # Check for mismatches in matched positions
             for deal_id in result.matched:
@@ -351,24 +374,28 @@ class PositionStateManager:
                 deal_id=broker_pos['deal_id'],
                 instrument=broker_pos['instrument'],
                 direction=broker_pos['direction'],
-                entry_price=broker_pos['entry_price'],
+                # Capital.com uses open_level / entry_price depending on source
+                entry_price=broker_pos.get('entry_price', broker_pos.get('open_level', 0)),
                 size=broker_pos['size'],
-                stop_loss=broker_pos.get('stop_loss', 0),
-                take_profit=broker_pos.get('take_profit', 0),
+                stop_loss=broker_pos.get('stop_loss', broker_pos.get('stop_level', 0)),
+                take_profit=broker_pos.get('take_profit', broker_pos.get('profit_level', 0)),
                 status=PositionStatus.OPEN,
                 opened_at=datetime.now()  # Approximate
             )
             self.add_position(position)
             print(f"🔧 Auto-healed: Added missing position {position.deal_id}")
-        
+
         # Close positions missing from broker
-        for deal_id in result.missing_broker:
-            position = self.close_position(
-                deal_id=deal_id,
-                close_price=self.positions[deal_id].entry_price,  # Unknown close price
-                close_reason='RECONCILIATION_CLOSED'
-            )
-            print(f"🔧 Auto-healed: Closed orphaned position {deal_id}")
+        for item in result.missing_broker:
+            deal_id = item.deal_id if hasattr(item, 'deal_id') else item
+            pos = self.positions.get(deal_id)
+            if pos:
+                self.close_position(
+                    deal_id=deal_id,
+                    close_price=pos.entry_price,  # Unknown close price at reconciliation
+                    close_reason='orphaned'
+                )
+                print(f"🔧 Auto-healed: Closed orphaned position {deal_id}")
         
         # Update mismatched positions
         for mismatch in result.mismatched:
@@ -401,7 +428,7 @@ class PositionStateManager:
         
         try:
             # Use storage skill to persist
-            await self.storage.save_state_snapshot(snapshot)
+            await self.storage.save_data('position_snapshot', snapshot)
             print(f"✅ Saved state snapshot: {len(snapshot['open_positions'])} positions")
             return True
         except Exception as e:
@@ -418,7 +445,7 @@ class PositionStateManager:
             return False
         
         try:
-            snapshot = await self.storage.load_state_snapshot()
+            snapshot = await self.storage.load_data('position_snapshot')
             if not snapshot:
                 print("ℹ️ No previous state snapshot found")
                 return False

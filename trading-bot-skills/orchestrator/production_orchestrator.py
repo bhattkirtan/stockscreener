@@ -4,7 +4,7 @@ Integrates event-driven architecture, position state management, circuit breaker
 """
 import asyncio
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import os
 
@@ -17,6 +17,40 @@ from core.position_state import PositionStateManager, Position, PositionStatus
 from core.idempotency import IdempotencyManager, RetryPolicy
 from core.circuit_breakers import CircuitBreaker, TradingSessionFilter, SpreadSlippageFilter, NewsEventKillSwitch
 from core.operational_monitoring import OperationalMonitor
+
+
+class IntraDayTimeExit:
+    """Force close positions that exceed max holding time (matches backtester)"""
+    
+    def __init__(self, max_hours: int = 4, enabled: bool = True):
+        self.max_hours = max_hours
+        self.enabled = enabled
+    
+    def should_close_time(self, position: Position, current_time: datetime) -> bool:
+        """Returns True if position should be closed due to time"""
+        if not self.enabled:
+            return False
+        hours_open = (current_time - position.opened_at).total_seconds() / 3600
+        return hours_open >= self.max_hours
+
+
+class EndOfDayClose:
+    """Force close all positions at EOD hour (matches backtester)"""
+    
+    def __init__(self, close_hour: int = 16, enabled: bool = True):
+        """
+        Args:
+            close_hour: Hour (0-23) to close all positions (default: 16 = 4 PM UTC)
+            enabled: Whether EOD close is active
+        """
+        self.close_hour = close_hour
+        self.enabled = enabled
+    
+    def should_close_eod(self, current_time: datetime) -> bool:
+        """Returns True if we've hit EOD close hour"""
+        if not self.enabled:
+            return False
+        return current_time.hour >= self.close_hour
 
 
 class ProductionOrchestrator:
@@ -98,6 +132,17 @@ class ProductionOrchestrator:
         
         # Operational monitoring
         self.op_monitor = OperationalMonitor(config.get('monitoring', {}))
+        
+        # Time-based exit filters (NEW - Critical for Gold trading)
+        time_exit_config = config.get('time_based_exits', {})
+        self.intraday_time_exit = IntraDayTimeExit(
+            max_hours=time_exit_config.get('max_hours', 4),
+            enabled=time_exit_config.get('intraday_enabled', True)
+        )
+        self.eod_close = EndOfDayClose(
+            close_hour=time_exit_config.get('eod_hour', 16),
+            enabled=time_exit_config.get('eod_enabled', True)
+        )
         
         # Skills registry
         self.skills: Dict[str, Skill] = {}
@@ -314,13 +359,19 @@ class ProductionOrchestrator:
             self._on_circuit_breaker_alert
         )
         
+        # Reverse signal monitoring (close positions on opposite signal)
+        self.event_bus.subscribe(
+            EventType.SIGNAL_GENERATED,
+            self._check_reverse_signals
+        )
+        
         print(f"✅ Wired event subscriptions: {len(self.event_bus.subscribers)} event types")
     
     # ========== Event Handlers (STATE MANAGEMENT ONLY) ==========
     
     async def _on_order_filled_update_state(self, event: Event) -> None:
         """Handle order filled -> update position state and storage"""
-        # Create position in state manager
+        # Create position in state manager (with transaction costs)
         position = Position(
             deal_id=event.payload['deal_id'],
             instrument=event.instrument,
@@ -331,7 +382,9 @@ class ProductionOrchestrator:
             take_profit=event.payload.get('take_profit', 0),
             status=PositionStatus.OPEN,
             opened_at=event.timestamp,
-            signal_timestamp=event.timestamp
+            signal_timestamp=event.timestamp,
+            spread_cost=event.payload.get('spread_cost', 0.0),
+            slippage_cost=event.payload.get('slippage_cost', 0.0)
         )
         
         self.position_manager.add_position(position)
@@ -355,6 +408,151 @@ class ProductionOrchestrator:
             
             # Save snapshot   
             await self.position_manager.save_snapshot()
+    
+    async def _check_reverse_signals(self, event: Event) -> None:
+        """
+        Check if any open positions should be closed due to reverse signal.
+        Matches backtester behavior: closes opposite positions when new signal fires.
+        """
+        try:
+            from core.signal_engine import check_reverse_signal, create_market_state
+            
+            # Get signal from event
+            new_signal = event.payload.get('signal')
+            indicators = event.payload.get('indicators', {})
+            
+            if not new_signal or new_signal not in ['BUY', 'SELL']:
+                return
+            
+            # Create market state from indicators
+            market_state = create_market_state(
+                close=indicators.get('current_price', 0),
+                supertrend_direction=indicators.get('supertrend_direction', 0),
+                ema=indicators.get('ema', 0),
+                sma_fast=indicators.get('sma_fast', 0),
+                sma_slow=indicators.get('sma_slow', 0),
+                timestamp=str(event.timestamp)
+            )
+            
+            # Get all open positions
+            open_positions = self.position_manager.get_open_positions()
+            
+            if not open_positions:
+                return
+            
+            # Check each open position for reverse signal
+            for position in open_positions:
+                # Check if this signal is opposite to the position
+                if check_reverse_signal(position.direction, market_state):
+                    print(f"🔄 Reverse signal detected: {new_signal} signal while holding {position.direction}")
+                    print(f"   Closing position {position.deal_id} at current price")
+                    
+                    # Close position via execution skill
+                    if 'execution' in self.skills:
+                        execution_skill = self.skills['execution']
+                        success = await execution_skill.close_position(position.deal_id)
+                        
+                        if success:
+                            # Publish POSITION_CLOSED event
+                            await self.event_bus.publish(Event(
+                                event_type=EventType.POSITION_CLOSED,
+                                source='orchestrator',
+                                instrument=position.instrument,
+                                timestamp=datetime.now(),
+                                payload={
+                                    'deal_id': position.deal_id,
+                                    'close_price': indicators.get('current_price', 0),
+                                    'close_reason': 'Reverse Signal'
+                                }
+                            ))
+                            print(f"✅ Position {position.deal_id} closed on reverse signal")
+                        else:
+                            print(f"❌ Failed to close position {position.deal_id}")
+                    
+        except Exception as e:
+            print(f"⚠️ Error checking reverse signals: {e}")
+            # Don't propagate error - this is advisory logic
+    
+    async def _check_time_based_exits(self) -> None:
+        """
+        Check if any open positions should be closed due to time limits.
+        Called periodically by monitoring loop.
+        
+        Two checks:
+        1. IntraDayTimeExit: Close positions open > max_hours (e.g., 4 hours)
+        2. EndOfDayClose: Close all positions at EOD hour (e.g., 4 PM UTC)
+        
+        Matches backtester behavior in cloud-function/src/core/backtester.py
+        """
+        try:
+            current_time = datetime.now()
+            open_positions = self.position_manager.get_open_positions()
+            
+            if not open_positions:
+                return
+            
+            # Check 1: End-of-Day close (takes priority)
+            if self.eod_close.should_close_eod(current_time):
+                print(f"⏰ EOD close triggered: {self.eod_close.close_hour}:00 UTC")
+                for position in open_positions:
+                    await self._close_position_time_exit(
+                        position,
+                        'EOD_CLOSE',
+                        f"End of day close ({self.eod_close.close_hour}:00 UTC)"
+                    )
+                return  # All positions closed, done
+            
+            # Check 2: Intraday time exit (individual positions)
+            for position in open_positions:
+                if self.intraday_time_exit.should_close_time(position, current_time):
+                    hours_open = (current_time - position.opened_at).total_seconds() / 3600
+                    print(f"⏰ Intraday time exit: {position.deal_id} open {hours_open:.1f} hours (max: {self.intraday_time_exit.max_hours})")
+                    await self._close_position_time_exit(
+                        position,
+                        'TIME_EXIT',
+                        f"Exceeded max holding time ({self.intraday_time_exit.max_hours} hours)"
+                    )
+        
+        except Exception as e:
+            print(f"⚠️ Error checking time-based exits: {e}")
+            # Don't propagate error - this is advisory logic
+    
+    async def _close_position_time_exit(self, position: Position, exit_type: str, reason: str) -> None:
+        """
+        Close position due to time-based exit.
+        
+        Args:
+            position: Position to close
+            exit_type: 'EOD_CLOSE' or 'TIME_EXIT'
+            reason: Human-readable reason
+        """
+        try:
+            # Close position via execution skill
+            if 'execution' in self.skills:
+                execution_skill = self.skills['execution']
+                success = await execution_skill.close_position(position.deal_id)
+                
+                if success:
+                    # Publish POSITION_CLOSED event
+                    await self.event_bus.publish(Event(
+                        event_type=EventType.POSITION_CLOSED,
+                        source='orchestrator',
+                        instrument=position.instrument,
+                        timestamp=datetime.now(),
+                        payload={
+                            'deal_id': position.deal_id,
+                            'close_price': 0.0,  # Would need live price
+                            'close_reason': exit_type
+                        }
+                    ))
+                    print(f"✅ {exit_type}: {position.deal_id} closed ({reason})")
+                else:
+                    print(f"❌ Failed to close {position.deal_id} ({exit_type})")
+            else:
+                print(f"⚠️ Execution skill not available to close {position.deal_id}")
+        
+        except Exception as e:
+            print(f"❌ Error closing position {position.deal_id}: {e}")
     
     async def _on_error_for_alerting(self, event: Event) -> None:
         """Handle errors -> send alerts"""
@@ -386,6 +584,10 @@ class ProductionOrchestrator:
                 
                 # Cleanup expired idempotency keys
                 await self.idempotency.cleanup_expired()
+                
+                # ========== NEW: Time-Based Exit Checks ==========
+                await self._check_time_based_exits()
+                # ================================================
                 
                 # Save periodic snapshot
                 await self.position_manager.save_snapshot()

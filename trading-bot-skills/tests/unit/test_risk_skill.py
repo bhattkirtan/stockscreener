@@ -22,7 +22,8 @@ def risk_config():
         'tp_cooldown_minutes': 5,
         'position_size_pct': 2.0,
         'max_drawdown_pct': 20.0,
-        'max_positions': 1
+        'max_positions': 1,
+        'trading_hours': {'enabled': False}  # Disable for unit tests
     }
 
 

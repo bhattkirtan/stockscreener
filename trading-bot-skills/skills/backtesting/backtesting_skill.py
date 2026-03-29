@@ -129,7 +129,7 @@ class BacktestingSkill(Skill):
         # Run backtest with analysis and risk skills
         for idx, candle in df.iterrows():
             # 1. Update context with candle
-            context.candle = candle.to_dict()
+            context.current_candle = candle.to_dict()
             context.timestamp = candle['timestamp']
             
             # 2. Run analysis skill to generate signal
@@ -152,7 +152,8 @@ class BacktestingSkill(Skill):
     
     def __init__(self, config: dict, event_bus: Optional['EventBus'] = None):
         super().__init__(config, event_bus)
-        
+        self._config = config  # keep full config for sl_tp_engine dispatch
+
         # Support both flat config and nested config
         bt_config = config if 'start_date' in config else config.get('backtesting', {})
         self.initial_capital = bt_config.get('initial_capital', 10000.0)
@@ -161,6 +162,16 @@ class BacktestingSkill(Skill):
         self.slippage_cost_usd = bt_config.get('slippage_cost_usd', 0.05)
         self.commission_per_trade = bt_config.get('commission_per_trade', 2.0)
         self.intra_candle_simulation = bt_config.get('intra_candle_simulation', True)
+
+        # Minimum hold time before a reverse-signal exit is allowed
+        filters_config = config.get('backtesting_filters', {})
+        self.min_hold_minutes = filters_config.get('min_hold_minutes', 0)
+        self.disable_reverse_exit = filters_config.get('disable_reverse_exit', False)
+
+        # Maximum hold time (time-based forced exit)
+        time_exits_config = config.get('time_based_exits', {})
+        max_hours = time_exits_config.get('max_hours', 0)
+        self.max_hold_minutes = max_hours * 60 if max_hours else 0
         
         # Get SL/TP from risk config
         risk_config = config.get('risk', {})
@@ -185,6 +196,8 @@ class BacktestingSkill(Skill):
         print(f"   Initial Capital: ${self.initial_capital:,.2f}")
         print(f"   Position Size: {self.position_size}")
         print(f"   SL: {self.stop_loss_pips} pips, TP: {self.take_profit_pips} pips")
+        if self.max_hold_minutes:
+            print(f"   Max hold: {self.max_hold_minutes} min ({self.max_hold_minutes//60}h)")
     
     def validate_config(self) -> bool:
         """Validate backtesting configuration"""
@@ -216,24 +229,37 @@ class BacktestingSkill(Skill):
         if len(self.open_positions) > 0:
             return False
         
-        # Get current price from candle
-        candle = context.candle
-        if not candle:
+        # Use entry_price from signal context (set by AnalysisSkill via RiskSkill pass-through).
+        # Fall back to close price from candle if somehow missing.
+        entry_price = context.entry_price
+        if not entry_price:
+            candle = context.current_candle or {}
+            entry_price = candle.get('close', candle.get('price', 0))
+        if not entry_price or entry_price <= 0:
             return False
-        
-        entry_price = candle.get('close', candle.get('price', 0))
-        if entry_price <= 0:
-            return False
-        
-        # Calculate SL and TP
+
+        # Use SL/TP provided by AnalysisSkill (already on context).
+        # Fall back to sl_tp_engine with backtesting config only if missing.
+        stop_loss  = context.stop_loss
+        take_profit = context.take_profit
+
+        if not stop_loss or not take_profit:
+            from core.sl_tp_engine import compute_sl_tp
+            sl_tp_cfg = self._config.get('sl_tp', {
+                'method': 'fixed',
+                'stop_loss_pips': self.stop_loss_pips,
+                'take_profit_pips': self.take_profit_pips,
+            })
+            stop_loss, take_profit = compute_sl_tp(
+                signal=context.signal,
+                entry_price=entry_price,
+                sl_tp_config=sl_tp_cfg,
+            )
+
         if context.signal == 'BUY':
             side = OrderSide.BUY
-            stop_loss = entry_price - self.stop_loss_pips
-            take_profit = entry_price + self.take_profit_pips
-        else:  # SELL
+        else:
             side = OrderSide.SELL
-            stop_loss = entry_price + self.stop_loss_pips
-            take_profit = entry_price - self.take_profit_pips
         
         # Create simulated trade
         trade = SimulatedTrade(
@@ -249,9 +275,6 @@ class BacktestingSkill(Skill):
         
         self.open_positions.append(trade)
         self.total_trades += 1
-        
-        print(f"📊 Simulated {side.value} @ {entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
-        
         return True
     
     def check_exits(self, context: Context) -> List[SimulatedTrade]:
@@ -265,7 +288,7 @@ class BacktestingSkill(Skill):
         Returns:
             List of closed trades
         """
-        candle = context.candle
+        candle = context.current_candle
         if not candle:
             return []
         
@@ -297,6 +320,18 @@ class BacktestingSkill(Skill):
             elif trade.side == OrderSide.SELL and low <= trade.take_profit:
                 exit_price = trade.take_profit
                 exit_reason = 'TP_HIT'
+
+            # Time-based exit: close positions held longer than max_hold_minutes
+            if exit_price is None and self.max_hold_minutes > 0 and trade.entry_time:
+                try:
+                    entry_ts = pd.Timestamp(trade.entry_time)
+                    candle_ts = pd.Timestamp(context.timestamp)
+                    held_minutes = (candle_ts - entry_ts).total_seconds() / 60
+                    if held_minutes >= self.max_hold_minutes:
+                        exit_price = close_price
+                        exit_reason = 'TIME_EXIT'
+                except Exception:
+                    pass
             
             # Close position if exit triggered
             if exit_price:
@@ -305,7 +340,31 @@ class BacktestingSkill(Skill):
                 self.open_positions.remove(trade)
         
         return closed_trades
-    
+
+    def close_reverse_positions(self, new_signal: str, price: float, timestamp) -> List['SimulatedTrade']:
+        """
+        Close any open positions in the opposite direction of new_signal.
+        Mirrors cloud-function 'Reverse Signal' exit behaviour.
+        """
+        if self.disable_reverse_exit:
+            return []  # SL/TP-only mode
+        opposite = OrderSide.SELL if new_signal == 'BUY' else OrderSide.BUY
+        closed = []
+        for trade in self.open_positions[:]:
+            if trade.side == opposite:
+                # Minimum hold filter: skip if trade was entered < min_hold_minutes ago
+                if self.min_hold_minutes > 0:
+                    import pandas as pd
+                    ts = pd.Timestamp(timestamp)
+                    entry_ts = pd.Timestamp(trade.entry_time)
+                    held_minutes = (ts - entry_ts).total_seconds() / 60
+                    if held_minutes < self.min_hold_minutes:
+                        continue  # let the trade live; don't reverse-exit yet
+                self._close_position(trade, price, 'Reverse Signal', timestamp)
+                self.open_positions.remove(trade)
+                closed.append(trade)
+        return closed
+
     def _close_position(self, trade: SimulatedTrade, exit_price: float, exit_reason: str, exit_time: datetime):
         """Close a simulated position and calculate P&L"""
         trade.exit_price = exit_price
@@ -344,8 +403,7 @@ class BacktestingSkill(Skill):
         # Add to closed positions
         self.closed_positions.append(trade)
         
-        pnl_emoji = "💰" if trade.pnl > 0 else "📉"
-        print(f"{pnl_emoji} Closed {trade.side.value} @ {exit_price:.2f} ({exit_reason}): P&L=${trade.pnl:.2f}, Capital=${self.capital:,.2f}")
+        pass  # per-trade print removed for backtest performance
     
     def get_results(self) -> Dict:
         """
@@ -354,7 +412,8 @@ class BacktestingSkill(Skill):
         Returns:
             Dictionary with performance metrics
         """
-        win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
+        closed_count = len(self.closed_positions)
+        win_rate = (self.winning_trades / closed_count * 100) if closed_count > 0 else 0
         avg_win = sum(t.pnl for t in self.closed_positions if t.pnl > 0) / max(self.winning_trades, 1)
         avg_loss = sum(t.pnl for t in self.closed_positions if t.pnl < 0) / max(self.losing_trades, 1)
         
@@ -465,23 +524,23 @@ if __name__ == "__main__":
     # Trade 1: BUY that hits TP
     context = Context(timestamp=datetime(2024, 1, 1, 10, 0))
     context.signal = 'BUY'
-    context.candle = {'close': 1900.0, 'high': 1950.0, 'low': 1890.0}
+    context.current_candle = {'close': 1900.0, 'high': 1950.0, 'low': 1890.0}
     backtest.execute(context)
     
     # Check exit on next candle (TP hit)
     context.timestamp = datetime(2024, 1, 1, 10, 5)
-    context.candle = {'close': 1942.0, 'high': 1945.0, 'low': 1935.0}  # TP = 1940
+    context.current_candle = {'close': 1942.0, 'high': 1945.0, 'low': 1935.0}  # TP = 1940
     backtest.check_exits(context)
     
     # Trade 2: SELL that hits SL
     context.timestamp = datetime(2024, 1, 1, 11, 0)
     context.signal = 'SELL'
-    context.candle = {'close': 1950.0, 'high': 1955.0, 'low': 1945.0}
+    context.current_candle = {'close': 1950.0, 'high': 1955.0, 'low': 1945.0}
     backtest.execute(context)
     
     # Check exit (SL hit)
     context.timestamp = datetime(2024, 1, 1, 11, 5)
-    context.candle = {'close': 1975.0, 'high': 1980.0, 'low': 1970.0}  # SL = 1970
+    context.current_candle = {'close': 1975.0, 'high': 1980.0, 'low': 1970.0}  # SL = 1970
     backtest.check_exits(context)
     
     # Get results

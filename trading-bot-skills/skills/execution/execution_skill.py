@@ -55,6 +55,9 @@ class ExecutionSkill(Skill):
         capital_config = config.get('capital_com', {})
         self.mock_mode = config.get('mock_mode', False)
         
+        # Transaction cost tracking
+        self._last_transaction_costs = None
+        
         if not self.mock_mode and capital_config:
             try:
                 self.rest_client = CapitalAPIClient(
@@ -81,6 +84,16 @@ class ExecutionSkill(Skill):
         entry_price = event.payload.get('entry_price')
         stop_loss = event.payload.get('stop_loss')
         take_profit = event.payload.get('take_profit')
+        
+        # Calculate transaction costs (matches backtester)
+        from core.cost_calculator import calculate_position_costs, GOLD_COST_CONFIG
+        transaction_costs = calculate_position_costs(entry_price, position_size, GOLD_COST_CONFIG)
+        logger.info(f"💰 Transaction costs: Spread=${transaction_costs.spread_cost:.2f}, "
+                   f"Slippage=${transaction_costs.slippage_cost:.2f}, "
+                   f"Total=${transaction_costs.total_cost:.2f}")
+        
+        # Store costs for later use in ORDER_FILLED event
+        self._last_transaction_costs = transaction_costs
         
         # Validate signal
         if not signal or signal not in ['BUY', 'SELL']:
@@ -125,7 +138,7 @@ class ExecutionSkill(Skill):
                 self.idempotency.register_fill(order.idempotency_key, result['deal_id'])
             
             # Publish ORDER_FILLED event
-            await self._publish_order_filled(event, result, signal, position_size, stop_loss, take_profit)
+            await self._publish_order_filled(event, result, signal, position_size, stop_loss, take_profit, transaction_costs)
             
         except Exception as e:
             # Register rejection
@@ -136,23 +149,33 @@ class ExecutionSkill(Skill):
             await self._publish_order_rejected(event, str(e))
     
     async def _publish_order_filled(self, event: 'Event', result: Dict, 
-                                    signal: str, size: float, stop_loss: float, take_profit: float):
-        """Publish ORDER_FILLED event"""
+                                    signal: str, size: float, stop_loss: float, take_profit: float,
+                                    transaction_costs=None):
+        """Publish ORDER_FILLED event with transaction costs"""
         if not self.event_bus:
             return
         
         from core.event_bus import create_order_filled_event
+        
+        # Build event payload with costs
+        event_payload = {
+            'deal_id': result.get('deal_id'),
+            'instrument': event.instrument,
+            'direction': signal,
+            'entry_price': result.get('entry_price', 0),
+            'size': size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'correlation_id': event.correlation_id
+        }
+        
+        # Add transaction costs if available
+        if transaction_costs:
+            event_payload['spread_cost'] = transaction_costs.spread_cost
+            event_payload['slippage_cost'] = transaction_costs.slippage_cost
+        
         await self.event_bus.publish(
-            create_order_filled_event(
-                deal_id=result.get('deal_id'),
-                instrument=event.instrument,
-                direction=signal,
-                entry_price=result.get('entry_price', 0),
-                size=size,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                correlation_id=event.correlation_id
-            )
+            create_order_filled_event(**event_payload)
         )
         print(f"✅ Order filled: {result.get('deal_id')}")
     

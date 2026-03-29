@@ -28,7 +28,8 @@ class OrderRequest:
     signal_timestamp: datetime
     submitted_at: Optional[datetime] = None
     deal_id: Optional[str] = None
-    status: str = 'PENDING'  # PENDING, SUBMITTED, FILLED, REJECTED
+    status: str = 'pending'  # pending, submitted, filled, rejected
+    reason: Optional[str] = None
     
     @classmethod
     def create(cls, instrument: str, direction: str, size: float, 
@@ -124,7 +125,7 @@ class IdempotencyManager:
             order: OrderRequest that was submitted
         """
         order.submitted_at = datetime.now()
-        order.status = 'SUBMITTED'
+        order.status = 'submitted'
         self.submitted_keys[order.idempotency_key] = order
         
         print(f"✅ Registered order submission: {order.idempotency_key}")
@@ -139,7 +140,7 @@ class IdempotencyManager:
         """
         if idempotency_key in self.submitted_keys:
             self.submitted_keys[idempotency_key].deal_id = deal_id
-            self.submitted_keys[idempotency_key].status = 'FILLED'
+            self.submitted_keys[idempotency_key].status = 'filled'
             self.filled_orders[deal_id] = idempotency_key
             
             print(f"✅ Registered order fill: {idempotency_key} -> {deal_id}")
@@ -153,53 +154,51 @@ class IdempotencyManager:
             reason: Rejection reason
         """
         if idempotency_key in self.submitted_keys:
-            self.submitted_keys[idempotency_key].status = 'REJECTED'
+            self.submitted_keys[idempotency_key].status = 'rejected'
+            self.submitted_keys[idempotency_key].reason = reason
             print(f"⚠️ Registered order rejection: {idempotency_key} - {reason}")
     
-    def was_order_filled(self, signal_timestamp: datetime, instrument: str, direction: str) -> Optional[str]:
+    def was_order_filled(self, signal_timestamp_or_key, instrument: str = None, direction: str = None) -> Optional[str]:
         """
         Check if order from this signal was already filled.
-        
-        Useful for checking if a signal already resulted in a trade.
-        
-        Args:
-            signal_timestamp: Signal generation time
-            instrument: Trading instrument
-            direction: BUY or SELL
-        
+
+        Can be called as:
+          - was_order_filled(idempotency_key)  -- single string key
+          - was_order_filled(signal_timestamp, instrument, direction)
+
         Returns:
             deal_id if order was filled, None otherwise
         """
-        timestamp_ms = int(signal_timestamp.timestamp() * 1000)
-        idempotency_key = f"{instrument}_{direction}_{timestamp_ms}"
-        
+        if instrument is None and direction is None:
+            # Called with a single idempotency key string
+            idempotency_key = signal_timestamp_or_key
+        else:
+            signal_timestamp = signal_timestamp_or_key
+            timestamp_ms = int(signal_timestamp.timestamp() * 1000)
+            idempotency_key = f"{instrument}_{direction}_{timestamp_ms}"
+
         order = self.submitted_keys.get(idempotency_key)
-        if order and order.status == 'FILLED':
-            return order.deal_id
-        
-        return None
+        if order and order.status == 'filled':
+            return True
+
+        return False
     
     async def cleanup_expired(self) -> int:
         """
         Remove expired idempotency keys (older than TTL).
-        
-        Prevents memory growth while maintaining safety window.
-        
+
         Returns:
             Number of keys removed
         """
         now = datetime.now()
-        
-        # Check if cleanup is needed
-        if (now - self.last_cleanup).total_seconds() < self.cleanup_interval_minutes * 60:
-            return 0
-        
         cutoff = now - timedelta(hours=self.ttl_hours)
-        
-        # Find expired keys
+
+        # Find expired keys — check signal_timestamp first (it reflects when the signal occurred)
+        # and fall back to submitted_at for backward compatibility
         expired_keys = [
             key for key, order in self.submitted_keys.items()
-            if order.submitted_at and order.submitted_at < cutoff
+            if (order.signal_timestamp and order.signal_timestamp < cutoff) or
+               (not order.signal_timestamp and order.submitted_at and order.submitted_at < cutoff)
         ]
         
         # Remove expired
@@ -220,8 +219,8 @@ class IdempotencyManager:
         return {
             'total_submissions': len(self.submitted_keys),
             'filled_orders': len(self.filled_orders),
-            'pending_orders': len([o for o in self.submitted_keys.values() if o.status == 'PENDING']),
-            'rejected_orders': len([o for o in self.submitted_keys.values() if o.status == 'REJECTED']),
+            'pending_orders': len([o for o in self.submitted_keys.values() if o.status == 'pending']),
+            'rejected_orders': len([o for o in self.submitted_keys.values() if o.status == 'rejected']),
             'last_cleanup': self.last_cleanup.isoformat(),
             'ttl_hours': self.ttl_hours
         }
@@ -255,17 +254,21 @@ class RetryPolicy:
         self.timeout = timeout_seconds
     
     def calculate_delay(self, attempt: int) -> float:
-        """
-        Calculate delay for given attempt using exponential backoff.
-        
-        Args:
-            attempt: Current attempt number (0-indexed)
-        
-        Returns:
-            Delay in seconds
-        """
+        """Calculate delay for given attempt using exponential backoff."""
         delay = self.base_delay * (2 ** attempt)
         return min(delay, self.max_delay)
+
+    def calculate_backoff_delay(self, attempt: int) -> float:
+        """Alias for calculate_delay (1-indexed attempt)."""
+        return self.calculate_delay(max(0, attempt - 1))
+
+    def is_transient_error(self, exception: Exception) -> bool:
+        """Determine if error is transient (retryable) or permanent."""
+        error_str = str(exception).lower()
+        transient_keywords = ('timeout', 'connection', 'network',
+                              'temporarily unavailable', 'rate limit',
+                              'too many requests', 'unavailable')
+        return any(kw in error_str for kw in transient_keywords)
     
     async def execute_with_retry(self, operation, *args, **kwargs):
         """
@@ -299,9 +302,12 @@ class RetryPolicy:
             except asyncio.TimeoutError:
                 last_exception = Exception(f"Operation timed out after {self.timeout}s")
                 print(f"⚠️ Attempt {attempt + 1}/{self.max_attempts} timed out")
-            
+
             except Exception as e:
                 last_exception = e
+                if not self.is_transient_error(e):
+                    # Non-transient errors (logic errors, validation, etc.) should not be retried
+                    raise
                 print(f"⚠️ Attempt {attempt + 1}/{self.max_attempts} failed: {e}")
             
             # Wait before retry (except on last attempt)

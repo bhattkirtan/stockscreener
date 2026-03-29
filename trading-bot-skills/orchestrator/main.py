@@ -123,8 +123,16 @@ async def main():
     
     elif args.mode == 'demo':
         print("📝 Running in DEMO mode (paper trading)")
-        # TODO: Connect to demo account
-        print("⚠️ Demo mode not yet implemented")
+        print("💰 Using Capital.com Demo Account")
+        print("⚠️  NOT using real money - safe for testing")
+        print("")
+        
+        # Keep running until interrupted
+        try:
+            while orchestrator.running:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            print("\n⏸️ Shutting down...")
     
     else:  # live mode
         print("💰 Running in LIVE mode")
