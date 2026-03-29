@@ -50,6 +50,15 @@ class TradingConfig:
     # Event blocking
     enable_event_blocking: bool = True
     calendar_path: str = 'data/economic_calendar.json'
+    
+    # Trading hours (GOLD market: Sunday 23:00 - Friday 21:00 UTC)
+    enable_trading_hours: bool = True  # Enable/disable trading hours restrictions
+    trading_start_hour: int = 0  # Daily trading start hour (UTC)
+    trading_end_hour: int = 21  # Daily trading end hour (UTC)
+    daily_break_start: int = 21  # Daily break start hour (UTC)
+    daily_break_end: int = 22  # Daily break end hour (UTC) 
+    allow_weekends: bool = False  # Allow trading on Saturday/Sunday
+    friday_close_hour: int = 21  # Friday early close hour (UTC)
 
     # Position sizing
     position_size: float = 0.1  # Size per trade (adjust based on capital)
@@ -57,6 +66,12 @@ class TradingConfig:
     
     # Risk management
     max_open_positions: int = 1  # Only 1 GOLD position at a time
+    
+    # Trailing Stop Loss Configuration
+    enable_trailing_stop: bool = False  # Enable/disable trailing stop loss
+    breakeven_after_pips: float = 0.0  # Config 1: Move SL to entry after Z pips profit (0 = disabled)
+    trail_stop_distance: float = 0.0  # Config 2: Move SL by X pips...
+    trail_trigger_pips: float = 0.0  # Config 2: ...after every Y pips of profit (0 = disabled)
     
     # WebSocket settings
     ping_interval_seconds: int = 480  # 8 minutes (before 10 min timeout)
@@ -98,6 +113,16 @@ class TradingConfig:
             self.tp_pips_fixed = float(os.getenv('BOT_TP_PIPS'))
         if os.getenv('BOT_ST_MULTIPLIER'):
             self.supertrend_multiplier = float(os.getenv('BOT_ST_MULTIPLIER'))
+        
+        # Trailing stop loss overrides
+        if os.getenv('BOT_ENABLE_TRAILING_STOP'):
+            self.enable_trailing_stop = os.getenv('BOT_ENABLE_TRAILING_STOP').lower() in ['true', '1', 'yes']
+        if os.getenv('BOT_BREAKEVEN_PIPS'):
+            self.breakeven_after_pips = float(os.getenv('BOT_BREAKEVEN_PIPS'))
+        if os.getenv('BOT_TRAIL_DISTANCE'):
+            self.trail_stop_distance = float(os.getenv('BOT_TRAIL_DISTANCE'))
+        if os.getenv('BOT_TRAIL_TRIGGER'):
+            self.trail_trigger_pips = float(os.getenv('BOT_TRAIL_TRIGGER'))
         if os.getenv('BOT_EVENT_BLOCKING'):
             self.enable_event_blocking = os.getenv('BOT_EVENT_BLOCKING', 'true').lower() == 'true'
     

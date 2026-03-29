@@ -38,6 +38,7 @@ from src.live_trading.signal_publisher import SignalPublisher, SignalBackend
 from src.live_trading.bot_status_publisher import BotStatusPublisher, BotStatus
 from src.live_trading.position_publisher import PositionPublisher, PositionStatus
 from src.live_trading.log_publisher import LogPublisher, FirestoreLogHandler
+from src.live_trading.trading_hours import TradingHoursValidator
 
 # Import strategy indicator calculations
 from src.core.strategy import SupertrendVWAPStrategy
@@ -51,6 +52,9 @@ from src.live_trading.capital_rest import CapitalRestClient
 # Import event blocking
 from src.data.manual_calendar_adapter import ManualCalendarAdapter
 from src.core.event_blocker import EventBlocker
+
+# Import position management for trailing stops
+from src.core.position_manager import PositionManager, PositionTracker, TrailingStopConfig
 
 # Setup logging — new timestamped file each run, plus symlink trading_bot.log → latest
 _log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -187,6 +191,21 @@ class TradingBot:
         else:
             self.event_blocker = None
         
+        # Trading hours validator
+        if config.enable_trading_hours:
+            self.trading_hours_validator = TradingHoursValidator(
+                trading_start_hour=config.trading_start_hour,
+                trading_end_hour=config.trading_end_hour,
+                daily_break_start=config.daily_break_start,
+                daily_break_end=config.daily_break_end,
+                allow_weekends=config.allow_weekends,
+                friday_close_hour=config.friday_close_hour
+            )
+            logger.info(f"🕐 Trading hours enabled: {config.daily_break_start}:00-{config.daily_break_end}:00 daily break, "
+                       f"Friday close {config.friday_close_hour}:00, weekends {'allowed' if config.allow_weekends else 'closed'}")
+        else:
+            self.trading_hours_validator = None
+        
         # Position tracking
         self.current_position: Optional[Dict] = None
         self.last_signal_time: Optional[datetime] = None
@@ -197,6 +216,29 @@ class TradingBot:
         self.sl_cooldown_minutes = 15  # Wait 15 minutes (3 M5 candles) after SL hit before same direction
         self.tp_cooldown_minutes = 5   # Wait 5 minutes (1 M5 candle) after TP hit before same direction
         self.close_reason: Optional[str] = None  # Track why position closed ('SL_HIT', 'TP_HIT', 'SIGNAL')
+        
+        # Trailing stop loss tracking
+        self.highest_price_reached: Optional[float] = None  # For BUY positions
+        self.lowest_price_reached: Optional[float] = None  # For SELL positions
+        self.last_sl_update_level: Optional[float] = None  # Track last profit level where SL was updated
+        self.breakeven_applied: bool = False  # Track if break-even has been applied
+        
+        # Initialize trailing stop manager if enabled
+        if config.enable_trailing_stop:
+            trailing_config = TrailingStopConfig(
+                breakeven_enabled=config.breakeven_after_pips > 0,
+                breakeven_trigger_pips=config.breakeven_after_pips,
+                step_trailing_enabled=config.trail_step_pips > 0 and config.trail_move_pips > 0,
+                trail_step_pips=config.trail_step_pips,
+                trail_move_pips=config.trail_stop_distance
+            )
+            self.position_manager = PositionManager(trailing_config)
+            self.position_tracker: Optional[PositionTracker] = None
+            logger.info(f"🎯 Trailing stop enabled: Break-even={config.breakeven_after_pips}pips, "
+                       f"Step={config.trail_step_pips}pips/{config.trail_stop_distance}pips")
+        else:
+            self.position_manager = None
+            self.position_tracker = None
         
         # Rate limiting for Firestore position updates (prevent excessive writes)
         self.last_position_update_time: Dict[str, datetime] = {}  # deal_id -> last update timestamp
@@ -495,13 +537,39 @@ class TradingBot:
                 if not is_allowed:
                     logger.info(f"🚫 Trade blocked by event filter: {block_reason}")
                     return
+            
+            # Trading hours check before evaluating signals
+            if self.trading_hours_validator:
+                is_allowed, block_reason = self.trading_hours_validator.is_trading_allowed(datetime.utcnow())
+                if not is_allowed:
+                    logger.info(f"🚫 Trade blocked by trading hours: {block_reason}")
+                    return
 
-            # Check if already in position
+            # Check if already in position (validate with Capital.com API)
             if self.current_position:
-                logger.info(f"📍 Already in position: {self.current_position['direction']} {self.current_position['size']} @ {self.current_position['entry_price']:.2f}")
+                logger.info(f"📍 Already in position (local): {self.current_position['direction']} {self.current_position['size']} @ {self.current_position['entry_price']:.2f}")
                 # Don't open new positions while already in one
                 # Reverse signals will be handled when new signal fires (see below)
                 return
+            
+            # CRITICAL: Double-check with Capital.com API to prevent duplicate positions
+            try:
+                existing_position = self.rest_client.get_position_for_epic(self.epic)
+                if existing_position:
+                    logger.warning(f"⚠️ Position exists on Capital.com but not in local state! Syncing...")
+                    logger.warning(f"   {existing_position['direction']} {existing_position['size']} @ {existing_position['entry_price']:.2f}")
+                    logger.warning(f"   SL: {existing_position['stop_loss']} | TP: {existing_position['take_profit']}")
+                    
+                    # Sync position to local state
+                    self.current_position = existing_position
+                    
+                    # Prevent opening new position
+                    logger.warning(f"🚫 Prevented duplicate position! Using Capital.com as source of truth.")
+                    return
+            except Exception as e:
+                logger.error(f"❌ Failed to check Capital.com positions: {e}")
+                # Continue with caution - but log the error
+                logger.warning(f"⚠️ Could not verify position status with Capital.com - proceeding with local state only")
             
             # Debug: Log indicator values to diagnose why signals aren't generated
             logger.info(f"📊 Indicators: ST_dir={supertrend_dir} close={close:.2f} ema={ema:.2f} sma_fast={sma_fast:.2f} sma_slow={sma_slow:.2f} last_signal={self.last_signal_state}")
@@ -772,6 +840,16 @@ class TradingBot:
                         'take_profit': take_profit
                     }, status=PositionStatus.OPEN)
                 
+                # Initialize trailing stop tracker if enabled
+                if self.position_manager:
+                    self.position_tracker = PositionTracker(
+                        direction=direction,
+                        entry_price=entry_price,
+                        current_sl=stop_loss,
+                        current_tp=take_profit
+                    )
+                    logger.info(f"🎯 Trailing stop tracker initialized for {direction} position")
+                
                 self.last_signal_time = datetime.now()
             else:
                 logger.error(f"❌ Order placement failed: no dealReference in response: {response}")
@@ -845,6 +923,7 @@ class TradingBot:
             
             # Always clear local state — Capital.com may have already closed it via SL/TP
             self.current_position = None
+            self.position_tracker = None  # Clear trailing stop tracker
             self.close_reason = None  # Reset close reason
             
             # Clean up rate limiting tracking for closed position
@@ -880,7 +959,11 @@ class TradingBot:
     
     async def check_position_status(self, quote: Dict):
         """
-        Check if position hit SL/TP, and update P&L in Firestore
+        Monitor position status and sync with Capital.com.
+        
+        IMPORTANT: We do NOT manually close positions when SL/TP is detected.
+        Capital.com automatically closes positions when SL/TP is hit.
+        We only monitor status and sync our local state when position is closed.
         
         Args:
             quote: Live quote with bid, offer, mid
@@ -892,7 +975,7 @@ class TradingBot:
         if current_price is None:
             return
         
-        # Store last price for close_position() to use
+        # Store last price for reference
         self.last_mid_price = current_price
         
         # Update P&L in Firestore (if publisher enabled)
@@ -907,31 +990,104 @@ class TradingBot:
                 if last_update is None or (now - last_update).total_seconds() >= self.position_update_interval:
                     self.position_publisher.update_pnl(deal_id, current_price=current_price)
                     self.last_position_update_time[deal_id] = now
+        
+        # Apply trailing stop loss if enabled
+        if self.position_manager and self.position_tracker:
+            new_sl, should_update = self.position_manager.calculate_trailing_stop(
+                self.position_tracker, 
+                current_price
+            )
+            
+            if should_update and new_sl is not None:
+                try:
+                    # Update SL via Capital.com API
+                    deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
+                    old_sl = self.current_position['stop_loss']
+                    
+                    logger.info(f"🔄 Updating trailing stop: {old_sl:.2f} → {new_sl:.2f} "
+                               f"(profit: {abs(current_price - self.position_tracker.entry_price):.2f} pips)")
+                    
+                    self.rest_client.update_position(deal_id, stop_level=new_sl)
+                    
+                    # Update local state
+                    self.current_position['stop_loss'] = new_sl
+                    self.position_tracker.current_sl = new_sl
+                    
+                    logger.info(f"✅ Trailing stop updated successfully: {new_sl:.2f}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to update trailing stop: {e}")
 
+        # Get SL/TP from local cache
         stop_loss = self.current_position.get('stop_loss')
         take_profit = self.current_position.get('take_profit')
-
-        # Check LONG position
-        if self.current_position['direction'] == 'BUY':
-            if stop_loss and current_price <= stop_loss:
-                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} <= {stop_loss:.2f}")
-                self.close_reason = 'SL_HIT'
-                await self.close_position()
-            elif take_profit and current_price >= take_profit:
-                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} >= {take_profit:.2f}")
-                self.close_reason = 'TP_HIT'
-                await self.close_position()
-
-        # Check SHORT position
-        elif self.current_position['direction'] == 'SELL':
-            if stop_loss and current_price >= stop_loss:
-                logger.warning(f"🛑 STOP LOSS HIT: {current_price:.2f} >= {stop_loss:.2f}")
-                self.close_reason = 'SL_HIT'
-                await self.close_position()
-            elif take_profit and current_price <= take_profit:
-                logger.info(f"🎯 TAKE PROFIT HIT: {current_price:.2f} <= {take_profit:.2f}")
-                self.close_reason = 'TP_HIT'
-                await self.close_position()
+        
+        # Periodically check if position still exists on Capital.com (every 30 seconds)
+        # This detects when Capital.com automatically closed position via SL/TP
+        last_sync = getattr(self, '_last_position_check', None)
+        if last_sync is None or (datetime.now() - last_sync).total_seconds() >= 30:
+            try:
+                real_position = self.rest_client.get_position_for_epic(self.epic)
+                if real_position:
+                    # Position still open - update SL/TP if they differ
+                    real_sl = real_position.get('stop_loss')
+                    real_tp = real_position.get('take_profit')
+                    
+                    if real_sl != stop_loss or real_tp != take_profit:
+                        logger.warning(f"⚠️ SL/TP mismatch detected!")
+                        logger.warning(f"   Local: SL={stop_loss} TP={take_profit}")
+                        logger.warning(f"   Capital.com: SL={real_sl} TP={real_tp}")
+                        logger.warning(f"   Using Capital.com values as source of truth")
+                        
+                        # Update local cache with real values
+                        self.current_position['stop_loss'] = real_sl
+                        self.current_position['take_profit'] = real_tp
+                        stop_loss = real_sl
+                        take_profit = real_tp
+                else:
+                    # Position closed by Capital.com (SL/TP hit or manual close)
+                    logger.info(f"✅ Position closed on Capital.com (SL/TP hit or external close)")
+                    
+                    # Determine close reason based on price proximity to SL/TP
+                    close_reason = 'UNKNOWN'
+                    if self.current_position['direction'] == 'BUY':
+                        if stop_loss and abs(current_price - stop_loss) < 2.0:
+                            close_reason = 'SL_HIT'
+                            logger.warning(f"🛑 Stop Loss hit: {current_price:.2f} ≈ {stop_loss:.2f}")
+                        elif take_profit and abs(current_price - take_profit) < 2.0:
+                            close_reason = 'TP_HIT'
+                            logger.info(f"🎯 Take Profit hit: {current_price:.2f} ≈ {take_profit:.2f}")
+                    elif self.current_position['direction'] == 'SELL':
+                        if stop_loss and abs(current_price - stop_loss) < 2.0:
+                            close_reason = 'SL_HIT'
+                            logger.warning(f"🛑 Stop Loss hit: {current_price:.2f} ≈ {stop_loss:.2f}")
+                        elif take_profit and abs(current_price - take_profit) < 2.0:
+                            close_reason = 'TP_HIT'
+                            logger.info(f"🎯 Take Profit hit: {current_price:.2f} ≈ {take_profit:.2f}")
+                    
+                    # Update Firestore and local state
+                    if self.position_publisher:
+                        deal_id = self.current_position.get('deal_id') or self.current_position.get('deal_reference')
+                        self.position_publisher.close_position(deal_id, close_price=current_price)
+                        logger.info(f"🔥 Firestore position closed: {deal_id}")
+                    
+                    # Store closed position for cooldown
+                    self.last_closed_position = {
+                        'direction': self.current_position.get('direction'),
+                        'close_time': datetime.now(),
+                        'close_reason': close_reason,
+                        'entry_price': self.current_position.get('entry_price'),
+                        'close_price': current_price
+                    }
+                    logger.info(f"📝 Closed {self.last_closed_position['direction']} position (reason: {close_reason})")
+                    
+                    # Clear local position
+                    self.current_position = None
+                    self.position_tracker = None  # Clear trailing stop tracker
+                
+                self._last_position_check = datetime.now()
+            except Exception as e:
+                logger.debug(f"Position status check error (non-critical): {e}")
     
     async def stop(self):
         """Stop the trading bot"""
