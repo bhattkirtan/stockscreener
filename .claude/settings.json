@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(chmod +x /Users/kirtanbhatt/code/stockScreener/deploy_skills_bot.sh /Users/kirtanbhatt/code/stockScreener/trading-bot-skills/start_bot.sh /Users/kirtanbhatt/code/stockScreener/trading-bot-skills/monitor_bot.sh)"
-    ]
-  }
-}
