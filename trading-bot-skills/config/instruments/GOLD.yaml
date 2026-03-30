@@ -1,0 +1,39 @@
+# GOLD (XAU/USD) instrument-specific overrides
+# Deep-merged over trading_config.yaml at runtime
+
+bot:
+  name: "GOLD M5 SupertrendVWAP Bot"
+
+market_data:
+  instrument: GOLD
+  timeframe: M5
+  resample_to: M5
+
+# Historical data file for backtesting (relative to repo root)
+backtest:
+  data_path: "../cloud-function/data/GOLD_M5_150000bars.csv"
+  report_prefix: "GOLD"
+
+analysis:
+  indicators:
+    supertrend:
+      atr_period: 7
+      multiplier: 2.0
+    ema:
+      period: 21
+    sma:
+      fast_period: 25
+      slow_period: 30
+    mtf:
+      h1_bb_period: 20
+      h1_bb_std: 2.0
+      daily_sma_period: 20
+  signal_rules:
+    require_h1_bb: true
+  sl_tp:
+    method: fixed
+    stop_loss_pips: 20
+    take_profit_pips: 60
+
+execution:
+  instrument: GOLD

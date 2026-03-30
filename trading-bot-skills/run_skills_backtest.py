@@ -17,6 +17,8 @@ Edit skills/analysis/analysis_skill.py:
 """
 import sys
 import os
+import copy
+import argparse
 from pathlib import Path
 import pandas as pd
 import yaml
@@ -34,11 +36,32 @@ from skills.base_skill import Context
 from core.event_bus import EventBus, EventType
 
 
-def load_config():
-    """Load trading configuration"""
-    config_path = Path(__file__).parent / 'config' / 'trading_config.yaml'
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+def load_config(instrument: str = None) -> dict:
+    """Load base config, optionally deep-merged with an instrument override."""
+    base_path = Path(__file__).parent / 'config' / 'trading_config.yaml'
+    with open(base_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    if instrument:
+        inst_path = Path(__file__).parent / 'config' / 'instruments' / f'{instrument.upper()}.yaml'
+        if not inst_path.exists():
+            raise FileNotFoundError(f"No instrument config found: {inst_path}")
+        with open(inst_path, 'r') as f:
+            inst_config = yaml.safe_load(f)
+        config = _deep_merge(config, inst_config)
+
+    return config
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict."""
+    result = copy.deepcopy(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
 
 def load_historical_data(data_path: str) -> pd.DataFrame:
@@ -267,9 +290,11 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict):
     context = Context(timestamp=datetime.now())
     context.backtest_results = results
     report = reporting.execute(context)
-    reporting.save_report(report, 'backtest_report')
-    reporting.save_trades_csv(results, 'backtest_trades_skills')
-    reporting.generate_html_report(report, 'backtest_report')
+    prefix = config.get('backtest', {}).get('report_prefix', 'backtest')
+    reporting.save_report(report, f'{prefix}_backtest_report')
+    reporting.save_trades_csv(results, f'{prefix}_backtest_trades')
+    reporting.generate_html_report(report, f'{prefix}_backtest_report')
+    reporting.generate_excel_report(report, results, f'{prefix}_backtest_analysis')
 
     # MTF rejection diagnostics
     if analysis.mtf_rejections:
@@ -326,21 +351,30 @@ def print_results(results: dict):
 
 def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(description='Skills-Based Backtest Runner')
+    parser.add_argument(
+        '--instrument', default=None,
+        help='Instrument to run (e.g. GOLD, US100, EURUSD). Loads config/instruments/<INSTRUMENT>.yaml as override.'
+    )
+    args = parser.parse_args()
+
     print("🧪 SKILLS-BASED BACKTEST")
     print("=" * 60)
     print("Using ACTUAL skills (not shortcuts!)")
     print("=" * 60)
     
-    # Load config
-    config = load_config()
+    # Load config (base + optional instrument override)
+    config = load_config(args.instrument)
     print("\n✅ Configuration loaded")
+    if args.instrument:
+        print(f"   Instrument override: {args.instrument.upper()}")
     print(f"   Strategy: {config.get('analysis', {}).get('strategy', 'supertrend_vwap')}")
     print(f"   Instrument: {config.get('market_data', {}).get('instrument', 'GOLD')}")
     tf = config.get('market_data', {}).get('resample_to') or config.get('market_data', {}).get('timeframe', 'M5')
     print(f"   Timeframe: {tf}")
     
-    # Load historical data
-    data_path = '../cloud-function/data/GOLD_M5_150000bars.csv'
+    # Resolve data path: prefer backtest.data_path from (merged) config, fall back to default
+    data_path = config.get('backtest', {}).get('data_path', '../cloud-function/data/GOLD_M5_150000bars.csv')
     df = load_historical_data(data_path)
 
     # Optionally resample to a higher timeframe (no extra download needed)
@@ -357,12 +391,14 @@ def main():
     print_results(results)
     
     # Reports already saved by ReportingSkill inside run_skills_backtest()
+    prefix = config.get('backtest', {}).get('report_prefix', 'backtest')
     
     print("\n✅ Backtest complete!")
-    print("\n� Reports saved in: reports/")
-    print("   - backtest_report.json  (full metrics)")
-    print("   - backtest_report.html  (HTML summary)")
-    print("   - backtest_trades_skills.csv  (all trades)")
+    print("\n📄 Reports saved in: reports/")
+    print(f"   - {prefix}_backtest_report.json  (full metrics)")
+    print(f"   - {prefix}_backtest_report.html  (HTML summary)")
+    print(f"   - {prefix}_backtest_trades.csv  (all trades)")
+    print(f"   - {prefix}_backtest_analysis.xlsx  (Excel workbook: Summary, Stats, Trades, Equity, Monthly)")
     print("\n📚 NEXT STEPS:")
     print("   1. Open reports/backtest_report.html in browser")
     print("   2. Review trades in: reports/backtest_trades_skills.csv")
