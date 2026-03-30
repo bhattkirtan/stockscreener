@@ -3,10 +3,13 @@ Trading Orchestrator
 Central controller that coordinates all skills.
 """
 import asyncio
+import logging
 from typing import Dict, List
 from datetime import datetime
 import sys
 import os
+
+logger = logging.getLogger(__name__)
 
 # Add skills directory to path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -35,7 +38,8 @@ class TradingOrchestrator:
         self.config = config
         self.skills: Dict[str, Skill] = {}
         self.running = False
-        
+        self.warming_up = False  # True during historical replay — skips risk/execution
+
         # Initialize metrics
         self.total_signals = 0
         self.total_trades = 0
@@ -105,40 +109,46 @@ class TradingOrchestrator:
         
         try:
             # Execute skills in sequence
-            
-            # 1. Market Data Skill (update candle buffer)
+
+            # 1. Market Data Skill — always runs (builds the indicator buffer)
             if 'market_data' in self.skills:
                 context = await self.skills['market_data'].execute(context)
-            
+
+            # During warm-up we only buffer candles — no signals, no orders
+            if self.warming_up:
+                return
+
             # 2. Analysis Skill (calculate indicators, generate signal)
             if 'analysis' in self.skills:
                 context = await self.skills['analysis'].execute(context)
                 if context.signal:
                     self.total_signals += 1
-                    print(f"📊 Signal: {context.signal} at {candle['close']}")
-            
+                    logger.info(f"📊 Signal: {context.signal} at {candle['close']}")
+
             # 3. Risk Skill (validate signal, check cooldown)
             if 'risk' in self.skills and context.signal:
                 context = await self.skills['risk'].execute(context)
                 if not context.is_allowed:
-                    print(f"⚠️ Signal blocked: {context.risk_reason}")
-                    return  # Stop here, signal not allowed
-            
+                    logger.info(f"⚠️ Signal blocked: {context.risk_reason}")
+                    return
+
             # 4. Execution Skill (place order)
             if 'execution' in self.skills and context.is_allowed:
                 context = await self.skills['execution'].execute(context)
                 if context.deal_id:
                     self.total_trades += 1
-                    print(f"✅ Trade opened: {context.signal} @ {candle['close']}, deal={context.deal_id}")
-            
+                    logger.info(f"✅ Trade opened: {context.signal} @ {candle['close']}, deal={context.deal_id}")
+                    if 'risk' in self.skills:
+                        self.skills['risk'].has_open_position = True
+
             # 5. Storage Skill (save to Firestore)
             if 'storage' in self.skills and context.deal_id:
                 context = await self.skills['storage'].execute(context)
-            
+
             # 6. Monitoring Skill (update metrics)
             if 'monitoring' in self.skills:
                 context = await self.skills['monitoring'].execute(context)
-            
+
             # 7. Alerting Skill (send notifications)
             if 'alerting' in self.skills and context.deal_id:
                 context = await self.skills['alerting'].execute(context)
@@ -173,9 +183,10 @@ class TradingOrchestrator:
         """
         print(f"🔴 Position closed: {deal_id}, {close_reason}, P&L: ${pnl:.2f}")
         
-        # Update risk skill with closed position (for cooldown)
+        # Update risk skill: clear open-position flag, set cooldown
         if 'risk' in self.skills:
             risk_skill = self.skills['risk']
+            risk_skill.has_open_position = False
             risk_skill.on_position_closed(
                 direction=direction,
                 close_reason=close_reason,

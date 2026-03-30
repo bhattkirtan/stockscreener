@@ -12,7 +12,7 @@ market_data:
   instrument: GOLD
   timeframe: M5
   resample_to: M5   # Resample M5 bars to this timeframe before backtest (M5/M10/M15/M30). No extra data download needed.
-  buffer_size: 100  # Keep last 100 candles in memory
+  buffer_size: 300  # Overridden at runtime to match computed warm-up bar count
   data_source: capital_com
   websocket:
     reconnect_delay_seconds: 5

@@ -61,7 +61,8 @@ class CapitalWebSocketClient:
 
         # Callbacks — set these before calling run()
         self.on_quote: Optional[Callable] = None           # async fn(quote_data: dict)
-        self.on_candle: Optional[Callable] = None          # async fn(candle_data: dict)
+        self.on_candle: Optional[Callable] = None          # async fn(candle_data: dict) — M5
+        self.on_h1_candle: Optional[Callable] = None       # async fn(candle_data: dict) — H1
         self.on_position_update: Optional[Callable] = None # async fn(update: dict)
 
     # ── Connection ────────────────────────────────────────────────────────────
@@ -283,13 +284,17 @@ class CapitalWebSocketClient:
             f"L={candle_data['low']} C={candle_data['close']}"
         )
 
-        # Skip BID candles — only fire callback on ASK/OFR
+        # Skip BID candles — only fire callbacks on ASK/OFR
         price_type = (candle_data.get('price_type') or '').upper()
         if price_type not in ('ASK', 'OFR'):
             logger.debug(f"⏭️ Skipping {price_type} candle for {epic}")
             return
 
-        if self.on_candle:
+        # Route to the right callback based on resolution
+        res = (candle_data.get('resolution') or '').upper()
+        if res == 'HOUR' and self.on_h1_candle:
+            await self.on_h1_candle(candle_data)
+        elif self.on_candle:
             await self.on_candle(candle_data)
 
     async def _handle_trade_update(self, payload: dict) -> None:

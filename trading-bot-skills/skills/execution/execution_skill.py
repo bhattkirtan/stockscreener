@@ -73,6 +73,35 @@ class ExecutionSkill(Skill):
                 logger.warning("⚠️ Falling back to mock mode")
                 self.mock_mode = True
     
+    async def execute(self, context) -> 'Context':
+        """
+        Context-pipeline path (sequential orchestrator).
+        Places order → sets context.deal_id.
+        """
+        if not context.is_allowed or not context.signal:
+            return context
+
+        result = await self._place_order_api(
+            direction=context.signal,
+            size=context.position_size or self.position_size,
+            entry_price=context.entry_price or 0.0,
+            stop_loss=context.stop_loss,
+            take_profit=context.take_profit,
+        )
+        if result:
+            context.deal_id = result.get('deal_id')
+            # Populate current_position so storage / monitoring / alerting can act on it
+            context.current_position = {
+                'deal_id':     result.get('deal_id'),
+                'direction':   context.signal,
+                'size':        context.position_size or self.position_size,
+                'entry_price': result.get('entry_price', context.entry_price or 0.0),
+                'stop_loss':   context.stop_loss,
+                'take_profit': context.take_profit,
+                'opened_at':   datetime.now().isoformat(),
+            }
+        return context
+
     async def on_risk_approved(self, event: 'Event') -> None:
         """
         Handle RISK_APPROVED event - place order with idempotency.
@@ -217,7 +246,7 @@ class ExecutionSkill(Skill):
         """
         if self.mock_mode or not self.rest_client:
             # Mock mode - return fake order result
-            deal_id = f"DEAL{int(datetime.now().timestamp())}"
+            deal_id = f"DEAL{int(datetime.now().timestamp() * 1_000_000)}"
             logger.info(f"📤 [MOCK] Order placed: {direction} {size} @ {entry_price:.2f}")
             return {
                 'deal_id': deal_id,

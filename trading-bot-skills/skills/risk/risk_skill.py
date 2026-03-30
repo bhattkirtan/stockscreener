@@ -9,6 +9,7 @@ EVENT-DRIVEN:
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime, timedelta
 import pytz
+import pandas as pd
 import sys
 import os
 
@@ -89,6 +90,51 @@ class RiskSkill(Skill):
         self.last_closed_position = None
         self.has_open_position = False
         
+    async def execute(self, context) -> 'Context':
+        """
+        Context-pipeline path (sequential orchestrator).
+        Validates signal → sets context.is_allowed / context.risk_reason.
+        """
+        if not context.signal or context.signal not in ('BUY', 'SELL'):
+            return context
+
+        signal    = context.signal
+        candle_ts = context.current_candle.get('timestamp') if context.current_candle else None
+
+        # 0. Max positions — hard stop, no trading if position already open
+        if self.has_open_position:
+            context.is_allowed  = False
+            context.risk_reason = "🚫 Max positions: position already open"
+            return context
+
+        # 1. Skip-hours filter
+        if self.skip_hours:
+            ts_hour = pd.Timestamp(candle_ts).hour if candle_ts else datetime.now().hour
+            if ts_hour in self.skip_hours:
+                context.is_allowed  = False
+                context.risk_reason = f"🚫 Skip hour: {ts_hour:02d}h UTC"
+                return context
+
+        # 2. Trading hours
+        if self.trading_hours_enabled:
+            is_ok, reason = self._check_trading_hours(timestamp=candle_ts)
+            if not is_ok:
+                context.is_allowed  = False
+                context.risk_reason = reason
+                return context
+
+        # 3. Cooldown
+        is_ok, reason = self._check_cooldown(signal, timestamp=candle_ts)
+        if not is_ok:
+            context.is_allowed  = False
+            context.risk_reason = reason
+            return context
+
+        context.is_allowed    = True
+        context.risk_reason   = "✅ Risk checks passed"
+        context.position_size = self._calculate_position_size()
+        return context
+
     async def on_signal_generated(self, event: 'Event') -> None:
         """
         Handle SIGNAL_GENERATED event - validate signal and publish result.

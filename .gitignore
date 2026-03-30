@@ -58,3 +58,12 @@ firebase-adminsdk*.json
 .pytest_cache/
 .coverage
 htmlcov/
+
+# ── Generated backtest reports ────────────────────────────────────────────────
+trading-bot-skills/reports/*.json
+trading-bot-skills/reports/*.html
+trading-bot-skills/reports/*.xlsx
+trading-bot-skills/reports/*.csv
+
+# ── Claude IDE settings ───────────────────────────────────────────────────────
+.claude/

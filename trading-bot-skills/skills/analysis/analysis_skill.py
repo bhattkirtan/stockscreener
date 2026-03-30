@@ -25,6 +25,20 @@ if TYPE_CHECKING:
     from core.event_bus import EventBus, Event
 
 
+def _normalize_ts(ts: pd.Timestamp, index: pd.Index) -> pd.Timestamp:
+    """
+    Align ts timezone to match the DataFrame index so .asof() doesn't raise.
+    - If index is tz-aware and ts is tz-naive → localize ts to UTC.
+    - If index is tz-naive and ts is tz-aware → strip ts timezone.
+    """
+    idx_tz = getattr(index, 'tz', None)
+    if idx_tz is not None and ts.tz is None:
+        return ts.tz_localize('UTC')
+    if idx_tz is None and ts.tz is not None:
+        return ts.tz_localize(None)
+    return ts
+
+
 class AnalysisSkill(Skill):
     """
     Analysis skill: computes indicators, evaluates signal, computes SL/TP, publishes event.
@@ -149,6 +163,51 @@ class AnalysisSkill(Skill):
         self.df_h1:    Optional[pd.DataFrame] = None  # set by backtest runner
         self.df_daily: Optional[pd.DataFrame] = None  # set by backtest runner
         self.mtf_rejections: Dict[str, int]   = {}   # reason → count
+
+    async def execute(self, context) -> 'Context':
+        """
+        Context-pipeline path (sequential orchestrator).
+        Computes indicators → evaluates signal → writes to context.
+        """
+        from skills.base_skill import Context
+        if not self.market_data:
+            return context
+
+        candle_history = self.market_data.get_candle_history()
+        min_bars = max(
+            self.sma_slow_period, self.bb_period, self.st_period,
+            self.macd_slow + self.macd_signal_period,
+            self.rsi_period, self.stoch_k_period,
+        ) + 5
+        if not candle_history or len(candle_history) < min_bars:
+            return context
+
+        df = _to_dataframe(candle_history)
+        df = self._compute_indicators(df)
+        latest = df.iloc[-1]
+        prev   = df.iloc[-2]
+
+        ind = self._extract_indicators(df, latest, prev)
+        if ind is None:
+            return context
+
+        signal = self._evaluate_signal(ind, latest, prev)
+        if not signal:
+            return context
+
+        # Edge detection: only fire on state change
+        if self.rules.get('edge_detection', True) and signal == self.last_signal_state:
+            return context
+        self.last_signal_state = signal
+
+        entry_price = float(latest['close'])
+        stop_loss, take_profit = self._compute_sl_tp(signal, entry_price, ind)
+
+        context.signal       = signal
+        context.entry_price  = entry_price
+        context.stop_loss    = stop_loss
+        context.take_profit  = take_profit
+        return context
 
     async def on_candle_closed(self, event: 'Event') -> None:
         """Handle CANDLE_CLOSED: compute indicators → evaluate signal → publish."""
@@ -459,7 +518,8 @@ class AnalysisSkill(Skill):
         # SELL only when H1 close is below the H1 BB middle (bearish momentum)
         if self.require_h1_bb and self.df_h1 is not None:
             try:
-                h1_row    = self.df_h1.asof(ts)
+                ts_h1 = _normalize_ts(ts, self.df_h1.index)
+                h1_row    = self.df_h1.asof(ts_h1, subset=['close', 'h1_bb_middle'])
                 h1_middle = h1_row.get('h1_bb_middle', np.nan)
                 h1_close  = h1_row.get('close',         np.nan)
                 if not pd.isna(h1_middle) and not pd.isna(h1_close):
@@ -473,7 +533,8 @@ class AnalysisSkill(Skill):
         # -- Daily SMA bias --
         if self.require_daily_bias and self.df_daily is not None:
             try:
-                d_row       = self.df_daily.asof(ts)
+                ts_d = _normalize_ts(ts, self.df_daily.index)
+                d_row       = self.df_daily.asof(ts_d, subset=['close', 'daily_sma'])
                 daily_sma   = d_row.get('daily_sma', np.nan)
                 daily_close = d_row.get('close',     np.nan)
                 if not pd.isna(daily_sma) and not pd.isna(daily_close):
@@ -485,6 +546,78 @@ class AnalysisSkill(Skill):
                 pass
 
         return True, 'ok'
+
+    # ------------------------------------------------------------------
+    # MTF data loaders  (called from main.py during warm-up and live updates)
+    # ------------------------------------------------------------------
+
+    def load_h1_history(self, candles: list) -> None:
+        """
+        Build df_h1 from a list of H1 OHLC candle dicts.
+        Called once at warm-up with ~60 historical H1 bars, then appended
+        live via update_h1_candle() each time a new H1 bar closes.
+        """
+        if not candles:
+            return
+        df = pd.DataFrame(candles)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+        df = df.set_index('timestamp').sort_index()
+        df = df[~df.index.duplicated(keep='last')]
+
+        from core.indicators import calculate_bollinger_bands
+        df['h1_bb_middle'], df['h1_bb_upper'], df['h1_bb_lower'] = \
+            calculate_bollinger_bands(df['close'], self.mtf_h1_bb_period, self.mtf_h1_bb_std)
+
+        self.df_h1 = df
+        import logging
+        logging.getLogger(__name__).info(
+            f"✅ H1 BB loaded: {len(df)} bars, "
+            f"latest={df.index[-1].isoformat() if len(df) else 'n/a'}"
+        )
+
+    def update_h1_candle(self, candle: dict) -> None:
+        """
+        Append a single live H1 candle and recompute BB.
+        Called from the WebSocket H1 candle callback.
+        """
+        if self.df_h1 is None:
+            return
+        ts = pd.to_datetime(candle['timestamp'], utc=True)
+        row = pd.DataFrame([{
+            'open':  candle.get('open',  0),
+            'high':  candle.get('high',  0),
+            'low':   candle.get('low',   0),
+            'close': candle.get('close', 0),
+        }], index=[ts])
+        self.df_h1 = pd.concat([self.df_h1, row])
+        self.df_h1 = self.df_h1[~self.df_h1.index.duplicated(keep='last')].sort_index()
+
+        from core.indicators import calculate_bollinger_bands
+        self.df_h1['h1_bb_middle'], self.df_h1['h1_bb_upper'], self.df_h1['h1_bb_lower'] = \
+            calculate_bollinger_bands(self.df_h1['close'], self.mtf_h1_bb_period, self.mtf_h1_bb_std)
+
+    def load_daily_history(self, candles: list) -> None:
+        """
+        Build df_daily from a list of Daily OHLC candle dicts.
+        Called once at warm-up with ~30 daily bars.
+        Daily data changes slowly — no live update needed (re-fetch each day).
+        """
+        if not candles:
+            return
+        df = pd.DataFrame(candles)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+        df = df.set_index('timestamp').sort_index()
+        df = df[~df.index.duplicated(keep='last')]
+
+        from core.indicators import calculate_sma
+        df['daily_sma'] = calculate_sma(df['close'], self.mtf_daily_sma)
+
+        self.df_daily = df
+        import logging
+        logging.getLogger(__name__).info(
+            f"✅ Daily SMA loaded: {len(df)} bars, "
+            f"latest={df.index[-1].isoformat() if len(df) else 'n/a'}"
+        )
 
     # ------------------------------------------------------------------
     # SL/TP  (delegates entirely to sl_tp_engine)

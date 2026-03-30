@@ -395,6 +395,131 @@ class ReportingSkill(Skill):
         
         print(f"📄 HTML report saved: {filepath}")
 
+    def generate_excel_report(self, report: Dict, results: Dict, filename: str = 'backtest_analysis'):
+        """
+        Generate Excel workbook with multiple sheets:
+        - Summary: key performance metrics
+        - Statistics: detailed trade stats
+        - Trades: full trade log
+        - Equity Curve: equity over time
+        - Monthly Performance: month-by-month breakdown
+        """
+        import xlsxwriter
+
+        filepath = os.path.join(self.output_dir, f"{filename}.xlsx")
+        workbook = xlsxwriter.Workbook(filepath)
+
+        # ── Formats ──────────────────────────────────────────────────────────
+        hdr = workbook.add_format({'bold': True, 'bg_color': '#4CAF50', 'font_color': 'white', 'border': 1})
+        lbl = workbook.add_format({'bold': True, 'bg_color': '#F0F0F0', 'border': 1})
+        num = workbook.add_format({'num_format': '#,##0.00', 'border': 1})
+        pct = workbook.add_format({'num_format': '0.00%', 'border': 1})
+        pos = workbook.add_format({'num_format': '#,##0.00', 'font_color': '#006400', 'border': 1})
+        neg = workbook.add_format({'num_format': '#,##0.00', 'font_color': '#8B0000', 'border': 1})
+        plain = workbook.add_format({'border': 1})
+        date_fmt = workbook.add_format({'num_format': 'yyyy-mm-dd hh:mm', 'border': 1})
+
+        summary = report.get('summary', {})
+        stats = report.get('statistics', {})
+
+        # ── Sheet 1: Summary ─────────────────────────────────────────────────
+        ws = workbook.add_worksheet('Summary')
+        ws.set_column('A:A', 30)
+        ws.set_column('B:B', 20)
+        row = 0
+        ws.write(row, 0, 'Trading Bot Backtest — Performance Summary', workbook.add_format({'bold': True, 'font_size': 14}))
+        row += 2
+        items = [
+            ('Initial Capital',      summary.get('initial_capital', 0),      num),
+            ('Final Capital',        summary.get('final_capital', 0),         num),
+            ('Total P&L',            summary.get('total_pnl', 0),             pos if summary.get('total_pnl', 0) >= 0 else neg),
+            ('Return (%)',           summary.get('total_return_pct', 0) / 100, pct),
+            ('Total Trades',         summary.get('total_trades', 0),          plain),
+            ('Win Rate (%)',         summary.get('win_rate', 0) / 100,        pct),
+            ('Profit Factor',        summary.get('profit_factor', 0),         num),
+            ('Sharpe Ratio',         summary.get('sharpe_ratio', 0),          num),
+            ('Max Drawdown ($)',     summary.get('max_drawdown', 0),          neg),
+            ('Max Drawdown (%)',     summary.get('max_drawdown_pct', 0) / 100, pct),
+            ('Expectancy / Trade',   summary.get('expectancy_per_trade', 0), num),
+        ]
+        for label, value, fmt in items:
+            ws.write(row, 0, label, lbl)
+            ws.write(row, 1, value, fmt)
+            row += 1
+
+        # ── Sheet 2: Statistics ──────────────────────────────────────────────
+        ws2 = workbook.add_worksheet('Statistics')
+        ws2.set_column('A:A', 30)
+        ws2.set_column('B:B', 20)
+        ws2.write(0, 0, 'Metric', hdr)
+        ws2.write(0, 1, 'Value', hdr)
+        for r, (k, v) in enumerate(stats.items(), start=1):
+            ws2.write(r, 0, k.replace('_', ' ').title(), lbl)
+            ws2.write(r, 1, v, num)
+
+        # ── Sheet 3: Trades ──────────────────────────────────────────────────
+        trades = results.get('trades', [])
+        if trades:
+            ws3 = workbook.add_worksheet('Trades')
+            df_trades = pd.DataFrame(trades)
+            cols = list(df_trades.columns)
+            for c, col in enumerate(cols):
+                ws3.write(0, c, col, hdr)
+                ws3.set_column(c, c, 20)
+            for r, row_data in enumerate(df_trades.itertuples(index=False), start=1):
+                for c, val in enumerate(row_data):
+                    if c < len(cols) and ('time' in cols[c] or 'date' in cols[c]):
+                        ws3.write(r, c, str(val), plain)
+                    elif isinstance(val, float):
+                        ws3.write(r, c, val, num)
+                    else:
+                        ws3.write(r, c, val, plain)
+
+        # ── Sheet 4: Equity Curve ────────────────────────────────────────────
+        equity_data = report.get('equity_curve', [])
+        if equity_data:
+            ws4 = workbook.add_worksheet('Equity Curve')
+            ws4.write(0, 0, 'Trade #', hdr)
+            ws4.write(0, 1, 'Equity ($)', hdr)
+            ws4.write(0, 2, 'P&L', hdr)
+            ws4.set_column('A:C', 15)
+            for r, pt in enumerate(equity_data, start=1):
+                ws4.write(r, 0, r, plain)
+                ws4.write(r, 1, pt.get('equity', 0), num)
+                pnl_val = pt.get('pnl', 0)
+                ws4.write(r, 2, pnl_val, pos if pnl_val >= 0 else neg)
+            # Embed a chart
+            chart = workbook.add_chart({'type': 'line'})
+            chart.add_series({
+                'name': 'Equity',
+                'categories': ['Equity Curve', 1, 0, len(equity_data), 0],
+                'values':     ['Equity Curve', 1, 1, len(equity_data), 1],
+                'line': {'color': '#4CAF50', 'width': 1.5},
+            })
+            chart.set_title({'name': 'Equity Curve'})
+            chart.set_x_axis({'name': 'Trade #'})
+            chart.set_y_axis({'name': 'Equity ($)'})
+            chart.set_size({'width': 720, 'height': 360})
+            ws4.insert_chart('E2', chart)
+
+        # ── Sheet 5: Monthly Performance ─────────────────────────────────────
+        monthly = report.get('monthly_performance', [])
+        if monthly:
+            ws5 = workbook.add_worksheet('Monthly')
+            headers = ['Month', 'Total P&L', 'Trades', 'Avg P&L']
+            for c, h in enumerate(headers):
+                ws5.write(0, c, h, hdr)
+            ws5.set_column('A:D', 15)
+            for r, m in enumerate(monthly, start=1):
+                ws5.write(r, 0, str(m.get('month', '')), plain)
+                pnl_val = m.get('total_pnl', 0)
+                ws5.write(r, 1, pnl_val, pos if pnl_val >= 0 else neg)
+                ws5.write(r, 2, m.get('trades', 0), plain)
+                ws5.write(r, 3, m.get('avg_pnl', 0), num)
+
+        workbook.close()
+        print(f"📊 Excel report saved: {filepath}")
+
 
 # Example usage
 if __name__ == "__main__":

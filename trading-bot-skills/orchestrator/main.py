@@ -49,8 +49,9 @@ TIMEFRAME_TO_RESOLUTION = {
     'D1': 'DAY',
 }
 
-# How many historical candles to prefetch for indicator warm-up
-WARMUP_CANDLES = 300
+# Safety multiplier applied to all indicator periods when calculating warm-up bar counts.
+# 3× ensures the rolling window is fully populated and indicator values are stable.
+WARMUP_MULTIPLIER = 3
 
 
 def load_config(config_path: str) -> dict:
@@ -113,26 +114,28 @@ def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str) 
 
     market_data_skill = None
     if config.get('market_data', {}).get('enabled', True):
-        market_data_skill = MarketDataSkill(config)
+        market_data_skill = MarketDataSkill(config.get('market_data', config))
         orchestrator.register_skill('market_data', market_data_skill)
 
     if config.get('analysis', {}).get('enabled', True):
-        orchestrator.register_skill('analysis', AnalysisSkill(config, market_data_skill=market_data_skill))
+        orchestrator.register_skill('analysis', AnalysisSkill(
+            config.get('analysis', config), market_data_skill=market_data_skill
+        ))
 
     if config.get('risk', {}).get('enabled', True):
-        orchestrator.register_skill('risk', RiskSkill(config))
+        orchestrator.register_skill('risk', RiskSkill(config.get('risk', config)))
 
     if config.get('execution', {}).get('enabled', True):
-        orchestrator.register_skill('execution', ExecutionSkill(config))
+        orchestrator.register_skill('execution', ExecutionSkill(config.get('execution', config)))
 
     if config.get('storage', {}).get('enabled', True):
-        orchestrator.register_skill('storage', StorageSkill(config))
+        orchestrator.register_skill('storage', StorageSkill(config.get('storage', config)))
 
     if config.get('monitoring', {}).get('enabled', True):
-        orchestrator.register_skill('monitoring', MonitoringSkill(config))
+        orchestrator.register_skill('monitoring', MonitoringSkill(config.get('monitoring', config)))
 
     if config.get('alerting', {}).get('enabled', True):
-        orchestrator.register_skill('alerting', AlertingSkill(config))
+        orchestrator.register_skill('alerting', AlertingSkill(config.get('alerting', config)))
 
     if mode == 'backtest' and config.get('backtesting', {}).get('enabled', True):
         orchestrator.register_skill('backtesting', BacktestingSkill(config))
@@ -170,28 +173,109 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
     tokens = capital.get_tokens()
     logger.info("✅ Authentication successful")
 
-    # Also wire the Capital client into ExecutionSkill if it doesn't have one yet
+    # Wire Capital client + epic into ExecutionSkill
     if 'execution' in orchestrator.skills:
         skill = orchestrator.skills['execution']
         if not getattr(skill, 'rest_client', None):
             skill.rest_client = capital
             skill.mock_mode = False
             logger.info("✅ Wired Capital.com client into ExecutionSkill")
+        skill.epic = epic  # ensure skill uses the same epic resolved above
 
-    # ── 2. Warm up indicators with historical candles ─────────────────────────
-    logger.info(f"📥 Prefetching {WARMUP_CANDLES} {resolution} candles for warm-up...")
+    # ── Restore state: check for positions left open from a previous session ────
     try:
-        candles = capital.get_historical_prices(
-            epic=epic,
-            resolution=resolution,
-            max_bars=WARMUP_CANDLES,
+        open_positions = capital.get_open_positions()
+        if open_positions:
+            logger.warning(
+                f"⚠️ Found {len(open_positions)} open position(s) from previous session — "
+                "blocking new entries until they close"
+            )
+            if 'risk' in orchestrator.skills:
+                orchestrator.skills['risk'].has_open_position = True
+        else:
+            logger.info("✅ No open positions — starting clean")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not check open positions on startup: {e} — assuming none open")
+
+    # ── 2. Calculate warm-up bar counts from configured indicator periods ──────
+    # All counts are derived at runtime so changing any period in the YAML
+    # automatically adjusts how many candles are fetched — no code change needed.
+    m5_warmup = 300  # safe fallback
+    h1_warmup  = 0
+    daily_warmup = 0
+
+    if 'analysis' in orchestrator.skills:
+        a = orchestrator.skills['analysis']
+
+        # M5: largest period across all enabled indicators × WARMUP_MULTIPLIER
+        # macd_slow + macd_signal_period covers the longest MACD lookback
+        m5_min_bars = max(
+            a.sma_slow_period,
+            a.bb_period,
+            a.st_period,
+            a.macd_slow + a.macd_signal_period,
+            a.rsi_period,
+            a.stoch_k_period,
         )
-        logger.info(f"📊 Replaying {len(candles)} historical candles...")
+        m5_warmup = min(m5_min_bars * WARMUP_MULTIPLIER, 1000)  # Capital.com max = 1000
+
+        # H1 BB: bb_period × WARMUP_MULTIPLIER
+        if a.require_h1_bb:
+            h1_warmup = min(a.mtf_h1_bb_period * WARMUP_MULTIPLIER, 1000)
+
+        # Daily SMA: sma_period × WARMUP_MULTIPLIER
+        if a.require_daily_bias:
+            daily_warmup = min(a.mtf_daily_sma * WARMUP_MULTIPLIER, 1000)
+
+        logger.info(
+            f"📐 Warm-up bars — M5: {m5_warmup}  H1: {h1_warmup}  Daily: {daily_warmup}"
+        )
+
+    # Keep market_data buffer large enough to hold all warm-up candles
+    if 'market_data' in orchestrator.skills:
+        orchestrator.skills['market_data'].buffer_size = m5_warmup
+
+    # ── 2b. M5 warm-up (buffers candles only — no signals/orders) ────────────
+    orchestrator.warming_up = True
+    try:
+        logger.info(f"📥 Fetching {m5_warmup} {resolution} candles for M5 warm-up...")
+        candles = capital.get_historical_prices(
+            epic=epic, resolution=resolution, max_bars=m5_warmup,
+        )
+        logger.info(f"📊 Replaying {len(candles)} candles into buffer...")
         for candle in candles:
             await orchestrator.on_candle(candle)
-        logger.info("✅ Indicator warm-up complete")
+        logger.info(f"✅ M5 warm-up complete — {len(candles)} candles buffered")
     except Exception as e:
-        logger.warning(f"⚠️ Historical prefetch failed: {e} — continuing without warm-up")
+        logger.warning(f"⚠️ M5 prefetch failed: {e} — continuing without warm-up")
+    finally:
+        orchestrator.warming_up = False
+
+    # ── 2c. Higher-timeframe data (MTF confluence) ────────────────────────────
+    if 'analysis' in orchestrator.skills:
+        analysis_skill = orchestrator.skills['analysis']
+
+        if h1_warmup > 0:
+            logger.info(f"📥 Fetching {h1_warmup} H1 candles for H1 BB (period={analysis_skill.mtf_h1_bb_period})...")
+            try:
+                h1_candles = capital.get_historical_prices(
+                    epic=epic, resolution='HOUR', max_bars=h1_warmup,
+                )
+                analysis_skill.load_h1_history(h1_candles)
+            except Exception as e:
+                logger.warning(f"⚠️ H1 fetch failed: {e} — H1 BB gate will be skipped")
+
+        if daily_warmup > 0:
+            logger.info(f"📥 Fetching {daily_warmup} Daily candles for Daily SMA (period={analysis_skill.mtf_daily_sma})...")
+            try:
+                daily_candles = capital.get_historical_prices(
+                    epic=epic, resolution='DAY', max_bars=daily_warmup,
+                )
+                analysis_skill.load_daily_history(daily_candles)
+            except Exception as e:
+                logger.warning(f"⚠️ Daily fetch failed: {e} — Daily SMA gate will be skipped")
+
+    logger.info("🟢 Warm-up done — live signal generation enabled")
 
     # ── 3. WebSocket loop with auto-reconnect ─────────────────────────────────
     max_retries = 10
@@ -208,7 +292,7 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 security_token=tokens['X-SECURITY-TOKEN'],
             )
 
-            # Candle callback: adapt WS format → orchestrator.on_candle format
+            # M5 candle callback → main trading pipeline
             async def on_candle(candle_data: dict) -> None:
                 candle = {
                     'timestamp': candle_data['time'].isoformat() if candle_data.get('time') else '',
@@ -219,6 +303,19 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                     'volume': 0,
                 }
                 await orchestrator.on_candle(candle)
+
+            # H1 candle callback → update H1 BB on analysis skill
+            async def on_h1_candle(candle_data: dict) -> None:
+                if 'analysis' in orchestrator.skills:
+                    candle = {
+                        'timestamp': candle_data['time'].isoformat() if candle_data.get('time') else '',
+                        'open':  candle_data.get('open', 0),
+                        'high':  candle_data.get('high', 0),
+                        'low':   candle_data.get('low', 0),
+                        'close': candle_data.get('close', 0),
+                    }
+                    orchestrator.skills['analysis'].update_h1_candle(candle)
+                    logger.debug(f"📊 H1 BB updated: close={candle['close']}")
 
             # Position update callback: SL/TP/manual close → orchestrator
             async def on_position_update(update: dict) -> None:
@@ -231,12 +328,15 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 )
 
             ws.on_candle = on_candle
+            ws.on_h1_candle = on_h1_candle
             ws.on_position_update = on_position_update
 
             await ws.connect()
             await ws.subscribe_ohlc([epic], resolution=resolution)
+            if 'analysis' in orchestrator.skills and orchestrator.skills['analysis'].require_h1_bb:
+                await ws.subscribe_ohlc([epic], resolution='HOUR')
             await ws.subscribe_trades()
-            logger.info(f"✅ Streaming {resolution} candles + trade events for {epic}")
+            logger.info(f"✅ Streaming {resolution} + H1 candles + trade events for {epic}")
 
             retry = 0  # Reset backoff on successful connect
             await ws.run()  # Blocks until disconnect
