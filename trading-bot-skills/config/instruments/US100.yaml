@@ -12,8 +12,10 @@ market_data:
 backtest:
   data_path: "../cloud-function/data/US100_M5_150000bars.csv"
   report_prefix: "US100"
-  position_size: 1            # 1 unit per trade
   leverage: 20                # Capital.com leverage (informational — used for margin display)
+
+backtesting:
+  position_size: 1            # 1 unit per trade (read by BacktestingSkill)
 
 analysis:
   indicators:
@@ -37,6 +39,9 @@ analysis:
     take_profit_pips: 100     # TP = 100 pts (1:4 R:R)
 
 risk:
+  # SL/TP read by BacktestingSkill for exit simulation
+  stop_loss_pips: 25
+  take_profit_pips: 100
   trading_hours:
     enabled: true             # US100: trade US session only
     start_hour: 13            # 13:30 UTC = NYSE open
