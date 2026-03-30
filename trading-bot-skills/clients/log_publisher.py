@@ -42,7 +42,7 @@ class LogPublisher:
         self.run_id = run_id
         self.project_id = project_id or os.getenv('GCP_PROJECT_ID') or os.getenv('FIRESTORE_PROJECT_ID')
 
-        self.log_buffer: deque = deque(maxlen=self.BATCH_SIZE)
+        self.log_buffer: deque = deque(maxlen=self.MAX_LOGS_IN_MEMORY)
         self.lock = RLock()
         self.sequence_number = 0
         self._timer: Optional[Timer] = None

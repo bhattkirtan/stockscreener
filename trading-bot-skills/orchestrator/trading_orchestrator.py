@@ -194,7 +194,18 @@ class TradingOrchestrator:
         # Update monitoring (track P&L)
         if 'monitoring' in self.skills:
             monitoring_skill = self.skills['monitoring']
-            monitoring_skill.on_position_closed(pnl)
+            # Build a minimal event-like payload the monitoring skill expects
+            class _PositionClosedEvent:
+                payload = {
+                    'deal_id': deal_id,
+                    'realized_pnl': pnl,
+                    'close_reason': close_reason,
+                }
+            import asyncio
+            if asyncio.iscoroutinefunction(monitoring_skill.on_position_closed):
+                await monitoring_skill.on_position_closed(_PositionClosedEvent())
+            else:
+                monitoring_skill.on_position_closed(_PositionClosedEvent())
         
         # Send alert
         if 'alerting' in self.skills:

@@ -321,12 +321,13 @@ async def test_session_filter_blocks_outside_allowed_hours(orchestrator):
     """Test trading session filter blocks trades outside allowed times"""
     # Arrange: Configure only LONDON session (08:00-16:30 UTC)
     orchestrator.session_filter.config['allowed_sessions'] = ['LONDON']
-    
-    # Act: Check at 22:00 UTC (NEW_YORK session, not allowed)
-    with patch('datetime.datetime') as mock_datetime:
-        mock_datetime.now.return_value = datetime(2024, 1, 15, 22, 0)  # 22:00 UTC
-        allowed, reason = orchestrator.session_filter.is_trading_allowed()
-    
+    orchestrator.session_filter.enabled = True
+
+    # Act: Check at 22:00 UTC — outside LONDON (08:00-16:30) and not in session
+    allowed, reason = orchestrator.session_filter.is_trading_allowed(
+        timestamp=datetime(2024, 1, 15, 22, 0)  # 22:00 UTC — outside LONDON
+    )
+
     # Assert: Should be blocked
     assert allowed is False
     assert 'session' in reason.lower()

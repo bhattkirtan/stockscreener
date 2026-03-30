@@ -57,7 +57,8 @@ class ExecutionSkill(Skill):
         
         # Transaction cost tracking
         self._last_transaction_costs = None
-        
+        self.rest_client = None  # Always initialize; set below if auth succeeds
+
         if not self.mock_mode and capital_config:
             try:
                 self.rest_client = CapitalAPIClient(
@@ -70,6 +71,7 @@ class ExecutionSkill(Skill):
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Capital.com client: {e}")
                 logger.warning("⚠️ Falling back to mock mode")
+                self.mock_mode = True
     
     async def on_risk_approved(self, event: 'Event') -> None:
         """
@@ -141,10 +143,10 @@ class ExecutionSkill(Skill):
             await self._publish_order_filled(event, result, signal, position_size, stop_loss, take_profit, transaction_costs)
             
         except Exception as e:
-            # Register rejection
-            if self.idempotency:
+            # Register rejection — only if idempotency is on AND order was created
+            if self.idempotency and 'order' in dir():
                 self.idempotency.register_rejection(order.idempotency_key, str(e))
-            
+
             # Publish ORDER_REJECTED event
             await self._publish_order_rejected(event, str(e))
     

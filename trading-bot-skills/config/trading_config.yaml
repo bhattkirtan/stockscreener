@@ -216,7 +216,7 @@ storage:
   
   # Firestore settings
   firestore:
-    project_id: "stockscreener-123"
+    project_id: ${GCP_PROJECT_ID}
     credentials_path: ${GOOGLE_APPLICATION_CREDENTIALS}
     collections:
       positions: "active_positions"
@@ -252,7 +252,7 @@ alerting:
   
   # Telegram notifications
   telegram:
-    enabled: true
+    enabled: false  # TODO: add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env when ready
     token: ${TELEGRAM_BOT_TOKEN}
     chat_id: ${TELEGRAM_CHAT_ID}
     

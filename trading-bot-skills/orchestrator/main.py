@@ -54,8 +54,18 @@ WARMUP_CANDLES = 300
 
 
 def load_config(config_path: str) -> dict:
+    import re
+
     with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+        raw = f.read()
+
+    # Expand ${VAR} placeholders from environment
+    def _expand(match):
+        value = os.getenv(match.group(1), '')
+        return value if value else match.group(0)  # leave unexpanded if not set
+
+    expanded = re.sub(r'\$\{([^}]+)\}', _expand, raw)
+    return yaml.safe_load(expanded)
 
 
 def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
@@ -101,11 +111,13 @@ def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
 def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str) -> None:
     """Register all enabled skills with the orchestrator."""
 
+    market_data_skill = None
     if config.get('market_data', {}).get('enabled', True):
-        orchestrator.register_skill('market_data', MarketDataSkill(config))
+        market_data_skill = MarketDataSkill(config)
+        orchestrator.register_skill('market_data', market_data_skill)
 
     if config.get('analysis', {}).get('enabled', True):
-        orchestrator.register_skill('analysis', AnalysisSkill(config))
+        orchestrator.register_skill('analysis', AnalysisSkill(config, market_data_skill=market_data_skill))
 
     if config.get('risk', {}).get('enabled', True):
         orchestrator.register_skill('risk', RiskSkill(config))
@@ -208,11 +220,23 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 }
                 await orchestrator.on_candle(candle)
 
+            # Position update callback: SL/TP/manual close → orchestrator
+            async def on_position_update(update: dict) -> None:
+                await orchestrator.on_position_closed(
+                    deal_id=update['deal_id'],
+                    direction=update['direction'],
+                    close_reason=update['close_reason'],
+                    pnl=update['pnl'],
+                    close_price=update['close_price'],
+                )
+
             ws.on_candle = on_candle
+            ws.on_position_update = on_position_update
 
             await ws.connect()
             await ws.subscribe_ohlc([epic], resolution=resolution)
-            logger.info(f"✅ Streaming {resolution} candles for {epic}")
+            await ws.subscribe_trades()
+            logger.info(f"✅ Streaming {resolution} candles + trade events for {epic}")
 
             retry = 0  # Reset backoff on successful connect
             await ws.run()  # Blocks until disconnect
