@@ -356,6 +356,9 @@ def main():
         '--instrument', default=None,
         help='Instrument to run (e.g. GOLD, US100, EURUSD). Loads config/instruments/<INSTRUMENT>.yaml as override.'
     )
+    parser.add_argument('--sl', type=float, default=None, help='Override stop_loss_pips (e.g. --sl 25)')
+    parser.add_argument('--tp', type=float, default=None, help='Override take_profit_pips (e.g. --tp 100)')
+    parser.add_argument('--size', type=float, default=None, help='Override position size / units (e.g. --size 1)')
     args = parser.parse_args()
 
     print("🧪 SKILLS-BASED BACKTEST")
@@ -365,13 +368,30 @@ def main():
     
     # Load config (base + optional instrument override)
     config = load_config(args.instrument)
+
+    # Apply CLI overrides (--sl / --tp / --size override YAML config)
+    if args.sl is not None:
+        config.setdefault('analysis', {}).setdefault('sl_tp', {})['stop_loss_pips'] = args.sl
+        config.setdefault('risk', {})['stop_loss_pips'] = args.sl
+    if args.tp is not None:
+        config.setdefault('analysis', {}).setdefault('sl_tp', {})['take_profit_pips'] = args.tp
+        config.setdefault('risk', {})['take_profit_pips'] = args.tp
+    if args.size is not None:
+        config.setdefault('backtesting', {})['position_size'] = args.size
+        config.setdefault('backtest', {})['position_size'] = args.size
+
     print("\n✅ Configuration loaded")
     if args.instrument:
         print(f"   Instrument override: {args.instrument.upper()}")
+    if args.sl or args.tp or args.size:
+        print(f"   CLI overrides: SL={args.sl or '(config)'} TP={args.tp or '(config)'} size={args.size or '(config)'}")
     print(f"   Strategy: {config.get('analysis', {}).get('strategy', 'supertrend_vwap')}")
     print(f"   Instrument: {config.get('market_data', {}).get('instrument', 'GOLD')}")
     tf = config.get('market_data', {}).get('resample_to') or config.get('market_data', {}).get('timeframe', 'M5')
-    print(f"   Timeframe: {tf}")
+    sl = config.get('analysis', {}).get('sl_tp', {}).get('stop_loss_pips', '?')
+    tp = config.get('analysis', {}).get('sl_tp', {}).get('take_profit_pips', '?')
+    size = config.get('backtest', {}).get('position_size') or config.get('backtesting', {}).get('position_size', 1)
+    print(f"   Timeframe: {tf} | SL: {sl} pts | TP: {tp} pts | Size: {size} unit(s)")
     
     # Resolve data path: prefer backtest.data_path from (merged) config, fall back to default
     data_path = config.get('backtest', {}).get('data_path', '../cloud-function/data/GOLD_M5_150000bars.csv')

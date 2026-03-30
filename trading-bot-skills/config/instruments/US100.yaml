@@ -12,6 +12,8 @@ market_data:
 backtest:
   data_path: "../cloud-function/data/US100_M5_150000bars.csv"
   report_prefix: "US100"
+  position_size: 1            # 1 unit per trade
+  leverage: 20                # Capital.com leverage (informational — used for margin display)
 
 analysis:
   indicators:
@@ -31,8 +33,8 @@ analysis:
     require_h1_bb: false      # Disable until US100 MTF tuned
   sl_tp:
     method: fixed
-    stop_loss_pips: 50        # US100 spreads are wider (~1-3 pts)
-    take_profit_pips: 150
+    stop_loss_pips: 25        # SL = 25 pts
+    take_profit_pips: 100     # TP = 100 pts (1:4 R:R)
 
 risk:
   trading_hours:
