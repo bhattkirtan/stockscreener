@@ -41,8 +41,8 @@ class CapitalAPIClient:
         """
         import os
         
-        # Use env vars as fallback
-        self.username = username or os.getenv('CAPITAL_USERNAME')
+        # Use env vars as fallback; CAPITAL_IDENTIFIER is the email used to log in
+        self.username = username or os.getenv('CAPITAL_IDENTIFIER') or os.getenv('CAPITAL_USERNAME')
         self.password = password or os.getenv('CAPITAL_PASSWORD')
         self.api_key = api_key or os.getenv('CAPITAL_API_KEY')
         self.environment = (environment or os.getenv('CAPITAL_ENVIRONMENT', 'demo')).lower()
@@ -200,7 +200,7 @@ class CapitalAPIClient:
     ) -> Dict:
         """
         Place a market order
-        
+
         Args:
             epic: Market identifier (e.g., 'CS.D.CFDGOLD.CFD.IP')
             direction: 'BUY' or 'SELL'
@@ -208,20 +208,19 @@ class CapitalAPIClient:
             stop_level: Stop loss price (optional)
             profit_level: Take profit price (optional)
             guaranteed_stop: Use guaranteed stop loss (default: False)
-            
+
         Returns:
             dict with dealReference and dealId
-            
+
         Raises:
             Exception on order placement failure
         """
-        path = '/api/v1/positions/otc'
+        path = '/api/v1/positions'
         payload = {
             'epic': epic,
             'direction': direction.upper(),
             'size': size,
             'guaranteedStop': guaranteed_stop,
-            'forceOpen': True  # Open new position even if opposite exists
         }
         
         # Add stop loss if provided
@@ -262,32 +261,27 @@ class CapitalAPIClient:
             logger.error(f"❌ Failed to get positions: {e}")
             raise
     
-    def close_position(self, deal_id: str, size: Optional[float] = None) -> Dict:
+    def close_position(self, deal_id: str) -> Dict:
         """
         Close an open position
-        
+
         Args:
             deal_id: Deal ID of the position to close
-            size: Optional partial close size (default: full close)
-            
+
         Returns:
             dict with dealReference
         """
-        path = '/api/v1/positions/otc'
-        payload = {'dealId': deal_id}
-        
-        if size is not None:
-            payload['size'] = size
-        
+        path = f'/api/v1/positions/{deal_id}'
+
         try:
-            response = self._request('DELETE', path, json=payload)
+            response = self._request('DELETE', path)
             result = response.json()
-            
+
             deal_reference = result.get('dealReference')
             logger.info(f"✅ Position closed: {deal_id} (ref: {deal_reference})")
-            
+
             return result
-        
+
         except Exception as e:
             logger.error(f"❌ Failed to close position {deal_id}: {e}")
             raise
@@ -309,7 +303,7 @@ class CapitalAPIClient:
         Returns:
             dict with dealReference
         """
-        path = f'/api/v1/positions/otc/{deal_id}'
+        path = f'/api/v1/positions/{deal_id}'
         payload = {}
         
         if stop_level is not None:

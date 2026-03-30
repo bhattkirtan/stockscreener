@@ -243,8 +243,11 @@ class TestTimeBasedExitsIntegration:
         orch = ProductionOrchestrator(config)
         orch.event_bus = mock_event_bus
         orch.register_skill('execution', mock_execution_skill)
-        
-        # Add position opened 2 hours ago
+
+        # Use a fixed mock time so opened_at is consistent
+        mock_current_time = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+
+        # Add position opened 2 hours ago (relative to mock time)
         position = Position(
             deal_id='DEAL_FRESH_123',
             instrument='GOLD',
@@ -254,15 +257,15 @@ class TestTimeBasedExitsIntegration:
             stop_loss=2630.0,
             take_profit=2690.0,
             status=PositionStatus.OPEN,
-            opened_at=datetime.now() - timedelta(hours=2),  # 2 hours ago
-            signal_timestamp=datetime.now()
+            opened_at=mock_current_time - timedelta(hours=2),  # 2 hours before mock time
+            signal_timestamp=mock_current_time
         )
         orch.position_manager.add_position(position)
-        
+
         # Mock current time to be BEFORE EOD hour (e.g., 10 AM)
         with patch('orchestrator.production_orchestrator.datetime') as mock_datetime:
-            mock_datetime.now.return_value = datetime.now().replace(hour=10, minute=0)
-            
+            mock_datetime.now.return_value = mock_current_time
+
             # Trigger time-based exit check
             await orch._check_time_based_exits()
         
