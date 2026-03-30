@@ -67,3 +67,4 @@ trading-bot-skills/reports/*.csv
 
 # ── Claude IDE settings ───────────────────────────────────────────────────────
 .claude/
+**/.claude/
