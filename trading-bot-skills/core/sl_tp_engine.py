@@ -32,6 +32,7 @@ def calculate_fixed_sl_tp(
     entry_price: float,
     sl_pips: float,
     tp_pips: float,
+    pip_size: float = 1.0,
 ) -> Tuple[float, float]:
     """
     Fixed pip-distance SL/TP.
@@ -39,16 +40,19 @@ def calculate_fixed_sl_tp(
     Args:
         signal:      'BUY' or 'SELL'
         entry_price: Trade entry price
-        sl_pips:     Stop loss pip distance (raw price units for GOLD)
-        tp_pips:     Take profit pip distance
+        sl_pips:     Stop loss distance in pips
+        tp_pips:     Take profit distance in pips
+        pip_size:    Price units per pip (1.0 for GOLD/indices, 0.0001 for forex)
 
     Returns:
         (stop_loss, take_profit)
     """
+    sl_distance = sl_pips * pip_size
+    tp_distance = tp_pips * pip_size
     if signal == 'BUY':
-        return entry_price - sl_pips, entry_price + tp_pips
+        return entry_price - sl_distance, entry_price + tp_distance
     else:  # SELL
-        return entry_price + sl_pips, entry_price - tp_pips
+        return entry_price + sl_distance, entry_price - tp_distance
 
 
 def calculate_atr_sl_tp(
@@ -258,4 +262,5 @@ def compute_sl_tp(
             entry_price=entry_price,
             sl_pips=sl_tp_config.get('stop_loss_pips', 20),
             tp_pips=sl_tp_config.get('take_profit_pips', 40),
+            pip_size=sl_tp_config.get('pip_size', 1.0),
         )

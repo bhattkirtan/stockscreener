@@ -70,12 +70,11 @@ class SimulatedTrade:
         else:  # SELL
             pnl_points = self.entry_price - self.exit_price
         
-        # Subtract costs
+        # costs are already total (per-unit × size stored at trade creation)
+        gross_pnl = pnl_points * self.size
         total_costs = self.spread_cost + self.slippage_cost
-        pnl_points -= total_costs
-        
-        self.pnl = pnl_points * self.size
-        self.pnl_pct = (pnl_points / self.entry_price) * 100
+        self.pnl = gross_pnl - total_costs
+        self.pnl_pct = (self.pnl / (self.entry_price * self.size)) * 100
     
     def to_dict(self):
         """Convert trade to dictionary"""
@@ -174,9 +173,16 @@ class BacktestingSkill(Skill):
         self.max_hold_minutes = max_hours * 60 if max_hours else 0
         
         # Get SL/TP from risk config
+        # pip_size priority: analysis.sl_tp (instrument overrides) > risk > top-level sl_tp > default
         risk_config = config.get('risk', {})
         self.stop_loss_pips = risk_config.get('stop_loss_pips', 20)
         self.take_profit_pips = risk_config.get('take_profit_pips', 40)
+        _analysis_sl_tp = config.get('analysis', {}).get('sl_tp', {})
+        self.pip_size = (
+            _analysis_sl_tp.get('pip_size')
+            or risk_config.get('pip_size')
+            or config.get('sl_tp', {}).get('pip_size', 1.0)
+        )
         
         # State tracking
         self.capital = self.initial_capital
@@ -245,11 +251,17 @@ class BacktestingSkill(Skill):
 
         if not stop_loss or not take_profit:
             from core.sl_tp_engine import compute_sl_tp
-            sl_tp_cfg = self._config.get('sl_tp', {
-                'method': 'fixed',
-                'stop_loss_pips': self.stop_loss_pips,
-                'take_profit_pips': self.take_profit_pips,
-            })
+            # instrument overrides live under analysis.sl_tp; fall back to top-level sl_tp
+            sl_tp_cfg = (
+                self._config.get('analysis', {}).get('sl_tp')
+                or self._config.get('sl_tp')
+                or {
+                    'method': 'fixed',
+                    'stop_loss_pips': self.stop_loss_pips,
+                    'take_profit_pips': self.take_profit_pips,
+                    'pip_size': self.pip_size,
+                }
+            )
             stop_loss, take_profit = compute_sl_tp(
                 signal=context.signal,
                 entry_price=entry_price,
@@ -269,8 +281,8 @@ class BacktestingSkill(Skill):
             size=self.position_size,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            spread_cost=self.spread_cost_usd,
-            slippage_cost=self.slippage_cost_usd
+            spread_cost=self.spread_cost_usd * self.position_size,
+            slippage_cost=self.slippage_cost_usd * self.position_size
         )
         
         self.open_positions.append(trade)

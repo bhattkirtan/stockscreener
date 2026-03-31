@@ -89,43 +89,52 @@ class Position:
         return pnl
     
     def to_dict(self) -> Dict:
-        """Convert to dictionary for storage"""
+        """Convert to dictionary for Firestore storage.
+        Field names match the UI schema (botMonitoringApi.ts BotPosition / useSignals.ts).
+        """
+        pnl_pct = 0.0
+        if self.entry_price and self.entry_price > 0 and self.size:
+            pnl_pct = (self.unrealized_pnl / (self.entry_price * self.size)) * 100
         return {
+            # UI-facing field names (BotPosition schema)
+            'position_id': self.deal_id,
             'deal_id': self.deal_id,
-            'instrument': self.instrument,
+            'epic': self.instrument,
             'direction': self.direction,
-            'entry_price': self.entry_price,
             'size': self.size,
+            'open_level': self.entry_price,
+            'current_level': self.current_price,
+            'pnl': self.unrealized_pnl,
+            'pnl_pct': round(pnl_pct, 4),
             'stop_loss': self.stop_loss,
             'take_profit': self.take_profit,
-            'status': self.status.value,
             'opened_at': self.opened_at.isoformat(),
+            # Internal fields (used by from_dict and position reconciliation)
+            'status': self.status.value,
             'closed_at': self.closed_at.isoformat() if self.closed_at else None,
-            'current_price': self.current_price,
-            'unrealized_pnl': self.unrealized_pnl,
             'realized_pnl': self.realized_pnl,
             'spread_cost': self.spread_cost,
             'slippage_cost': self.slippage_cost,
             'signal_timestamp': self.signal_timestamp.isoformat() if self.signal_timestamp else None,
-            'close_reason': self.close_reason
+            'close_reason': self.close_reason,
         }
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'Position':
-        """Reconstruct from dictionary"""
+        """Reconstruct from dictionary. Accepts both old and new field names."""
         return cls(
-            deal_id=data['deal_id'],
-            instrument=data['instrument'],
+            deal_id=data.get('deal_id') or data.get('position_id'),
+            instrument=data.get('epic') or data.get('instrument'),
             direction=data['direction'],
-            entry_price=data['entry_price'],
+            entry_price=data.get('open_level') or data.get('entry_price'),
             size=data['size'],
             stop_loss=data['stop_loss'],
             take_profit=data['take_profit'],
             status=PositionStatus(data['status']),
             opened_at=datetime.fromisoformat(data['opened_at']),
             closed_at=datetime.fromisoformat(data['closed_at']) if data.get('closed_at') else None,
-            current_price=data.get('current_price'),
-            unrealized_pnl=data.get('unrealized_pnl', 0.0),
+            current_price=data.get('current_level') or data.get('current_price'),
+            unrealized_pnl=data.get('pnl') or data.get('unrealized_pnl', 0.0),
             realized_pnl=data.get('realized_pnl'),
             signal_timestamp=datetime.fromisoformat(data['signal_timestamp']) if data.get('signal_timestamp') else None,
             close_reason=data.get('close_reason')

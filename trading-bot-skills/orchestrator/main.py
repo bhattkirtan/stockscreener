@@ -112,6 +112,14 @@ def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
 def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str) -> None:
     """Register all enabled skills with the orchestrator."""
 
+    # Single source of truth: propagate risk pip/SL/TP into analysis.sl_tp
+    # so AnalysisSkill reads the same values without duplication in YAML.
+    _risk = config.get('risk', {})
+    _sl_tp = config.setdefault('analysis', {}).setdefault('sl_tp', {})
+    for _key in ('pip_size', 'stop_loss_pips', 'take_profit_pips'):
+        if _key in _risk:
+            _sl_tp[_key] = _risk[_key]
+
     market_data_skill = None
     if config.get('market_data', {}).get('enabled', True):
         market_data_skill = MarketDataSkill(config.get('market_data', config))

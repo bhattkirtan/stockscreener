@@ -1,28 +1,55 @@
 # EURUSD instrument-specific overrides
 # Deep-merged over trading_config.yaml at runtime
-# Note: Only M15 data available (EURUSD_M15_10000bars.csv)
+#
+# Capital.com specs (verified from live platform):
+#   Price: ~1.14694  |  Tick: 0.00001  |  pip_size: 0.0001 (4th decimal = 1 pip)
+#   Observed spread: 0.00007 = 0.7 pips  →  $7.00 per standard lot
+#   Leverage: 30×
+#
+# Risk per trade (100,000 units = 1 standard lot, SL=30 pips):
+#   Pip value    = 100,000 × 0.0001 = $10.00 per pip
+#   SL risk      = 30 pips × $10.00 = $300  (3.0% of $10k)
+#   TP reward    = 100 pips × $10.00 = $1,000  (1:3.3 R:R)
+#   Margin       = 100,000 × 1.147 / 30 = $3,823  (38.2% of $10k)
+#   Spread cost  = $0.00007 × 100,000 = $7.00  (2.3% of SL risk)
+#
+# ── Validated backtest results (150k M5 bars, $10k capital) ──────────────
+#   SMA 25/30  ST×2.0  SL=30  TP=100  →  625%  47.9% WR  Sharpe 3.32  DD $4,143
+#   SMA 10/30  ST×2.0  SL=30  TP=100  →  772%  51.3% WR  Sharpe 4.04  DD $4,023  ← ACTIVE
+#   SMA 10/30  ST×3.0  SL=30  TP=100  →  764%  50.6% WR  Sharpe 4.01  DD $3,331  (worse on 4/5 metrics)
+#
+# ── Next to test ─────────────────────────────────────────────────────────
+#   Run SL/TP optimizer to find better exit params (current 30/100 was set manually):
+#     python3 optimize_params.py --instrument EURUSD \
+#       --sl-range 20 60 5 --tp-range 60 200 20 --size 1
 
 bot:
-  name: "EURUSD M15 SupertrendVWAP Bot"
+  name: "EURUSD M5 SupertrendVWAP Bot"
 
 market_data:
   instrument: EURUSD
-  timeframe: M15
-  resample_to: M15
+  timeframe: M5
+  resample_to: M5
 
 backtest:
-  data_path: "../cloud-function/data/EURUSD_M15_10000bars.csv"
+  data_path: "../cloud-function/data/EURUSD_M5_215000bars.csv"
   report_prefix: "EURUSD"
+  leverage: 30                  # Capital.com EURUSD leverage
+
+backtesting:
+  position_size: 100000         # 100,000 units = 1 standard lot  →  $300 SL risk (3% of $10k)
+  spread_cost_usd: 0.00007      # $7.00 total per standard lot  (0.7 pip spread × $10/pip)
+  slippage_cost_usd: 0.00001    # $1.00 total per standard lot
 
 analysis:
   indicators:
     supertrend:
       atr_period: 7
-      multiplier: 2.0
+      multiplier: 2.0           # testing: between 2.0 (best return) and 3.0 (best DD)
     ema:
       period: 21
     sma:
-      fast_period: 25
+      fast_period: 10           # 10/30 validated — wider gap vs GOLD's 25/30 suits EURUSD ranging
       slow_period: 30
     mtf:
       h1_bb_period: 20
@@ -31,15 +58,16 @@ analysis:
   signal_rules:
     require_h1_bb: true
   sl_tp:
-    method: fixed
-    stop_loss_pips: 15        # EURUSD tight spread ~0.5 pips
-    take_profit_pips: 45      # 1:3 R:R
+    method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
 
 risk:
+  pip_size: 0.0001              # 1 pip = 0.0001 price  (universal forex standard)
+  stop_loss_pips: 30            # 30 pips × $10.00/pip = $300 SL risk per standard lot
+  take_profit_pips: 100         # 100 pips × $10.00/pip = $1,000 TP  (1:3.3 R:R)
   trading_hours:
-    enabled: true             # EURUSD: London + NY overlap
-    start_hour: 7             # 07:00 UTC = London open
-    end_hour: 21              # 21:00 UTC = NY close
+    enabled: false               # EURUSD: London + NY sessions only
+    start_hour: 7               # 07:00 UTC = London open
+    end_hour: 21                # 21:00 UTC = NY close
     friday_close_hour: 20
 
 execution:

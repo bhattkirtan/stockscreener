@@ -50,6 +50,8 @@ def load_config(instrument: str = None) -> dict:
             inst_config = yaml.safe_load(f)
         config = _deep_merge(config, inst_config)
 
+    # Single source of truth: risk pip values → analysis.sl_tp
+    _propagate_risk_to_sl_tp(config)
     return config
 
 
@@ -62,6 +64,72 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[k] = v
     return result
+
+
+def _propagate_risk_to_sl_tp(config: dict) -> None:
+    """
+    Single source of truth for pip/SL/TP: copy from risk → analysis.sl_tp.
+
+    Instrument yamls only need to set risk.pip_size / stop_loss_pips /
+    take_profit_pips. AnalysisSkill (which only sees the analysis section)
+    will pick them up via analysis.sl_tp without any duplication.
+    """
+    risk = config.get('risk', {})
+    sl_tp = config.setdefault('analysis', {}).setdefault('sl_tp', {})
+    for key in ('pip_size', 'stop_loss_pips', 'take_profit_pips'):
+        if key in risk:
+            sl_tp[key] = risk[key]
+
+
+def _ensure_data(data_path: str, config: dict) -> None:
+    """
+    If data_path does not exist, download it via fetch_data.py.
+
+    Derives --epic and --bars from the instrument config and filename
+    so no manual intervention is needed.
+    """
+    if Path(data_path).exists():
+        return
+
+    print(f"⚠️  Data file not found: {data_path}")
+    print(f"⬇️  Auto-downloading...")
+
+    # Resolve epic from instrument config (e.g. GOLD, EURUSD, US100)
+    epic = config.get('market_data', {}).get('instrument', 'GOLD')
+
+    # Parse bar count from filename (e.g. GOLD_M5_215000bars.csv → 215000)
+    stem = Path(data_path).stem          # 'GOLD_M5_215000bars'
+    bars = 150000                        # safe default
+    for part in stem.split('_'):
+        if part.endswith('bars') and part[:-4].isdigit():
+            bars = int(part[:-4])
+            break
+
+    # Timeframe from filename (e.g. GOLD_M5_... → M5)
+    timeframe = 'M5'
+    parts = stem.split('_')
+    if len(parts) >= 2 and parts[1].upper().startswith('M'):
+        timeframe = parts[1].upper()
+
+    fetch_script = Path(__file__).parent / 'fetch_data.py'
+    cmd = [
+        sys.executable, str(fetch_script),
+        '--epic',      epic,
+        '--timeframe', timeframe,
+        '--bars',      str(bars),
+        '--output',    data_path,
+    ]
+
+    print(f"   Command: {' '.join(cmd)}")
+    import subprocess
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Data download failed for {epic} {timeframe} {bars} bars.\n"
+            f"Check your API credentials in .env and try manually:\n"
+            f"  python3 fetch_data.py --epic {epic} --timeframe {timeframe} --bars {bars}"
+        )
+    print(f"✅ Download complete: {data_path}")
 
 
 def load_historical_data(data_path: str) -> pd.DataFrame:
@@ -356,9 +424,12 @@ def main():
         '--instrument', default=None,
         help='Instrument to run (e.g. GOLD, US100, EURUSD). Loads config/instruments/<INSTRUMENT>.yaml as override.'
     )
-    parser.add_argument('--sl', type=float, default=None, help='Override stop_loss_pips (e.g. --sl 25)')
-    parser.add_argument('--tp', type=float, default=None, help='Override take_profit_pips (e.g. --tp 100)')
+    parser.add_argument('--sl',   type=float, default=None, help='Override stop_loss_pips (e.g. --sl 25)')
+    parser.add_argument('--tp',   type=float, default=None, help='Override take_profit_pips (e.g. --tp 100)')
     parser.add_argument('--size', type=float, default=None, help='Override position size / units (e.g. --size 1)')
+    parser.add_argument('--bars', type=int,   default=None,
+                        help='Number of M5 bars to backtest (e.g. --bars 215000). '
+                             'Resolves the data file automatically and downloads if missing.')
     args = parser.parse_args()
 
     print("🧪 SKILLS-BASED BACKTEST")
@@ -393,8 +464,20 @@ def main():
     size = config.get('backtest', {}).get('position_size') or config.get('backtesting', {}).get('position_size', 1)
     print(f"   Timeframe: {tf} | SL: {sl} pts | TP: {tp} pts | Size: {size} unit(s)")
     
-    # Resolve data path: prefer backtest.data_path from (merged) config, fall back to default
-    data_path = config.get('backtest', {}).get('data_path', '../cloud-function/data/GOLD_M5_150000bars.csv')
+    # Resolve data path
+    # --bars overrides the config file path: builds INSTRUMENT_TIMEFRAME_BARSbars.csv
+    if args.bars is not None:
+        instrument = config.get('market_data', {}).get('instrument', 'GOLD').upper()
+        timeframe  = (config.get('market_data', {}).get('resample_to')
+                      or config.get('market_data', {}).get('timeframe', 'M5')).upper()
+        data_dir   = Path(__file__).parent.parent / 'cloud-function' / 'data'
+        data_path  = str(data_dir / f'{instrument}_{timeframe}_{args.bars}bars.csv')
+        config.setdefault('backtest', {})['data_path'] = data_path
+        print(f"   Bars override: {args.bars:,} → {data_path}")
+    else:
+        data_path = config.get('backtest', {}).get('data_path', '../cloud-function/data/GOLD_M5_150000bars.csv')
+
+    _ensure_data(data_path, config)
     df = load_historical_data(data_path)
 
     # Optionally resample to a higher timeframe (no extra download needed)

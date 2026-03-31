@@ -1,5 +1,20 @@
 # US100 (NASDAQ 100) instrument-specific overrides
 # Deep-merged over trading_config.yaml at runtime
+#
+# Capital.com specs (verified from live platform):
+#   Price: ~$23,117  |  Tick: 0.1 pts  |  Spread: ~1.8 pts  ($1.80/contract)
+#   Trading pip convention: 1 pip = 1 index point  (industry standard for indices)
+#   pip_size = 1.0  →  stop_loss_pips = 50 means 50-point SL distance
+#   Leverage: 20×
+#
+# Risk per trade (2 contracts, SL=50 pips):
+#   SL risk      = 50 × 1.0 × 2 = $100  (1.0% of $10k)
+#   TP reward    = 150 × 1.0 × 2 = $300  (1:3 R:R)
+#   Margin       = 2 × $23,000 / 20 = $2,300  (23% of $10k)  ← safe
+#   Spread cost  = $1.80 × 2 = $3.60  (3.6% of SL risk)
+#
+# NOTE: Previous setting was position_size=5 → margin=$5,750 (57.5% of capital) — too large.
+# Actual live positions observed on platform: ±1.6 contracts.
 
 bot:
   name: "US100 M5 SupertrendVWAP Bot"
@@ -12,41 +27,45 @@ market_data:
 backtest:
   data_path: "../cloud-function/data/US100_M5_150000bars.csv"
   report_prefix: "US100"
-  leverage: 20                # Capital.com leverage (informational — used for margin display)
+  leverage: 20                  # Capital.com US100 leverage
 
 backtesting:
-  position_size: 1            # 1 unit per trade (read by BacktestingSkill)
+  position_size: 5              # 5 contracts  →  $250 SL risk (2.5% of $10k), $5,750 margin
+  spread_cost_usd: 1.80         # $1.80/contract → $9.00 total  (1.8 pt observed spread)
+  slippage_cost_usd: 10       # $0.20/contract → $1.00 total
 
 analysis:
   indicators:
     supertrend:
-      atr_period: 10
-      multiplier: 3.0        # US100 is more volatile — wider ST
+      atr_period: 7
+      multiplier: 2.0
     ema:
       period: 21
     sma:
       fast_period: 25
-      slow_period: 50
+      slow_period: 50           # slower SMA suits index trending behaviour
     mtf:
       h1_bb_period: 20
       h1_bb_std: 2.0
-      daily_sma_period: 20
+      daily_sma_period: 10
   signal_rules:
-    require_h1_bb: false      # Disable until US100 MTF tuned
+    require_h1_bb: true
   sl_tp:
-    method: fixed
-    stop_loss_pips: 25        # SL = 25 pts
-    take_profit_pips: 100     # TP = 100 pts (1:4 R:R)
+    method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
 
 risk:
-  # SL/TP read by BacktestingSkill for exit simulation
-  stop_loss_pips: 25
-  take_profit_pips: 100
+  pip_size: 1.0                 # 1 pip = 1 index point  (index trading convention)
+  stop_loss_pips: 50            # 50 pips × 1.0 = 50 pts SL  →  $50/contract  → $100 total
+  take_profit_pips: 150         # 150 pips × 1.0 = 150 pts TP →  $150/contract → $300 total  (1:3 R:R)
   trading_hours:
-    enabled: true             # US100: trade US session only
-    start_hour: 13            # 13:30 UTC = NYSE open
-    end_hour: 21              # 21:00 UTC = NYSE close
+    enabled: false               # US100: US session only
+    start_hour: 13              # 13:30 UTC = NYSE open
+    end_hour: 21                # 21:00 UTC = NYSE close
     friday_close_hour: 20
+
+backtesting_filters:
+  disable_reverse_exit: false   # set true to test SL/TP-only exits (no reverse-signal closes)
+  min_hold_minutes: 0           # set e.g. 30 to block reverse exits within 30 min of entry
 
 execution:
   instrument: US100

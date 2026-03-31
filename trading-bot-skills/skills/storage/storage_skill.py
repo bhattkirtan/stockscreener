@@ -76,12 +76,15 @@ class StorageSkill(Skill):
         collection = self.signals_collection
         
         signal_doc = {
+            'epic': event.instrument,
             'signal': event.payload.get('signal'),
+            'price': event.payload.get('entry_price'),
+            'sl': event.payload.get('stop_loss'),
+            'tp': event.payload.get('take_profit'),
             'timestamp': event.timestamp.isoformat(),
-            'entry_price': event.payload.get('entry_price'),
-            'stop_loss': event.payload.get('stop_loss'),
-            'take_profit': event.payload.get('take_profit'),
-            'instrument': event.instrument
+            'strategy': event.payload.get('strategy', 'supertrend_vwap'),
+            'mode': event.payload.get('mode', 'AUTO'),
+            'indicators': event.payload.get('indicators', {}),
         }
         
         logger.info(f"💾 Logging signal: {signal_doc['signal']}")
@@ -109,16 +112,23 @@ class StorageSkill(Skill):
         
         collection = self.positions_collection
         
+        entry_price = event.payload.get('entry_price', 0)
+        size = event.payload.get('size', 0)
         document = {
+            # UI-facing names (BotPosition schema)
+            'position_id': deal_id,
             'deal_id': deal_id,
+            'epic': event.instrument,
             'direction': event.payload.get('direction'),
-            'size': event.payload.get('size'),
-            'entry_price': event.payload.get('entry_price'),
+            'size': size,
+            'open_level': entry_price,
+            'current_level': entry_price,
+            'pnl': 0.0,
+            'pnl_pct': 0.0,
             'stop_loss': event.payload.get('stop_loss'),
             'take_profit': event.payload.get('take_profit'),
-            'entry_time': event.timestamp.isoformat(),
-            'instrument': event.instrument,
-            'status': 'OPEN'
+            'opened_at': event.timestamp.isoformat(),
+            'status': 'OPEN',
         }
         
         logger.info(f"💾 Saving position to Firestore: {collection}/{deal_id}")
@@ -208,15 +218,23 @@ class StorageSkill(Skill):
         deal_id = position.get('deal_id')
         collection = self.collections.get('positions', 'active_positions')
         
+        entry_price = position.get('open_level') or position.get('entry_price', 0)
+        size = position.get('size', 0)
         document = {
+            # UI-facing names (BotPosition schema)
+            'position_id': deal_id,
             'deal_id': deal_id,
+            'epic': position.get('epic') or position.get('instrument', ''),
             'direction': position.get('direction'),
-            'size': position.get('size'),
-            'entry_price': position.get('entry_price'),
+            'size': size,
+            'open_level': entry_price,
+            'current_level': entry_price,
+            'pnl': 0.0,
+            'pnl_pct': 0.0,
             'stop_loss': position.get('stop_loss'),
             'take_profit': position.get('take_profit'),
-            'entry_time': position.get('entry_time', datetime.now()).isoformat(),
-            'status': 'OPEN'
+            'opened_at': position.get('opened_at') or position.get('entry_time', datetime.now()).isoformat(),
+            'status': 'OPEN',
         }
         
         logger.info(f"💾 Saving position to Firestore: {collection}/{deal_id}")
@@ -279,10 +297,15 @@ class StorageSkill(Skill):
         collection = self.collections.get('signals', 'signals')
         
         signal_doc = {
+            'epic': context.current_candle.get('instrument', '') if context.current_candle else '',
             'signal': context.signal,
+            'price': context.entry_price or (context.current_candle.get('close') if context.current_candle else None),
+            'sl': context.stop_loss,
+            'tp': context.take_profit,
             'timestamp': datetime.now().isoformat(),
+            'strategy': 'supertrend_vwap',
+            'mode': 'AUTO',
             'indicators': context.indicators or {},
-            'current_price': context.current_candle.get('close') if context.current_candle else None
         }
         
         logger.info(f"💾 Logging signal: {context.signal}")

@@ -100,6 +100,7 @@ analysis:
     method: fixed            # fixed | pct | atr | fibonacci | supertrend
 
     # Fixed pips (active — matches cloud-function rank01)
+    pip_size: 1.0          # 1.0 for GOLD/indices; 0.0001 for forex pairs
     stop_loss_pips: 20
     take_profit_pips: 60
 
@@ -220,7 +221,7 @@ storage:
     credentials_path: ${GOOGLE_APPLICATION_CREDENTIALS}
     collections:
       positions: "active_positions"
-      signals: "signals"
+      signals: "trading_signals"
       trades: "trade_history"
       bot_logs: "bot_logs"
   

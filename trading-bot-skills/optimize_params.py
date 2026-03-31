@@ -178,6 +178,8 @@ def main():
     parser = argparse.ArgumentParser(description='Parameter Grid-Search Optimizer')
     parser.add_argument('--instrument', default='US100', help='GOLD, US100, EURUSD')
     parser.add_argument('--size', type=float, default=1.0, help='Position size in units (default: 1)')
+    parser.add_argument('--bars', type=int,   default=None,
+                        help='Number of M5 bars to use (e.g. --bars 215000). Downloads if missing.')
     parser.add_argument('--sl-range', nargs=3, type=float, metavar=('MIN', 'MAX', 'STEP'),
                         help='SL range: --sl-range 15 50 5  (overrides default grid)')
     parser.add_argument('--tp-range', nargs=3, type=float, metavar=('MIN', 'MAX', 'STEP'),
@@ -209,8 +211,19 @@ def main():
 
     # Load config + data once (reused across all runs)
     config = load_config(instrument)
-    data_path = config.get('backtest', {}).get('data_path',
-                    f'../cloud-function/data/{instrument}_M5_150000bars.csv')
+    from run_skills_backtest import _ensure_data
+    from pathlib import Path as _Path
+    if args.bars is not None:
+        tf = (config.get('market_data', {}).get('resample_to')
+              or config.get('market_data', {}).get('timeframe', 'M5')).upper()
+        data_dir  = _Path(__file__).parent.parent / 'cloud-function' / 'data'
+        data_path = str(data_dir / f'{instrument}_{tf}_{args.bars}bars.csv')
+        config.setdefault('backtest', {})['data_path'] = data_path
+        print(f"   Bars override: {args.bars:,} → {data_path}")
+    else:
+        data_path = config.get('backtest', {}).get('data_path',
+                        f'../cloud-function/data/{instrument}_M5_150000bars.csv')
+    _ensure_data(data_path, config)
     df = load_historical_data(data_path)
 
     # Resample if needed
