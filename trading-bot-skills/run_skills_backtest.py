@@ -19,11 +19,13 @@ import sys
 import os
 import copy
 import argparse
+import json
 from pathlib import Path
 import pandas as pd
 import yaml
 import asyncio
 from datetime import datetime
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -79,6 +81,52 @@ def _propagate_risk_to_sl_tp(config: dict) -> None:
     for key in ('pip_size', 'stop_loss_pips', 'take_profit_pips'):
         if key in risk:
             sl_tp[key] = risk[key]
+
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    """Convert timeframe labels like M5/H1/D1 to minutes."""
+    tf = str(timeframe).strip().upper()
+    if tf.startswith('M') and tf[1:].isdigit():
+        return int(tf[1:])
+    if tf.startswith('H') and tf[1:].isdigit():
+        return int(tf[1:]) * 60
+    if tf in {'D', 'D1', '1D', 'DAY'}:
+        return 24 * 60
+    raise ValueError(f"Unsupported timeframe format: {timeframe}")
+
+
+def _parse_cli_value(raw: str) -> Any:
+    """Parse a CLI scalar with YAML semantics (bool/number/list/dict/string)."""
+    try:
+        return yaml.safe_load(raw)
+    except Exception:
+        return raw
+
+
+def _apply_set_overrides(config: dict, set_args: list[str]) -> list[tuple[str, Any]]:
+    """
+    Apply --set overrides in dot-path format:
+      --set analysis.signal_rules.require_ema=false
+      --set analysis.indicators.supertrend.multiplier=3.5
+    """
+    applied: list[tuple[str, Any]] = []
+    for item in set_args:
+        if '=' not in item:
+            raise ValueError(f"Invalid --set '{item}'. Expected key.path=value")
+        path, raw_value = item.split('=', 1)
+        keys = [k for k in path.split('.') if k]
+        if not keys:
+            raise ValueError(f"Invalid --set path in '{item}'")
+
+        value = _parse_cli_value(raw_value)
+        cursor = config
+        for key in keys[:-1]:
+            if key not in cursor or not isinstance(cursor[key], dict):
+                cursor[key] = {}
+            cursor = cursor[key]
+        cursor[keys[-1]] = value
+        applied.append((path, value))
+    return applied
 
 
 def _ensure_data(data_path: str, config: dict) -> None:
@@ -158,6 +206,84 @@ def resample_ohlcv(df: pd.DataFrame, target_minutes: int) -> pd.DataFrame:
     resampled = resampled.reset_index()  # timestamp back as column
     print(f"   Resampled M5 → M{target_minutes}: {len(resampled):,} candles")
     return resampled
+
+
+def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str, max_points: int = 3000, data_path: str = None) -> None:
+    """Persist compact chart data for native UI plotting (price, supertrend, trade markers)."""
+    try:
+        df = full_df.copy()
+        if 'timestamp' in df.columns:
+            ts = pd.to_datetime(df['timestamp'])
+        else:
+            ts = pd.to_datetime(df.index)
+        df = df.assign(_ts=ts).sort_values('_ts')
+
+        required = ['close', 'supertrend']
+        if any(col not in df.columns for col in required):
+            print('⚠️ Native chart data skipped: required columns missing')
+            return
+
+        if len(df) > max_points:
+            stride = max(1, len(df) // max_points)
+            df = df.iloc[::stride].copy()
+
+        def _safe_float(val, default=0.0):
+            try:
+                f = float(val)
+                return f if f == f else default  # NaN check
+            except (TypeError, ValueError):
+                return default
+
+        series = []
+        for _, row in df.iterrows():
+            c = _safe_float(row.get('close', 0))
+            entry = {
+                'timestamp': row['_ts'].isoformat(),
+                'open': _safe_float(row.get('open', c), c),
+                'high': _safe_float(row.get('high', c), c),
+                'low': _safe_float(row.get('low', c), c),
+                'close': c,
+                'supertrend': _safe_float(row.get('supertrend', 0)),
+                'supertrend_direction': int(row.get('supertrend_direction', 1) or 1),
+                'st_upper': _safe_float(row.get('st_upper', 0)),
+                'st_lower': _safe_float(row.get('st_lower', 0)),
+            }
+            series.append(entry)
+
+        trades_payload = []
+        for t in (results.get('trades') or []):
+            trades_payload.append({
+                'entry_time': str(t.get('entry_time')) if t.get('entry_time') is not None else None,
+                'entry_price': float(t.get('entry_price', 0) or 0),
+                'exit_time': str(t.get('exit_time')) if t.get('exit_time') is not None else None,
+                'exit_price': float(t.get('exit_price', 0) or 0),
+                'side': str(t.get('side', '')),
+                'pnl': float(t.get('pnl', 0) or 0),
+                'exit_reason': str(t.get('exit_reason', '')),
+            })
+
+        meta = {
+            'bars': len(series),
+            'trades': len(trades_payload),
+            'generated_at': datetime.utcnow().isoformat(),
+        }
+        if data_path:
+            meta['data_path'] = str(data_path)
+        payload = {
+            'series': series,
+            'trades': trades_payload,
+            'meta': meta,
+        }
+        out_path = Path(out_dir) / 'chart_data.json'
+        out_path.write_text(json.dumps(payload))
+        print(f'📄 Native chart data saved: {out_path}')
+        # Write sidecar so legacy fallback can also find the exact source file
+        if data_path:
+            (Path(out_dir) / 'data_source.json').write_text(
+                json.dumps({'data_path': str(data_path)})
+            )
+    except Exception as exc:
+        print(f'⚠️ Native chart data generation skipped: {exc}')
 
 
 async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: bool = False, run_id: str = None, buy_only: bool = False):
@@ -429,7 +555,17 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
     reporting.save_report(report, 'report')
     reporting.save_trades_csv(results, 'trades')
     reporting.generate_html_report(report, 'report')
-    reporting.generate_excel_report(report, results, 'analysis')
+    report_html = Path(out_dir) / 'report.html'
+    chart_html = Path(out_dir) / 'chart_st_trades.html'
+    if report_html.exists() and not chart_html.exists():
+        # Fallback artifact so the API/UI chart endpoint remains usable.
+        chart_html.write_text(report_html.read_text())
+    try:
+        reporting.generate_excel_report(report, results, 'analysis')
+    except Exception as exc:
+        print(f"⚠️ Excel report generation skipped: {exc}")
+
+    _write_native_chart_data(full_df, results, out_dir, data_path=config.get('backtest', {}).get('data_path'))
 
     # MTF rejection diagnostics
     if analysis.mtf_rejections:
@@ -560,6 +696,9 @@ def main():
     parser.add_argument('--bars', type=int,   default=None,
                         help='Number of M5 bars to backtest (e.g. --bars 215000). '
                              'Resolves the data file automatically and downloads if missing.')
+    parser.add_argument('--years', type=float, default=None,
+                        help='Backtest duration in years. Converts to bars based on timeframe '
+                             '(e.g. --years 2 for ~2 years). Ignored if --bars is provided.')
     parser.add_argument('--shuffle-signals', action='store_true', default=False,
                         help='Randomise signal direction (BUY/SELL) before execution. '
                              'If P&L stays high under shuffle, edge comes from R:R ratio '
@@ -583,6 +722,9 @@ def main():
                              'Use /data/results inside Docker.')
     parser.add_argument('--run-id', default=None,
                         help='Optional run id override (used by API job runner).')
+    parser.add_argument('--set', dest='set_values', action='append', default=[],
+                        help='Generic config override: --set key.path=value. '
+                             'Can be repeated for multiple overrides.')
     args = parser.parse_args()
 
     print("🧪 SKILLS-BASED BACKTEST")
@@ -618,6 +760,16 @@ def main():
         config.setdefault('analysis', {}).setdefault('indicators', {}).setdefault('supertrend', {})['atr_period'] = args.st_period
     if args.st_mult is not None:
         config.setdefault('analysis', {}).setdefault('indicators', {}).setdefault('supertrend', {})['multiplier'] = args.st_mult
+    applied_set_overrides = _apply_set_overrides(config, args.set_values)
+    # Ensure risk overrides remain the source of truth for analysis.sl_tp.
+    _propagate_risk_to_sl_tp(config)
+
+    # --years convenience mode (bar-count derived from configured timeframe).
+    if args.bars is None and args.years is not None:
+        timeframe = (config.get('market_data', {}).get('resample_to')
+                     or config.get('market_data', {}).get('timeframe', 'M5'))
+        minutes_per_bar = _timeframe_to_minutes(timeframe)
+        args.bars = int((args.years * 365 * 24 * 60) / minutes_per_bar)
 
     print("\n✅ Configuration loaded")
     if args.instrument:
@@ -636,6 +788,15 @@ def main():
         print(f"   Direction: BUY only")
     if args.st_period is not None or args.st_mult is not None:
         print(f"   Supertrend: ATR={args.st_period or '(config)'} mult={args.st_mult or '(config)'}")
+    if args.years is not None:
+        if args.bars is not None:
+            print(f"   Duration: {args.years} year(s) -> {args.bars:,} bars")
+        else:
+            print(f"   Duration: {args.years} year(s)")
+    if applied_set_overrides:
+        print("   Generic overrides:")
+        for key, value in applied_set_overrides:
+            print(f"      - {key} = {value}")
     print(f"   Strategy: {config.get('analysis', {}).get('strategy', 'supertrend_vwap')}")
     print(f"   Instrument: {config.get('market_data', {}).get('instrument', 'GOLD')}")
     tf = config.get('market_data', {}).get('resample_to') or config.get('market_data', {}).get('timeframe', 'M5')
@@ -650,7 +811,9 @@ def main():
         instrument = config.get('market_data', {}).get('instrument', 'GOLD').upper()
         timeframe  = (config.get('market_data', {}).get('resample_to')
                       or config.get('market_data', {}).get('timeframe', 'M5')).upper()
-        data_dir   = Path(__file__).parent.parent / 'cloud-function' / 'data'
+        # In Docker, write generated datasets to a writable volume path.
+        data_dir   = Path(os.getenv('BACKTEST_DATA_DIR', '/data/price_data'))
+        data_dir.mkdir(parents=True, exist_ok=True)
         data_path  = str(data_dir / f'{instrument}_{timeframe}_{args.bars}bars.csv')
         config.setdefault('backtest', {})['data_path'] = data_path
         print(f"   Bars override: {args.bars:,} → {data_path}")

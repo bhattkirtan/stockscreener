@@ -223,10 +223,17 @@ def _cap_error(e: CapitalError):
     raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+def _cap_env_from_request(request: Request) -> Optional[str]:
+    env = request.headers.get("X-Trading-Env", "").strip().lower()
+    if env in {"demo", "live"}:
+        return env
+    return None
+
+
 @app.get("/get_positions")
-def get_positions():
+def get_positions(request: Request):
     try:
-        return cap.get_positions()
+        return cap.get_positions(env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
@@ -241,10 +248,10 @@ class CreatePositionBody(BaseModel):
 
 
 @app.post("/create_position")
-def create_position(body: CreatePositionBody):
+def create_position(body: CreatePositionBody, request: Request):
     payload = body.model_dump(exclude_none=True)
     try:
-        return cap.create_position(payload)
+        return cap.create_position(payload, env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
@@ -256,33 +263,34 @@ class UpdatePositionBody(BaseModel):
 
 
 @app.post("/updte_position")   # typo kept for backwards compat with React client
-def update_position(body: UpdatePositionBody):
+def update_position(body: UpdatePositionBody, request: Request):
     deal_id = body.dealId
     payload = body.model_dump(exclude={"dealId"}, exclude_none=True)
     try:
-        return cap.update_position(deal_id, payload)
+        return cap.update_position(deal_id, payload, env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
 
 @app.delete("/close_position/{deal_id}")
-def close_position(deal_id: str):
+def close_position(deal_id: str, request: Request):
     try:
-        return cap.close_position(deal_id)
+        return cap.close_position(deal_id, env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
 
 @app.get("/market/{epic}")
-def market_info(epic: str):
+def market_info(epic: str, request: Request):
     try:
-        return cap.get_market(epic)
+        return cap.get_market(epic, env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
 
 @app.get("/prices/{epic}")
 def prices(
+    request: Request,
     epic: str,
     resolution: str = Query(default="HOUR"),
     max: int = Query(default=50),
@@ -290,15 +298,15 @@ def prices(
     to_ts: Optional[str] = Query(default=None, alias="to"),
 ):
     try:
-        return cap.get_prices(epic, resolution, max, from_ts, to_ts)
+        return cap.get_prices(epic, resolution, max, from_ts, to_ts, env=_cap_env_from_request(request))
     except CapitalError as e:
         _cap_error(e)
 
 
 @app.get("/markets")
-def markets(searchTerm: Optional[str] = Query(default=None)):
+def markets(request: Request, searchTerm: Optional[str] = Query(default=None)):
     try:
-        result = cap.get_markets(searchTerm)
+        result = cap.get_markets(searchTerm, env=_cap_env_from_request(request))
         market_list = result.get("markets", [])
 
         # Exclude closed markets before sending payload to the UI.

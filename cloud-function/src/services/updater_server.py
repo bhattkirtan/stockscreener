@@ -43,6 +43,23 @@ DATA_DIR = os.getenv("DATA_DIR", "/data")
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 NEWS_INTERVAL = int(os.getenv("NEWS_UPDATE_INTERVAL_MINUTES", "5"))
 
+# Default configured instruments for scheduler controls.
+# This endpoint is read by the optimizer UI and should always be available.
+DEFAULT_DATASETS = [
+    ("EURUSD", "M15", 10000),
+    ("EURUSD", "M15", 2000),
+    ("EURGBP", "M15", 5000),
+    ("GBPUSD", "M15", 5000),
+    ("GOLD", "M15", 10000),
+    ("GOLD", "M5", 5000),
+    ("GOLD", "M5", 3000),
+    ("SILVER", "M15", 5000),
+    ("BITCOIN", "M15", 10000),
+    ("BITCOIN", "M5", 5000),
+    ("US30", "M15", 5000),
+    ("NASDAQ", "M15", 5000),
+]
+
 # ── Scheduler singleton ───────────────────────────────────────────────────────
 
 _scheduler = DataUpdateScheduler(
@@ -123,12 +140,15 @@ def data_status():
 
 @app.get("/instruments")
 def list_instruments():
-    from src.services.data_update_scheduler import DEFAULT_DATASETS
     instruments = [
-        {"epic": epic, "resolution": res, "bars": bars}
+        {"epic": epic, "timeframe": res, "bars": bars}
         for epic, res, bars in DEFAULT_DATASETS
     ]
-    return {"instruments": instruments, "count": len(instruments)}
+    return {
+        "instruments": instruments,
+        "total": len(instruments),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @app.post("/instruments")

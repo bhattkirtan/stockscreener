@@ -34,12 +34,14 @@ def calculate_ema(series: pd.Series, period: int) -> pd.Series:
 
 def calculate_supertrend(
     df: pd.DataFrame, period: int, multiplier: float
-) -> Tuple[pd.Series, pd.Series]:
+) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     Supertrend indicator.
     Returns:
-        supertrend_value (pd.Series): Supertrend line price
-        direction       (pd.Series): +1 = uptrend, -1 = downtrend
+        supertrend_value (pd.Series): Active Supertrend line (lower band when up, upper when down)
+        direction        (pd.Series): +1 = uptrend, -1 = downtrend
+        final_upper      (pd.Series): Upper band (resistance / bearish line)
+        final_lower      (pd.Series): Lower band (support / bullish line)
     """
     atr = calculate_atr(df, period)
     hl_avg = (df['high'] + df['low']) / 2
@@ -75,7 +77,7 @@ def calculate_supertrend(
 
         supertrend.iloc[i] = final_lower.iloc[i] if direction.iloc[i] == 1 else final_upper.iloc[i]
 
-    return supertrend, direction
+    return supertrend, direction, final_upper, final_lower
 
 
 def calculate_vwap(df: pd.DataFrame) -> pd.Series:

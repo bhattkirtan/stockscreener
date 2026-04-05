@@ -22,8 +22,13 @@ CAPITAL_URLS = {
 _session_cache: Dict[str, Any] = {}   # {env: {token, account_id, expires_at}}
 
 
-def _base_url() -> str:
-    env = os.getenv("CAPITAL_ENV", "demo").lower()
+def _resolve_env(env: Optional[str] = None) -> str:
+    selected = (env or os.getenv("CAPITAL_ENV", "demo")).lower()
+    return selected if selected in CAPITAL_URLS else "demo"
+
+
+def _base_url(env: Optional[str] = None) -> str:
+    env = _resolve_env(env)
     return CAPITAL_URLS.get(env, CAPITAL_URLS["demo"])
 
 
@@ -35,15 +40,15 @@ def _credentials():
     }
 
 
-def _get_session(force: bool = False) -> tuple[str, str]:
+def _get_session(force: bool = False, env: Optional[str] = None) -> tuple[str, str]:
     """Return (CST token, X-SECURITY-TOKEN). Re-authenticates if expired."""
-    env = os.getenv("CAPITAL_ENV", "demo")
+    env = _resolve_env(env)
     cached = _session_cache.get(env, {})
 
     if not force and cached.get("expires_at", 0) > time.time() + 60:
         return cached["cst"], cached["security"]
 
-    base = _base_url()
+    base = _base_url(env)
     creds = _credentials()
     resp = requests.post(
         f"{base}/api/v1/session",
@@ -65,8 +70,8 @@ def _get_session(force: bool = False) -> tuple[str, str]:
     return cst, security
 
 
-def _headers() -> Dict[str, str]:
-    cst, security = _get_session()
+def _headers(env: Optional[str] = None) -> Dict[str, str]:
+    cst, security = _get_session(env=env)
     return {
         "X-CAP-API-KEY": _credentials()["apiKey"],
         "CST": cst,
@@ -75,23 +80,24 @@ def _headers() -> Dict[str, str]:
     }
 
 
-def _request(method: str, path: str, **kwargs) -> Any:
+def _request(method: str, path: str, env: Optional[str] = None, **kwargs) -> Any:
     """Make an authenticated request; retry once on 401."""
-    base = _base_url()
+    selected_env = _resolve_env(env)
+    base = _base_url(selected_env)
     try:
         resp = requests.request(
             method,
             f"{base}{path}",
-            headers=_headers(),
+            headers=_headers(selected_env),
             timeout=15,
             **kwargs,
         )
         if resp.status_code == 401:
-            _get_session(force=True)
+            _get_session(force=True, env=selected_env)
             resp = requests.request(
                 method,
                 f"{base}{path}",
-                headers=_headers(),
+                headers=_headers(selected_env),
                 timeout=15,
                 **kwargs,
             )
@@ -114,38 +120,39 @@ class CapitalError(Exception):
 
 # ── Public proxy functions ────────────────────────────────────────────────────
 
-def get_positions() -> Dict:
-    return _request("GET", "/api/v1/positions")
+def get_positions(env: Optional[str] = None) -> Dict:
+    return _request("GET", "/api/v1/positions", env=env)
 
 
-def create_position(payload: Dict) -> Dict:
-    return _request("POST", "/api/v1/positions", json=payload)
+def create_position(payload: Dict, env: Optional[str] = None) -> Dict:
+    return _request("POST", "/api/v1/positions", json=payload, env=env)
 
 
-def update_position(deal_id: str, payload: Dict) -> Dict:
-    return _request("PUT", f"/api/v1/positions/{deal_id}", json=payload)
+def update_position(deal_id: str, payload: Dict, env: Optional[str] = None) -> Dict:
+    return _request("PUT", f"/api/v1/positions/{deal_id}", json=payload, env=env)
 
 
-def close_position(deal_id: str) -> Dict:
-    return _request("DELETE", f"/api/v1/positions/{deal_id}")
+def close_position(deal_id: str, env: Optional[str] = None) -> Dict:
+    return _request("DELETE", f"/api/v1/positions/{deal_id}", env=env)
 
 
-def get_market(epic: str) -> Dict:
-    return _request("GET", f"/api/v1/markets/{epic}")
+def get_market(epic: str, env: Optional[str] = None) -> Dict:
+    return _request("GET", f"/api/v1/markets/{epic}", env=env)
 
 
 def get_prices(epic: str, resolution: str = "HOUR", max_points: int = 50,
-               from_ts: Optional[str] = None, to_ts: Optional[str] = None) -> Dict:
+               from_ts: Optional[str] = None, to_ts: Optional[str] = None,
+               env: Optional[str] = None) -> Dict:
     params: Dict[str, Any] = {"resolution": resolution, "max": max_points}
     if from_ts:
         params["from"] = from_ts
     if to_ts:
         params["to"] = to_ts
-    return _request("GET", f"/api/v1/prices/{epic}", params=params)
+    return _request("GET", f"/api/v1/prices/{epic}", params=params, env=env)
 
 
-def get_markets(search_term: Optional[str] = None) -> Dict:
+def get_markets(search_term: Optional[str] = None, env: Optional[str] = None) -> Dict:
     params = {}
     if search_term:
         params["searchTerm"] = search_term
-    return _request("GET", "/api/v1/markets", params=params)
+    return _request("GET", "/api/v1/markets", params=params, env=env)

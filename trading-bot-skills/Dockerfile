@@ -15,14 +15,17 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     pandas \
     numpy \
+    pytz \
     pyyaml \
     requests \
+    cachetools \
     python-dotenv \
     websockets \
     feedparser \
     beautifulsoup4 \
     lxml \
     openpyxl \
+    xlsxwriter \
     scipy \
     plotly \
     dash \
@@ -35,7 +38,7 @@ COPY core/         ./core/
 COPY skills/       ./skills/
 COPY orchestrator/ ./orchestrator/
 COPY config/       ./config/
-COPY run_skills_backtest.py view_trades.py backtest_api.py bot_control_api.py ./
+COPY run_skills_backtest.py fetch_data.py view_trades.py backtest_api.py bot_control_api.py ./
 
 # Persistent data dirs (overridden by volumes in docker-compose)
 RUN useradd -m botuser \

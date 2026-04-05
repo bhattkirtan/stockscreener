@@ -291,7 +291,8 @@ class RiskSkill(Skill):
                 correlation_id=event.correlation_id
             )
         )
-        print(f"✅ Risk approved: {signal} @ entry={entry_price} size={position_size} SL={stop_loss} TP={take_profit}")
+        # print only in debug mode — expected to be very noisy during live trading
+        #print(f"✅ Risk approved: {signal} @ entry={entry_price} size={position_size} SL={stop_loss} TP={take_profit}")
     
     async def _publish_risk_rejected(self, event: 'Event', reason: str):
         """Publish RISK_REJECTED event"""
@@ -425,7 +426,8 @@ class RiskSkill(Skill):
             'close_price': close_price
         }
         
-        print(f"📝 Updated last closed position: {direction} closed at {close_reason}")
+        # print only in debug mode — expected to be very noisy during live trading
+        # print(f"📝 Updated last closed position: {direction} closed at {close_reason}")
     
     def validate_config(self) -> bool:
         """Validate risk skill configuration"""

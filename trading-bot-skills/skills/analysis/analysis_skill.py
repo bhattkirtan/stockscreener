@@ -313,7 +313,7 @@ class AnalysisSkill(Skill):
         df['atr'] = calculate_atr(df, self.st_period)
 
         if self.st_enabled:
-            df['supertrend'], df['supertrend_direction'] = calculate_supertrend(
+            df['supertrend'], df['supertrend_direction'], df['st_upper'], df['st_lower'] = calculate_supertrend(
                 df, self.st_period, self.st_multiplier)
 
         if self.ema_enabled:

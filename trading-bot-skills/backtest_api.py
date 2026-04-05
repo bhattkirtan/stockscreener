@@ -4,16 +4,19 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 
 DB_PATH = os.getenv("DB_PATH", "/data/trading.db")
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/data/results"))
+PRICE_DATA_DIR = Path(os.getenv("PRICE_DATA_DIR", "/data/price_data"))
 
 app = FastAPI(title="Backtest Runner API", version="1.0.0")
 
@@ -22,8 +25,30 @@ class OptimizeRequest(BaseModel):
     instrument: str = "GOLD"
     timeframe: str = "M5"
     mode: str = "quick"
-    bars: int = 215000
+    bars: Optional[int] = None
+    years: Optional[float] = None
+    set_values: Optional[list[str]] = None
     config: Optional[Dict[str, Any]] = None
+
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    tf = str(timeframe).strip().upper()
+    if tf.startswith("M") and tf[1:].isdigit():
+        return int(tf[1:])
+    if tf.startswith("H") and tf[1:].isdigit():
+        return int(tf[1:]) * 60
+    if tf in {"D", "D1", "1D", "DAY"}:
+        return 24 * 60
+    return 5
+
+
+def _resolve_bars(bars: Optional[int], years: Optional[float], timeframe: str) -> int:
+    if isinstance(bars, int) and bars > 0:
+        return bars
+    if years is not None and years > 0:
+        minutes_per_bar = _timeframe_to_minutes(timeframe)
+        return max(1, int((years * 365 * 24 * 60) / minutes_per_bar))
+    return 215000
 
 
 def _utc_now() -> str:
@@ -67,6 +92,7 @@ def _row_to_run(row: sqlite3.Row) -> Dict[str, Any]:
         "instrument": row["instrument"],
         "timeframe": row["timeframe"],
         "mode": row["mode"],
+        "bars": row["bars"],
         "created_at": row["created_at"],
         "start_time": row["start_time"],
         "end_time": row["end_time"],
@@ -95,6 +121,182 @@ def _load_report(instrument: str, run_id: str) -> Dict[str, Any]:
     return json.loads(report_file.read_text())
 
 
+def _run_dir(instrument: str, run_id: str) -> Path:
+    return RESULTS_DIR / instrument.upper() / run_id
+
+
+def _compact_equity_curve(equity_curve: list[Dict[str, Any]], max_points: int = 1200) -> list[Dict[str, Any]]:
+    """Downsample equity points to keep API payloads responsive for UI charts."""
+    if not equity_curve or len(equity_curve) <= max_points:
+        return equity_curve
+    stride = max(1, len(equity_curve) // max_points)
+    sampled = equity_curve[::stride]
+    if sampled[-1] != equity_curve[-1]:
+        sampled.append(equity_curve[-1])
+    return sampled
+
+
+def _build_reporting_payload(report: Dict[str, Any], instrument: str, run_id: str) -> Dict[str, Any]:
+    run_dir = RESULTS_DIR / instrument / run_id
+    return {
+        "summary": report.get("summary", {}),
+        "statistics": report.get("statistics", {}),
+        "equity_curve": _compact_equity_curve(report.get("equity_curve", [])),
+        "drawdown_analysis": report.get("drawdown_analysis", {}),
+        "trade_distribution": report.get("trade_distribution", {}),
+        "monthly_performance": report.get("monthly_performance", []),
+        "artifacts": {
+            "report_json": str((run_dir / "report.json").name),
+            "trades_csv": str((run_dir / "trades.csv").name),
+            "report_html": str((run_dir / "report.html").name),
+            "analysis_xlsx": str((run_dir / "analysis.xlsx").name),
+            "chart_st_trades_html": str((run_dir / "chart_st_trades.html").name),
+            "chart_data_json": str((run_dir / "chart_data.json").name),
+        },
+    }
+
+
+def _load_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
+    data_file = RESULTS_DIR / instrument.upper() / run_id / "chart_data.json"
+    if not data_file.exists():
+        raise FileNotFoundError(f"Missing chart data file: {data_file}")
+    return json.loads(data_file.read_text())
+
+
+def _load_trades_csv(instrument: str, run_id: str) -> list[Dict[str, Any]]:
+    trades_file = _run_dir(instrument, run_id) / "trades.csv"
+    if not trades_file.exists():
+        return []
+    rows: list[Dict[str, Any]] = []
+    with trades_file.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def _build_legacy_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
+    """Build chart data from the saved historical price CSV + trades.csv.
+
+    This is used when chart_data.json was not generated at run time (old runs).
+    We read the real OHLC candles directly from the downloaded price file so the
+    chart shows actual market prices rather than the equity curve.
+    """
+    run = get_run(run_id)
+    timeframe = str(run.get("timeframe", "M5")).upper()
+    bars = int(run.get("bars", 5000) or 5000)
+    instr = instrument.upper()
+
+    # Check for data_source.json written by the backtest runner (most accurate)
+    run_dir = RESULTS_DIR / instr / run_id
+    data_source_file = run_dir / "data_source.json"
+    sourced_path = None
+    if data_source_file.exists():
+        try:
+            import json as _json
+            sourced_path = Path(_json.loads(data_source_file.read_text()).get("data_path", ""))
+        except Exception:
+            sourced_path = None
+
+    # Find the best matching price file: data_source.json > exact bar count > any candidate
+    price_dir = PRICE_DATA_DIR
+    candidates = sorted(price_dir.glob(f"{instr}_{timeframe}_*.csv"))
+    exact = price_dir / f"{instr}_{timeframe}_{bars}bars.csv"
+    if sourced_path and sourced_path.exists():
+        price_file = sourced_path
+    elif exact.exists():
+        price_file = exact
+    else:
+        price_file = candidates[-1] if candidates else None
+
+    trades = []
+    for t in _load_trades_csv(instrument, run_id):
+        trades.append(
+            {
+                "entry_time": t.get("entry_time") or None,
+                "entry_price": float(t.get("entry_price", 0) or 0),
+                "exit_time": t.get("exit_time") or None,
+                "exit_price": float(t.get("exit_price", 0) or 0),
+                "side": str(t.get("side", "")),
+                "pnl": float(t.get("pnl", 0) or 0),
+                "exit_reason": str(t.get("exit_reason", "")),
+            }
+        )
+
+    if price_file is None or not price_file.exists():
+        raise FileNotFoundError(f"No price data file found for {instr} {timeframe}")
+
+    import pandas as pd
+    import sys
+    sys.path.insert(0, "/app")
+    from core.indicators import calculate_supertrend
+
+    df = pd.read_csv(price_file)
+    # Normalise timestamp column name
+    for col in ("timestamp", "time", "date"):
+        if col in df.columns:
+            df = df.rename(columns={col: "timestamp"})
+            break
+    df = df.dropna(subset=["timestamp"])
+    df["close"] = pd.to_numeric(df.get("close", 0), errors="coerce").fillna(0)
+    df["open"]  = pd.to_numeric(df.get("open",  df["close"]), errors="coerce").fillna(df["close"])
+    df["high"]  = pd.to_numeric(df.get("high",  df["close"]), errors="coerce").fillna(df["close"])
+    df["low"]   = pd.to_numeric(df.get("low",   df["close"]), errors="coerce").fillna(df["close"])
+    if "volume" not in df.columns:
+        df["volume"] = 0
+
+    # Calculate supertrend using default params (atr_period=7, multiplier=2.0)
+    try:
+        st_values, st_dir, st_upper, st_lower = calculate_supertrend(df, period=7, multiplier=2.0)
+        df["supertrend"] = st_values.fillna(0)
+        df["supertrend_direction"] = st_dir.fillna(1).astype(int)
+        df["st_upper"] = st_upper.fillna(0)
+        df["st_lower"] = st_lower.fillna(0)
+    except Exception:
+        df["supertrend"] = 0
+        df["supertrend_direction"] = 1
+        df["st_upper"] = 0
+        df["st_lower"] = 0
+
+    def _sf(val, default=0.0):
+        try:
+            f = float(val)
+            return f if f == f else default
+        except (TypeError, ValueError):
+            return default
+
+    series = []
+    for _, row in df.iterrows():
+        ts = str(row["timestamp"])
+        if not ts or ts in ("nan", "None"):
+            continue
+        c = _sf(row["close"])
+        series.append(
+            {
+                "timestamp": ts,
+                "open": _sf(row["open"], c),
+                "high": _sf(row["high"], c),
+                "low": _sf(row["low"], c),
+                "close": c,
+                "supertrend": _sf(row["supertrend"]),
+                "supertrend_direction": int(row["supertrend_direction"]),
+                "st_upper": _sf(row["st_upper"]),
+                "st_lower": _sf(row["st_lower"]),
+            }
+        )
+
+    return {
+        "series": series,
+        "trades": trades,
+        "meta": {
+            "bars": len(series),
+            "trades": len(trades),
+            "generated_at": _utc_now(),
+            "source": "price-csv-fallback",
+        },
+    }
+
+
 def _to_ui_results(report: Dict[str, Any], run: Dict[str, Any]) -> Dict[str, Any]:
     summary = report.get("summary", {})
     stats = report.get("statistics", {})
@@ -115,6 +317,8 @@ def _to_ui_results(report: Dict[str, Any], run: Dict[str, Any]) -> Dict[str, Any
         "win_rate": win_rate,
     }
 
+    instrument = str(run.get("instrument", "GOLD")).upper()
+    run_id = str(run.get("run_id", ""))
     return {
         "top_10_strategies": [top],
         "overall_best": {
@@ -157,6 +361,7 @@ def _to_ui_results(report: Dict[str, Any], run: Dict[str, Any]) -> Dict[str, Any
             "avg_win": float(stats.get("avg_win", 0) or 0),
             "avg_loss": float(stats.get("avg_loss", 0) or 0),
         },
+        "reporting": _build_reporting_payload(report, instrument, run_id),
     }
 
 
@@ -169,6 +374,8 @@ def _runner_thread(run_id: str) -> None:
     run = dict(row)
     instrument = str(run["instrument"]).upper()
     bars = int(run["bars"])
+    config = json.loads(run["config_json"]) if run.get("config_json") else {}
+    set_values = config.get("set_values") or []
 
     _save_run(run_id, status="running", start_time=_utc_now(), error=None)
 
@@ -188,6 +395,8 @@ def _runner_thread(run_id: str) -> None:
         "--run-id",
         run_id,
     ]
+    for item in set_values:
+        cmd.extend(["--set", str(item)])
 
     try:
         with log_file.open("w") as f:
@@ -203,7 +412,15 @@ def _runner_thread(run_id: str) -> None:
             return
 
         report = _load_report(instrument, run_id)
-        ui_results = _to_ui_results(report, {"instrument": instrument, "timeframe": run["timeframe"], "bars": bars})
+        ui_results = _to_ui_results(
+            report,
+            {
+                "run_id": run_id,
+                "instrument": instrument,
+                "timeframe": run["timeframe"],
+                "bars": bars,
+            },
+        )
 
         _save_run(
             run_id,
@@ -231,7 +448,11 @@ def health() -> Dict[str, str]:
 def optimize(req: OptimizeRequest) -> Dict[str, Any]:
     run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     now = _utc_now()
-    config = req.config or req.dict()
+    resolved_bars = _resolve_bars(req.bars, req.years, req.timeframe)
+    config = req.model_dump(exclude_none=True)
+    if req.config:
+        config.update(req.config)
+    config["bars"] = resolved_bars
 
     with _conn() as conn:
         conn.execute(
@@ -246,7 +467,7 @@ def optimize(req: OptimizeRequest) -> Dict[str, Any]:
                 req.instrument.upper(),
                 req.timeframe.upper(),
                 req.mode,
-                req.bars,
+                resolved_bars,
                 json.dumps(config),
                 now,
                 now,
@@ -286,6 +507,46 @@ def get_results(run_id: str) -> Dict[str, Any]:
     if run.get("status") != "completed" or "results" not in run:
         raise HTTPException(status_code=404, detail=f"Results for run '{run_id}' not available")
     return run
+
+
+@app.get("/optimize/{run_id}/report")
+def get_report(run_id: str) -> Dict[str, Any]:
+    run = get_run(run_id)
+    instrument = str(run.get("instrument", "GOLD")).upper()
+    try:
+        return _load_report(instrument, run_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Report for run '{run_id}' not available")
+
+
+@app.get("/optimize/{run_id}/chart")
+def get_trade_chart(run_id: str):
+    run = get_run(run_id)
+    instrument = str(run.get("instrument", "GOLD")).upper()
+    run_dir = _run_dir(instrument, run_id)
+    chart_file = run_dir / "chart_st_trades.html"
+    if chart_file.exists():
+        return FileResponse(chart_file, media_type="text/html")
+
+    # Legacy fallback for historical runs that only have report.html.
+    report_html = run_dir / "report.html"
+    if report_html.exists():
+        return FileResponse(report_html, media_type="text/html")
+
+    raise HTTPException(status_code=404, detail=f"Chart for run '{run_id}' not available")
+
+
+@app.get("/optimize/{run_id}/chart-data")
+def get_trade_chart_data(run_id: str) -> Dict[str, Any]:
+    run = get_run(run_id)
+    instrument = str(run.get("instrument", "GOLD")).upper()
+    try:
+        return _load_chart_data(instrument, run_id)
+    except FileNotFoundError:
+        try:
+            return _build_legacy_chart_data(instrument, run_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Chart data for run '{run_id}' not available")
 
 
 @app.delete("/optimize/{run_id}")

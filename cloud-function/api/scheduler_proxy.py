@@ -38,7 +38,7 @@ from typing import Any, Optional
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,15 @@ def _forward(method: str, path: str, body: Any = None) -> JSONResponse:
             json=body,
             timeout=15,
         )
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {
+                "detail": "Upstream returned non-JSON response",
+                "status_code": resp.status_code,
+                "body": resp.text[:500],
+            }
+        return JSONResponse(status_code=resp.status_code, content=payload)
     except requests.exceptions.ConnectionError:
         logger.warning("data-updater not reachable at %s", url)
         return JSONResponse(
@@ -76,7 +84,15 @@ def _forward_bot_control(method: str, path: str, body: Any = None) -> JSONRespon
     url = f"{BOT_CONTROL_URL}{path}"
     try:
         resp = requests.request(method, url, json=body, timeout=20)
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {
+                "detail": "Upstream returned non-JSON response",
+                "status_code": resp.status_code,
+                "body": resp.text[:500],
+            }
+        return JSONResponse(status_code=resp.status_code, content=payload)
     except requests.exceptions.ConnectionError:
         logger.warning("bot-control not reachable at %s", url)
         return JSONResponse(
@@ -98,7 +114,15 @@ def _forward_backtest(method: str, path: str, body: Any = None) -> JSONResponse:
             json=body,
             timeout=30,
         )
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {
+                "detail": "Upstream returned non-JSON response",
+                "status_code": resp.status_code,
+                "body": resp.text[:500],
+            }
+        return JSONResponse(status_code=resp.status_code, content=payload)
     except requests.exceptions.ConnectionError:
         logger.warning("backtest-runner not reachable at %s", url)
         return JSONResponse(
@@ -107,6 +131,27 @@ def _forward_backtest(method: str, path: str, body: Any = None) -> JSONResponse:
         )
     except Exception as exc:
         logger.error("Backtest proxy error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+def _forward_backtest_raw(method: str, path: str) -> Response:
+    """Forward a request to backtest-runner and return raw body (e.g. HTML chart)."""
+    url = f"{BACKTEST_URL}{path}"
+    try:
+        resp = requests.request(method, url, timeout=30)
+        return Response(
+            status_code=resp.status_code,
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "text/plain"),
+        )
+    except requests.exceptions.ConnectionError:
+        logger.warning("backtest-runner not reachable at %s", url)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Backtest runner unavailable"},
+        )
+    except Exception as exc:
+        logger.error("Backtest raw proxy error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
 
 
@@ -181,6 +226,21 @@ def get_run(run_id: str):
 @router.get("/optimize/{run_id}/results")
 def get_run_results(run_id: str):
     return _forward_backtest("GET", f"/optimize/{run_id}/results")
+
+
+@router.get("/optimize/{run_id}/report")
+def get_run_report(run_id: str):
+    return _forward_backtest("GET", f"/optimize/{run_id}/report")
+
+
+@router.get("/optimize/{run_id}/chart")
+def get_run_chart(run_id: str):
+    return _forward_backtest_raw("GET", f"/optimize/{run_id}/chart")
+
+
+@router.get("/optimize/{run_id}/chart-data")
+def get_run_chart_data(run_id: str):
+    return _forward_backtest("GET", f"/optimize/{run_id}/chart-data")
 
 
 @router.delete("/optimize/{run_id}")
