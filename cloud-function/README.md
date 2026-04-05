@@ -315,3 +315,8 @@ gcloud functions describe capitalComService --region us-central1 --gen2
 
 Private project - All rights reserved
 
+
+
+python3 run_skills_backtest.py --instrument ETHUSD --bars 215000  --no-ema --no-sma
+
+python3 run_skills_backtest.py --instrument GOLD --bars 215000  --no-ema --no-sma

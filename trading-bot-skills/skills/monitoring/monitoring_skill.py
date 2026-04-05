@@ -9,6 +9,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from skills.base_skill import Skill, Context, SkillExecutionError
+from clients.sqlite_api import SQLiteAPIClient
 
 
 class MonitoringSkill(Skill):
@@ -24,12 +25,12 @@ class MonitoringSkill(Skill):
     
     def __init__(self, config: Dict, event_bus: Optional['EventBus'] = None):
         super().__init__(config, event_bus)
-        
+
         self.track_pnl = config.get('track_pnl', True)
         self.track_win_rate = config.get('track_win_rate', True)
         self.track_drawdown = config.get('track_drawdown', True)
         self.update_interval = config.get('update_interval_seconds', 60)
-        
+
         # Metrics
         self.total_pnl = 0.0
         self.daily_pnl = 0.0
@@ -38,10 +39,16 @@ class MonitoringSkill(Skill):
         self.losing_trades = 0
         self.max_drawdown = 0.0
         self.peak_equity = 10000.0  # Starting capital
-        
+
         # Last heartbeat
         self.last_heartbeat = datetime.now()
-        
+
+        # SQLite — bot_status persistence
+        collections = config.get('collections', {})
+        self.bot_id = config.get('bot_id', 'gold_m5_bot')
+        self.status_collection = collections.get('bot_status', 'bot_status')
+        self._db = SQLiteAPIClient()
+
         print(f"📊 Monitoring Skill initialized: track_pnl={self.track_pnl}")
     
     async def execute(self, context: Context) -> Context:
@@ -77,6 +84,7 @@ class MonitoringSkill(Skill):
         if (datetime.now() - self.last_heartbeat).total_seconds() > 30:
             print(f"💓 Heartbeat: {self.total_trades} trades, P&L: ${self.total_pnl:.2f}, DD: {self.max_drawdown:.1f}%")
             self.last_heartbeat = datetime.now()
+            self._write_bot_status('RUNNING')
         
         return context
     
@@ -138,7 +146,24 @@ class MonitoringSkill(Skill):
             self.losing_trades += 1
         
         print(f"📈 Trade closed: {deal_id} P&L=${pnl:.2f}, Total=${self.total_pnl:.2f}, Win Rate={self.winning_trades}/{self.total_trades}")
+        self._write_bot_status('RUNNING')
     
+    def _write_bot_status(self, status: str) -> None:
+        win_rate = (self.winning_trades / self.total_trades) if self.total_trades > 0 else 0.0
+        self._db.update_bot_status(
+            collection=self.status_collection,
+            bot_id=self.bot_id,
+            status_data={
+                'bot_id': self.bot_id,
+                'status': status,
+                'total_trades': self.total_trades,
+                'open_positions_count': 0,
+                'win_rate': round(win_rate * 100, 2),
+                'total_pnl': round(self.total_pnl, 2),
+                'max_drawdown': round(self.max_drawdown, 2),
+            },
+        )
+
     def get_metrics(self) -> Dict:
         """Get current metrics"""
         win_rate = (self.winning_trades / self.total_trades) if self.total_trades > 0 else 0.0

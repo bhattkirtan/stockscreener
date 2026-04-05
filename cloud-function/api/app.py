@@ -31,17 +31,22 @@ Run:
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database as db
 import capital_proxy as cap
 from capital_proxy import CapitalError
+import external_data
+import scheduler_proxy
+import live_report as lr
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -51,6 +56,17 @@ logger = logging.getLogger(__name__)
 LOG_DIR = Path(os.getenv("LOG_DIR", "/data/logs"))
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/data/results"))
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+# UI_PASSWORD is set via env var in the Docker .env file.
+# A random session token is minted once at startup; clients receive it on
+# successful login and must send it as:  Authorization: Bearer <token>
+# Restarting the container invalidates all active sessions.
+
+UI_PASSWORD = os.getenv("UI_PASSWORD", "")
+_SESSION_TOKEN: str = secrets.token_hex(32)
+
+_PUBLIC_PATHS = {"/", "/auth/login"}
+
 app = FastAPI(title="Trading Bot API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -58,13 +74,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(external_data.router)
+app.include_router(scheduler_proxy.router)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not UI_PASSWORD or request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not secrets.compare_digest(token, _SESSION_TOKEN):
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
 
 
 @app.on_event("startup")
 def startup():
     db.init_db()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("DB initialised, log dir ready")
+    auth_status = "enabled" if UI_PASSWORD else "disabled (UI_PASSWORD not set)"
+    logger.info(f"DB initialised, log dir ready — auth {auth_status}")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -72,6 +101,21 @@ def startup():
 @app.get("/")
 def health():
     return {"status": "ok", "service": "trading-bot-api", "version": "2.0.0"}
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+class LoginBody(BaseModel):
+    password: str
+
+@app.post("/auth/login")
+def login(body: LoginBody):
+    if not UI_PASSWORD:
+        # Auth disabled — return a dummy token so the frontend still works
+        return {"token": "no-auth"}
+    if secrets.compare_digest(body.password, UI_PASSWORD):
+        return {"token": _SESSION_TOKEN}
+    raise HTTPException(status_code=401, detail="Invalid password")
 
 
 # ── Bot monitoring ────────────────────────────────────────────────────────────
@@ -254,7 +298,18 @@ def prices(
 @app.get("/markets")
 def markets(searchTerm: Optional[str] = Query(default=None)):
     try:
-        return cap.get_markets(searchTerm)
+        result = cap.get_markets(searchTerm)
+        market_list = result.get("markets", [])
+
+        # Exclude closed markets before sending payload to the UI.
+        open_markets = [m for m in market_list if str(m.get("marketStatus", "")).upper() != "CLOSED"]
+        result["markets"] = open_markets
+
+        movers_source = [m for m in open_markets if m.get("percentageChange") is not None]
+        sorted_by_change = sorted(movers_source, key=lambda m: m.get("percentageChange", 0), reverse=True)
+        result["topRisers"] = sorted_by_change[:10]
+        result["topFallers"] = sorted_by_change[-10:][::-1]
+        return result
     except CapitalError as e:
         _cap_error(e)
 
@@ -308,6 +363,35 @@ def backtest_run_detail(instrument: str, run_id: str):
         raise HTTPException(status_code=404, detail=f"Run not found: {instrument}/{run_id}")
     return json.loads(report_path.read_text())
 
+
+# ── Live performance report ───────────────────────────────────────────────────
+
+@app.get("/live/report")
+def live_report(
+    bot_id: str = Query(default="gold_m5_bot"),
+    initial_capital: float = Query(default=10000.0),
+):
+    """Performance report computed from live trade_history — same format as backtest report.json."""
+    return lr.get_live_report(bot_id=bot_id, initial_capital=initial_capital)
+
+
+@app.get("/live/trades")
+def live_trades(
+    bot_id: str = Query(default="gold_m5_bot"),
+    epic: Optional[str] = Query(default=None),
+    limit: int = Query(default=500, le=5000),
+):
+    """Closed trades from trade_history, newest first."""
+    trades = db.kv_get_all("trade_history")
+    if bot_id and bot_id != "all":
+        trades = [t for t in trades if t.get("bot_id", bot_id) == bot_id]
+    if epic:
+        trades = [t for t in trades if t.get("epic") == epic]
+    trades = trades[:limit]
+    return {"trades": trades, "count": len(trades)}
+
+
+# ── Backtest results ──────────────────────────────────────────────────────────
 
 @app.get("/backtest/trades/{instrument}/{run_id}")
 def backtest_trades(instrument: str, run_id: str, limit: int = Query(default=500, le=10000)):

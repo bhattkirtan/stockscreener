@@ -1,21 +1,15 @@
-# Trading Bot — Docker Compose for Hetzner VM
+# Stock Screener — Docker Compose
 #
 # Services:
-#   api              — FastAPI: bot monitoring + Capital.com proxy + backtest API  → :8000 (internal)
-#   nginx            — React UI + /api reverse proxy                               → :80
-#   bot              — Live trading bot (demo/live mode)                           → internal
-#   backtest-viewer  — Dash trade viewer UI                                        → :8050
-#   react-builder    — One-off: build React into react_dist volume    (profile=build)
-#   backtest-runner  — One-off: run a backtest and save results       (profile=backtest)
+#   api           — FastAPI: Capital.com proxy + bot monitoring  → :8000 (internal)
+#   nginx         — React UI + /api reverse proxy               → :80
+#   data-updater  — Fetches calendar/news/macro → writes JSON to /data volume
+#   react-builder — One-off: build React into react_dist volume (profile=build)
 #
 # Quick start:
-#   cp .env.vm.example .env.vm && nano .env.vm
-#   docker compose --env-file .env.vm --profile build run --rm react-builder
-#   docker compose --env-file .env.vm up -d
-#
-# Run a backtest on demand:
-#   docker compose --env-file .env.vm --profile backtest run --rm backtest-runner \
-#       --instrument GOLD --tag my_run
+#   cp .env.example .env && nano .env
+#   docker compose --profile build run --rm react-builder
+#   docker compose up -d
 
 services:
 
@@ -25,11 +19,15 @@ services:
       context: ./cloud-function/api
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file: .env.vm
+    env_file: .env
     environment:
       - RESULTS_DIR=/data/results
+      - UPDATER_URL=http://data-updater:8001
+      - BACKTEST_URL=http://backtest-runner:8010
+      - BOT_CONTROL_URL=http://trading-bot:8020
     volumes:
-      - trading_data:/data            # SQLite DB, logs, and backtest results
+      - trading_data:/data
+      - ./secrets:/secrets:ro
     networks:
       - internal
     healthcheck:
@@ -38,12 +36,47 @@ services:
       timeout: 5s
       retries: 3
 
+  # ── Backtest runner (frontend-triggered optimize jobs) ────────────────────
+  backtest-runner:
+    build:
+      context: ./trading-bot-skills
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - RESULTS_DIR=/data/results
+      - DB_PATH=/data/trading.db
+    command: uvicorn backtest_api:app --host 0.0.0.0 --port 8010
+    volumes:
+      - trading_data:/data
+      - ./cloud-function/data:/cloud-function/data
+    networks:
+      - internal
+
+  # ── Trading bot (live/demo process manager + scheduler) ──────────────────────
+  trading-bot:
+    build:
+      context: ./trading-bot-skills
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - DB_PATH=/data/trading.db
+      - RESULTS_DIR=/data/results
+    command: uvicorn bot_control_api:app --host 0.0.0.0 --port 8020
+    volumes:
+      - trading_data:/data
+      - ./secrets:/secrets:ro
+    networks:
+      - internal
+
   # ── React UI (nginx) ────────────────────────────────────────────────────────
   nginx:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "127.0.0.1:3000:80"
     volumes:
       - ./cloud-function/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - react_dist:/usr/share/nginx/html:ro
@@ -53,44 +86,19 @@ services:
     networks:
       - internal
 
-  # ── Live trading bot ────────────────────────────────────────────────────────
-  bot:
+  # ── Data updater (calendar / news / macro) ─────────────────────────────────
+  data-updater:
     build:
-      context: ./trading-bot-skills
-      dockerfile: Dockerfile
+      context: ./cloud-function
+      dockerfile: Dockerfile.updater
     restart: unless-stopped
-    env_file: .env.vm
+    env_file: .env
     environment:
-      - DB_PATH=/data/trading.db
+      - DATA_DIR=/data
     volumes:
       - trading_data:/data
-      - price_data:/data/price_data:ro   # large CSV files (upload separately)
     networks:
       - internal
-    command: >
-      python orchestrator/main.py --mode demo
-    depends_on:
-      api:
-        condition: service_healthy
-
-  # ── Dash trade viewer ───────────────────────────────────────────────────────
-  backtest-viewer:
-    build:
-      context: ./trading-bot-skills
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      - "8050:8050"
-    volumes:
-      - trading_data:/data
-      - price_data:/data/price_data:ro
-    networks:
-      - internal
-    command: >
-      python view_trades.py
-        --host 0.0.0.0
-        --port 8050
-        --results-dir /data/results
 
   # ── One-off: build React ────────────────────────────────────────────────────
   react-builder:
@@ -102,29 +110,15 @@ services:
     environment:
       - VITE_BOT_API_URL=/api
       - VITE_CAPITAL_API_URL=/api
+      - VITE_OPTIMIZER_API_URL=/api
+      - VITE_SCHEDULER_API_URL=/api
+      - VITE_CAPITAL_API_URL_LIVE=/api
     command: sh -c "npm ci && npm run build"
     profiles: ["build"]
 
-  # ── One-off: run a backtest ─────────────────────────────────────────────────
-  backtest-runner:
-    build:
-      context: ./trading-bot-skills
-      dockerfile: Dockerfile
-    volumes:
-      - trading_data:/data
-      - price_data:/data/price_data:ro
-    environment:
-      - RESULTS_DIR=/data/results
-    # Usage:
-    #   docker compose --env-file .env.vm --profile backtest run --rm backtest-runner \
-    #       --instrument GOLD --tag my_experiment
-    entrypoint: ["python", "run_skills_backtest.py", "--results-dir", "/data/results"]
-    profiles: ["backtest"]
-
 volumes:
-  trading_data:       # SQLite DB + logs + backtest results
-  react_dist:         # compiled React app
-  price_data:         # price CSVs (upload manually: GOLD_M5_215000bars.csv, etc.)
+  trading_data:   # SQLite DB + logs
+  react_dist:     # compiled React app
 
 networks:
   internal:

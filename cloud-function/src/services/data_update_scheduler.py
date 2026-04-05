@@ -2,7 +2,7 @@
 Data Update Scheduler
 
 Periodically updates economic calendar and news feeds.
-Saves to JSON files for API consumption.
+Saves JSON files directly to DATA_DIR for API consumption.
 
 Run as background service:
     python -m src.services.data_update_scheduler --mode production
@@ -22,7 +22,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 import schedule
 from dotenv import load_dotenv
-from google.cloud import storage
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -33,72 +32,53 @@ from src.data.fred_adapter import FREDAdapter
 
 logger = logging.getLogger(__name__)
 
+# Default data directory — matches the /data volume mounted in Docker
+DEFAULT_DATA_DIR = os.getenv("DATA_DIR", "/data")
+
 
 class DataUpdateScheduler:
     """
-    Scheduler for updating all external data feeds
-    
+    Scheduler for updating all external data feeds.
+
     Updates:
     - Economic calendar: Daily at 00:00 UTC
     - News headlines: Every 5 minutes
     - FRED macro data: Daily at 06:00 UTC
-    
-    Saves to:
-    - data/economic_calendar.json
-    - data/news_headlines.json
-    - data/macro_regime.json
+
+    Writes directly to DATA_DIR (default: /data):
+    - economic_calendar.json
+    - news_headlines.json
+    - macro_regime.json
     """
-    
+
     def __init__(
         self,
-        data_dir: str = "data",
-        calendar_update_hour: int = 0,  # Midnight UTC
+        data_dir: str = DEFAULT_DATA_DIR,
+        calendar_update_hour: int = 0,   # Midnight UTC
         news_update_minutes: int = 5,
-        fred_update_hour: int = 6,  # 6 AM UTC
-        fred_api_key: str = None
+        fred_update_hour: int = 6,       # 6 AM UTC
+        fred_api_key: str = None,
     ):
-        """
-        Initialize scheduler
-        
-        Args:
-            data_dir: Directory for JSON output files
-            calendar_update_hour: Hour (UTC) to update calendar
-            news_update_minutes: Minutes between news updates
-            fred_update_hour: Hour (UTC) to update FRED data
-            fred_api_key: FRED API key
-        """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.calendar_update_hour = calendar_update_hour
         self.news_update_minutes = news_update_minutes
         self.fred_update_hour = fred_update_hour
-        
-        # GCS configuration
-        self.gcs_bucket_name = os.getenv('GCS_BUCKET', 'double-venture-442318-k8-optimization-results')
-        self.upload_to_gcs = os.getenv('UPLOAD_TO_GCS', 'true').lower() == 'true'
-        self.storage_client = storage.Client() if self.upload_to_gcs else None
-        
-        # GCS paths
-        self.gcs_paths = {
-            'calendar': 'external-data/economic_calendar.json',
-            'news': 'external-data/news_headlines.json',
-            'macro': 'external-data/macro_regime.json'
-        }
-        
+
         # Initialize adapters
         self.news_adapter = NewsRSSAdapter()
         self.fred_adapter = FREDAdapter(api_key=fred_api_key) if fred_api_key else None
-        
+
         # Track last updates
         self.last_calendar_update = None
         self.last_news_update = None
         self.last_fred_update = None
-        
+
         # Running flag
         self.is_running = False
-        
-        logger.info("DataUpdateScheduler initialized")
+
+        logger.info(f"DataUpdateScheduler initialized → writing to {self.data_dir}")
     
     def update_calendar(self):
         """Update economic calendar"""
@@ -117,9 +97,6 @@ class DataUpdateScheduler:
             if success:
                 self.last_calendar_update = datetime.utcnow()
                 logger.info("✅ Calendar updated successfully")
-                
-                # Upload to GCS
-                self._upload_to_gcs('calendar')
             else:
                 logger.error("❌ Calendar update failed")
         
@@ -153,10 +130,7 @@ class DataUpdateScheduler:
             output_file = self.data_dir / "news_headlines.json"
             with open(output_file, 'w') as f:
                 json.dump(news_data, f, indent=2)
-            
-            # Upload to GCS
-            self._upload_to_gcs('news')
-            
+
             self.last_news_update = datetime.utcnow()
             logger.info(f"✅ News updated: {len(high_impact)} high-impact headlines")
         
@@ -204,10 +178,7 @@ class DataUpdateScheduler:
             output_file = self.data_dir / "macro_regime.json"
             with open(output_file, 'w') as f:
                 json.dump(fred_data, f, indent=2)
-            
-            # Upload to GCS
-            self._upload_to_gcs('macro')
-            
+
             self.last_fred_update = datetime.utcnow()
             logger.info(f"✅ FRED updated: {regime.regime.value} regime")
         
@@ -215,27 +186,6 @@ class DataUpdateScheduler:
             logger.error(f"FRED update error: {e}")
             import traceback
             traceback.print_exc()
-    
-    def _upload_to_gcs(self, data_type: str):
-        """Upload JSON file to GCS"""
-        if not self.upload_to_gcs or not self.storage_client:
-            logger.debug(f"GCS upload disabled for {data_type}")
-            return
-        
-        try:
-            # Get file paths
-            local_file = self.data_dir / f"{data_type if data_type == 'news_headlines' else ('economic_calendar' if data_type == 'calendar' else 'macro_regime')}.json"
-            gcs_path = self.gcs_paths[data_type]
-            
-            # Upload to GCS
-            bucket = self.storage_client.bucket(self.gcs_bucket_name)
-            blob = bucket.blob(gcs_path)
-            blob.upload_from_filename(str(local_file))
-            
-            logger.info(f"✅ Uploaded {data_type} to gs://{self.gcs_bucket_name}/{gcs_path}")
-            
-        except Exception as e:
-            logger.error(f"GCS upload error for {data_type}: {e}")
     
     def check_and_update_calendar(self):
         """Check if calendar needs update"""

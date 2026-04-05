@@ -581,6 +581,8 @@ def main():
     parser.add_argument('--results-dir', default=None,
                         help='Root directory for results (default: ./results). '
                              'Use /data/results inside Docker.')
+    parser.add_argument('--run-id', default=None,
+                        help='Optional run id override (used by API job runner).')
     args = parser.parse_args()
 
     print("🧪 SKILLS-BASED BACKTEST")
@@ -670,20 +672,23 @@ def main():
         os.environ['RESULTS_DIR'] = args.results_dir
 
     # Build run_id: timestamp + active flags so each run is uniquely named
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    flags = []
-    if args.no_ema:          flags.append('noEMA')
-    if args.no_sma:          flags.append('noSMA')
-    if args.shuffle_signals: flags.append('shuffle')
-    if args.st_period:       flags.append(f'st{args.st_period}')
-    if args.st_mult:         flags.append(f'x{args.st_mult}')
-    if args.min_hold:        flags.append(f'hold{args.min_hold}m')
-    if args.skip_hours:      flags.append(f'skip{args.skip_hours.replace(",","-")}h')
-    if args.buy_only:        flags.append('buyOnly')
-    if args.sl:              flags.append(f'sl{int(args.sl)}')
-    if args.tp:              flags.append(f'tp{int(args.tp)}')
-    if args.size:            flags.append(f'sz{args.size}')
-    run_id = '_'.join([ts] + flags) if flags else ts
+    if args.run_id:
+        run_id = args.run_id
+    else:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        flags = []
+        if args.no_ema:          flags.append('noEMA')
+        if args.no_sma:          flags.append('noSMA')
+        if args.shuffle_signals: flags.append('shuffle')
+        if args.st_period:       flags.append(f'st{args.st_period}')
+        if args.st_mult:         flags.append(f'x{args.st_mult}')
+        if args.min_hold:        flags.append(f'hold{args.min_hold}m')
+        if args.skip_hours:      flags.append(f'skip{args.skip_hours.replace(",","-")}h')
+        if args.buy_only:        flags.append('buyOnly')
+        if args.sl:              flags.append(f'sl{int(args.sl)}')
+        if args.tp:              flags.append(f'tp{int(args.tp)}')
+        if args.size:            flags.append(f'sz{args.size}')
+        run_id = '_'.join([ts] + flags) if flags else ts
 
     # Run backtest using skills
     results = asyncio.run(run_skills_backtest(df, config, shuffle_signals=args.shuffle_signals, run_id=run_id, buy_only=args.buy_only))

@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps
+COPY requirements.txt ./
+RUN pip install --no-cache-dir \
+    fastapi>=0.104.0 \
+    uvicorn[standard]>=0.24.0 \
+    requests>=2.32 \
+    feedparser>=6.0.0 \
+    schedule>=1.2.0 \
+    python-dotenv>=1.0 \
+    fredapi>=0.5.0 \
+    pandas>=2.1.4 \
+    numpy>=1.26.0
+
+COPY . .
+
+RUN useradd -m appuser && mkdir -p /data && chown -R appuser:appuser /app /data
+USER appuser
+
+EXPOSE 8001
+CMD ["uvicorn", "src.services.updater_server:app", "--host", "0.0.0.0", "--port", "8001"]

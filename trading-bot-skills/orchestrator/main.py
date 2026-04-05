@@ -72,8 +72,8 @@ def load_config(config_path: str) -> dict:
 def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
     """
     Configure root logger.
-    If Firestore storage is enabled, attach FirestoreLogHandler so all INFO+
-    logs stream to the bot_logs collection in real-time.
+    If storage is enabled, attach FirestoreLogHandler so all INFO+
+    logs stream to the bot_logs collection in SQLite in real-time.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -85,18 +85,9 @@ def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
     if not config.get('storage', {}).get('enabled', True):
         return
 
-    project_id = (
-        config.get('firestore', {}).get('project_id')
-        or os.getenv('GCP_PROJECT_ID')
-        or os.getenv('FIRESTORE_PROJECT_ID')
-    )
-    if not project_id:
-        logger.warning("⚠️ GCP_PROJECT_ID not set — Firestore log streaming disabled")
-        return
-
     try:
         from clients.log_publisher import LogPublisher, FirestoreLogHandler
-        publisher = LogPublisher(bot_id=bot_id, run_id=run_id, project_id=project_id)
+        publisher = LogPublisher(bot_id=bot_id, run_id=run_id)
         handler = FirestoreLogHandler(publisher, level=logging.INFO)
         handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(message)s'))
         logging.getLogger().addHandler(handler)
@@ -104,9 +95,9 @@ def setup_logging(config: dict, bot_id: str, run_id: str) -> None:
 
         # Keep a reference so we can stop it on shutdown
         logging.getLogger().firestore_log_publisher = publisher
-        logger.info("✅ Firestore log streaming enabled")
+        logger.info("✅ SQLite log streaming enabled")
     except Exception as e:
-        logger.warning(f"⚠️ Firestore log streaming setup failed: {e}")
+        logger.warning(f"⚠️ Log streaming setup failed: {e}")
 
 
 def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str) -> None:

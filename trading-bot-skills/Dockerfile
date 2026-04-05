@@ -11,13 +11,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
 
 WORKDIR /app
 
-# Install Python deps — base bot + viewer + backtest
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir \
-       plotly dash \
-       openpyxl \
-       scipy
+# Install Python deps — base bot + viewer + backtest + API server
+RUN pip install --no-cache-dir \
+    pandas \
+    numpy \
+    pyyaml \
+    requests \
+    python-dotenv \
+    websockets \
+    feedparser \
+    beautifulsoup4 \
+    lxml \
+    openpyxl \
+    scipy \
+    plotly \
+    dash \
+    fastapi \
+    uvicorn[standard]
 
 # Copy full source (bot + backtest + viewer scripts)
 COPY clients/      ./clients/
@@ -25,7 +35,7 @@ COPY core/         ./core/
 COPY skills/       ./skills/
 COPY orchestrator/ ./orchestrator/
 COPY config/       ./config/
-COPY run_skills_backtest.py view_trades.py ./
+COPY run_skills_backtest.py view_trades.py backtest_api.py bot_control_api.py ./
 
 # Persistent data dirs (overridden by volumes in docker-compose)
 RUN useradd -m botuser \

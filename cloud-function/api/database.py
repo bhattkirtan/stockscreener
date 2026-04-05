@@ -138,24 +138,25 @@ def log_query(
     limit: int = 100,
     filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict]:
-    """Return rows in descending order; optionally filter by JSON fields."""
+    """Return rows in descending order; filter by JSON fields via json_extract."""
+    sql = "SELECT id, doc_id, data, created_at FROM append_log WHERE collection=?"
+    params: list = [collection]
+
+    if filters:
+        for key, value in filters.items():
+            sql += f" AND json_extract(data, '$.{key}') = ?"
+            params.append(value)
+
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, doc_id, data, created_at FROM append_log "
-            "WHERE collection=? ORDER BY id DESC LIMIT ?",
-            (collection, limit * 5),   # over-fetch for in-memory filter
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
     result = []
     for row in rows:
         d = json.loads(row["data"])
         d["_id"] = row["id"]
         d["created_at"] = row["created_at"]
-        if filters:
-            if all(d.get(k) == v for k, v in filters.items()):
-                result.append(d)
-        else:
-            result.append(d)
-        if len(result) >= limit:
-            break
+        result.append(d)
     return result
