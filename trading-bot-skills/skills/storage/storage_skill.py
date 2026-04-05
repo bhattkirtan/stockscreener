@@ -10,7 +10,7 @@ import logging
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from skills.base_skill import Skill, Context, SkillExecutionError
-from clients.firestore_api import FirestoreAPIClient
+from clients.sqlite_api import SQLiteAPIClient as FirestoreAPIClient
 
 logger = logging.getLogger(__name__)
 

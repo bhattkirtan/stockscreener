@@ -1,0 +1,17 @@
+[Unit]
+Description=M1 Candle Collector — fetch yesterday's 1-min bars from Capital.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=botuser
+WorkingDirectory=/home/botuser/stockScreener/trading-bot-skills
+EnvironmentFile=/home/botuser/stockScreener/trading-bot-skills/.env
+ExecStart=/home/botuser/venv/bin/python collect_m1_candles.py --epic GOLD
+ExecStartPost=/home/botuser/venv/bin/python collect_m1_candles.py --epic EURUSD
+ExecStartPost=/home/botuser/venv/bin/python collect_m1_candles.py --epic US100
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=collect-m1

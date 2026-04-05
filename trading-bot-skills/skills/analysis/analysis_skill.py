@@ -150,17 +150,35 @@ class AnalysisSkill(Skill):
         # Pre-computed indicators (set by backtest runner to avoid O(n²) per-candle recompute)
         self.precomputed_df: Optional[pd.DataFrame] = None
 
-        # -- MTF Confluence (H1 BB + Daily SMA) ---------------------------------
+        # -- MTF Confluence (H1 + 4h + Daily BB) --------------------------------
         mtf = ind.get('mtf', {})
-        self.mtf_h1_bb_period = mtf.get('h1_bb_period', 20)
-        self.mtf_h1_bb_std    = mtf.get('h1_bb_std', 2.0)
-        self.mtf_daily_sma    = mtf.get('daily_sma_period', 20)
+        self.mtf_h1_bb_period    = mtf.get('h1_bb_period', 20)
+        self.mtf_h1_bb_std       = mtf.get('h1_bb_std', 2.0)
+        self.mtf_h4_bb_period    = mtf.get('h4_bb_period', 20)
+        self.mtf_h4_bb_std       = mtf.get('h4_bb_std', 2.0)
+        self.mtf_daily_bb_period = mtf.get('daily_bb_period', 20)
+        self.mtf_daily_bb_std    = mtf.get('daily_bb_std', 2.0)
+        self.mtf_daily_sma       = mtf.get('daily_sma_period', 20)
 
         self.require_h1_bb      = self.rules.get('require_h1_bb', False)
         self.require_daily_bias = self.rules.get('require_daily_bias', False)
         self.block_ranging_days = self.rules.get('block_ranging_days', False)
 
+        # H1 standalone BB band_pct thresholds:
+        # Block BUY  when H1 band_pct > upper_block  → price near H1 upper band (resistance)
+        # Block SELL when H1 band_pct < lower_block  → price near H1 lower band (support)
+        self.h1_bb_upper_block = self.rules.get('h1_bb_upper_block', 0.75)
+        self.h1_bb_lower_block = self.rules.get('h1_bb_lower_block', 0.25)
+
+        # MTF confluence voting gate (H1 + 4h + Daily):
+        # Each TF casts a vote if price is near a wall. Block if votes >= mtf_min_votes.
+        self.require_mtf_bb      = self.rules.get('require_mtf_bb', False)
+        self.mtf_min_votes       = self.rules.get('mtf_min_votes', 2)
+        self.mtf_bb_upper_block  = self.rules.get('mtf_bb_upper_block', 0.75)
+        self.mtf_bb_lower_block  = self.rules.get('mtf_bb_lower_block', 0.25)
+
         self.df_h1:    Optional[pd.DataFrame] = None  # set by backtest runner
+        self.df_4h:    Optional[pd.DataFrame] = None  # set by backtest runner
         self.df_daily: Optional[pd.DataFrame] = None  # set by backtest runner
         self.mtf_rejections: Dict[str, int]   = {}   # reason → count
 
@@ -493,8 +511,8 @@ class AnalysisSkill(Skill):
         else:
             return None
 
-        # -- MTF Confluence gate (H1 BB zone + Daily SMA bias) ----------------
-        if self.require_h1_bb or self.require_daily_bias:
+        # -- MTF Confluence gate (H1 BB zone + MTF voting + Daily SMA bias) -----
+        if self.require_h1_bb or self.require_mtf_bb or self.require_daily_bias:
             ts = latest.name if hasattr(latest, 'name') else None
             if ts is not None:
                 ok, reason = self._check_mtf_confluence(pd.Timestamp(ts), signal)
@@ -513,22 +531,81 @@ class AnalysisSkill(Skill):
         Lookahead-safe multi-timeframe check using .asof() on pre-indexed frames.
         Returns (allowed, rejection_reason).
         """
-        # -- H1 Bollinger Band midline trend gate --
-        # BUY only when H1 close is above the H1 BB middle (bullish momentum)
-        # SELL only when H1 close is below the H1 BB middle (bearish momentum)
+        # -- H1 Bollinger Band location gate --
+        # Concept: BB lines are price levels, not trend filters.
+        # BUY  is blocked when H1 price is near the H1 upper band (resistance overhead).
+        # SELL is blocked when H1 price is near the H1 lower band (support below).
+        # band_pct = (close - lower) / (upper - lower)
+        #   > h1_bb_upper_block (default 0.75) → price in upper zone → resistance nearby → block BUY
+        #   < h1_bb_lower_block (default 0.25) → price in lower zone → support nearby  → block SELL
         if self.require_h1_bb and self.df_h1 is not None:
             try:
-                ts_h1 = _normalize_ts(ts, self.df_h1.index)
-                h1_row    = self.df_h1.asof(ts_h1, subset=['close', 'h1_bb_middle'])
-                h1_middle = h1_row.get('h1_bb_middle', np.nan)
-                h1_close  = h1_row.get('close',         np.nan)
-                if not pd.isna(h1_middle) and not pd.isna(h1_close):
-                    if direction == 'BUY'  and h1_close < h1_middle:
-                        return False, 'h1_below_midline_long'
-                    if direction == 'SELL' and h1_close > h1_middle:
-                        return False, 'h1_above_midline_short'
+                # Subtract 1h to get the *previously completed* H1 bar (avoid look-ahead).
+                ts_h1    = _normalize_ts(ts - pd.Timedelta(hours=1), self.df_h1.index)
+                h1_row   = self.df_h1.asof(ts_h1)
+                h1_upper = h1_row.get('h1_bb_upper', np.nan)
+                h1_lower = h1_row.get('h1_bb_lower', np.nan)
+                h1_close = h1_row.get('close',        np.nan)
+                if not any(pd.isna(x) for x in [h1_upper, h1_lower, h1_close]):
+                    band_width = h1_upper - h1_lower
+                    if band_width > 0:
+                        band_pct = (h1_close - h1_lower) / band_width
+                        if direction == 'BUY'  and band_pct > self.h1_bb_upper_block:
+                            return False, 'h1_near_upper_resistance'
+                        if direction == 'SELL' and band_pct < self.h1_bb_lower_block:
+                            return False, 'h1_near_lower_support'
             except Exception:
                 pass  # Don't block if lookup fails
+
+        # -- MTF BB confluence voting gate --
+        # Each available TF (H1, 4h, Daily) votes whether price is near a wall.
+        # Signal is blocked when votes >= mtf_min_votes.
+        if self.require_mtf_bb:
+            votes = 0
+            available = 0
+
+            def _band_pct_vote(df_tf, offset_hours, upper_col, lower_col):
+                """Returns 1 if this TF votes to block, 0 otherwise. Returns None if data unavailable."""
+                try:
+                    ts_tf = _normalize_ts(ts - pd.Timedelta(hours=offset_hours), df_tf.index)
+                    row   = df_tf.asof(ts_tf)
+                    upper = row.get(upper_col, np.nan)
+                    lower = row.get(lower_col, np.nan)
+                    close = row.get('close', np.nan)
+                    if any(pd.isna(x) for x in [upper, lower, close]):
+                        return None
+                    bw = upper - lower
+                    if bw <= 0:
+                        return None
+                    bp = (close - lower) / bw
+                    if direction == 'BUY'  and bp > self.mtf_bb_upper_block:
+                        return 1
+                    if direction == 'SELL' and bp < self.mtf_bb_lower_block:
+                        return 1
+                    return 0
+                except Exception:
+                    return None
+
+            if self.df_h1 is not None:
+                v = _band_pct_vote(self.df_h1, 1, 'h1_bb_upper', 'h1_bb_lower')
+                if v is not None:
+                    available += 1
+                    votes += v
+
+            if self.df_4h is not None:
+                v = _band_pct_vote(self.df_4h, 4, 'h4_bb_upper', 'h4_bb_lower')
+                if v is not None:
+                    available += 1
+                    votes += v
+
+            if self.df_daily is not None and 'daily_bb_upper' in self.df_daily.columns:
+                v = _band_pct_vote(self.df_daily, 24, 'daily_bb_upper', 'daily_bb_lower')
+                if v is not None:
+                    available += 1
+                    votes += v
+
+            if available > 0 and votes >= self.mtf_min_votes:
+                return False, f'mtf_bb_blocked_{votes}of{available}'
 
         # -- Daily SMA bias --
         if self.require_daily_bias and self.df_daily is not None:

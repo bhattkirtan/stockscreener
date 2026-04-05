@@ -1,0 +1,325 @@
+"""
+Trading Bot FastAPI service — VM replacement for GCP Cloud Functions.
+
+Endpoints:
+  Bot monitoring (reads from SQLite):
+    GET /bot/status?bot_id=gold_m5_bot
+    GET /bot/positions?status=open&epic=GOLD
+    GET /bot/signals?epic=GOLD&limit=20&mode=all
+    GET /bot/logs/live?bot_id=...&limit=100&level=INFO&run_id=...
+    GET /logs/dates
+    GET /logs/get?date=YYYY-MM-DD&lines=100
+
+  Backtest results (reads from RESULTS_DIR volume):
+    GET /backtest/runs?instrument=GOLD        — list all run dirs
+    GET /backtest/runs/{instrument}/{run_id}  — report.json for a run
+    GET /backtest/trades/{instrument}/{run_id}— trades.csv as JSON rows
+
+  Capital.com proxy (authenticates with Capital.com API):
+    GET  /get_positions
+    POST /create_position
+    POST /updte_position          (typo kept for backwards compat)
+    DELETE /close_position/{deal_id}
+    GET  /market/{epic}
+    GET  /prices/{epic}?resolution=HOUR&max=50
+    GET  /markets?searchTerm=...
+
+Run:
+  uvicorn app:app --host 0.0.0.0 --port 8000
+"""
+
+import json
+import logging
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+import database as db
+import capital_proxy as cap
+from capital_proxy import CapitalError
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+LOG_DIR = Path(os.getenv("LOG_DIR", "/data/logs"))
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/data/results"))
+
+app = FastAPI(title="Trading Bot API", version="2.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def startup():
+    db.init_db()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info("DB initialised, log dir ready")
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "trading-bot-api", "version": "2.0.0"}
+
+
+# ── Bot monitoring ────────────────────────────────────────────────────────────
+
+@app.get("/bot/status")
+def bot_status(bot_id: str = Query(default="gold_m5_bot")):
+    data = db.kv_get("bot_status", bot_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{bot_id}' not found")
+
+    # Mark stale if no heartbeat for >2 min
+    hb = data.get("last_heartbeat")
+    if hb:
+        try:
+            last = datetime.fromisoformat(hb)
+            if datetime.utcnow() - last > timedelta(minutes=2):
+                data["is_stale"] = True
+                data["stale_reason"] = "No heartbeat in last 2 minutes"
+        except ValueError:
+            pass
+
+    return data
+
+
+@app.get("/bot/positions")
+def bot_positions(
+    status: str = Query(default="open"),
+    epic: Optional[str] = Query(default=None),
+):
+    rows = db.kv_get_all("active_positions")
+    if status != "all":
+        rows = [r for r in rows if r.get("status") == status]
+    if epic:
+        rows = [r for r in rows if r.get("epic") == epic]
+    rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
+    total_pnl = sum(r.get("pnl", r.get("realized_pnl", 0)) for r in rows)
+    return {"positions": rows, "count": len(rows), "total_pnl": round(total_pnl, 2)}
+
+
+@app.get("/bot/signals")
+def bot_signals(
+    epic: Optional[str] = Query(default=None),
+    limit: int = Query(default=20, le=100),
+    mode: str = Query(default="all"),
+):
+    filters: Dict[str, Any] = {}
+    if epic:
+        filters["epic"] = epic
+    if mode != "all":
+        filters["mode"] = mode
+    rows = db.log_query("trading_signals", limit=limit, filters=filters or None)
+    return {"signals": rows, "count": len(rows)}
+
+
+@app.get("/bot/logs/live")
+def bot_logs_live(
+    bot_id: str = Query(default="gold_m5_bot"),
+    limit: int = Query(default=100, le=1000),
+    level: Optional[str] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
+):
+    filters: Dict[str, Any] = {"bot_id": bot_id}
+    if level:
+        filters["level"] = level.upper()
+    if run_id:
+        filters["run_id"] = run_id
+    rows = db.log_query("bot_logs", limit=limit, filters=filters)
+    return {"logs": rows, "count": len(rows)}
+
+
+@app.get("/logs/dates")
+def log_dates():
+    dates = sorted(
+        {p.name for p in LOG_DIR.iterdir() if p.is_dir()},
+        reverse=True,
+    )[:30]
+    return {"dates": dates, "count": len(dates)}
+
+
+@app.get("/logs/get")
+def log_get(
+    date: str = Query(default=None),
+    lines: int = Query(default=100, le=1000),
+    fmt: str = Query(default="json", alias="format"),
+):
+    if not date:
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+    day_dir = LOG_DIR / date
+    if not day_dir.exists():
+        raise HTTPException(status_code=404, detail=f"No logs for {date}")
+
+    log_lines = []
+    for f in sorted(day_dir.glob("*.log")):
+        log_lines.extend(f.read_text().splitlines())
+    log_lines = log_lines[-lines:]
+
+    if fmt == "text":
+        return "\n".join(log_lines)
+    return {"date": date, "lines": log_lines, "total_lines": len(log_lines)}
+
+
+# ── Capital.com proxy ─────────────────────────────────────────────────────────
+
+def _cap_error(e: CapitalError):
+    raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.get("/get_positions")
+def get_positions():
+    try:
+        return cap.get_positions()
+    except CapitalError as e:
+        _cap_error(e)
+
+
+class CreatePositionBody(BaseModel):
+    epic: str
+    direction: str
+    size: float
+    guaranteedStop: bool = False
+    stopLevel: Optional[float] = None
+    profitLevel: Optional[float] = None
+
+
+@app.post("/create_position")
+def create_position(body: CreatePositionBody):
+    payload = body.model_dump(exclude_none=True)
+    try:
+        return cap.create_position(payload)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+class UpdatePositionBody(BaseModel):
+    dealId: str
+    stopLevel: Optional[float] = None
+    profitLevel: Optional[float] = None
+
+
+@app.post("/updte_position")   # typo kept for backwards compat with React client
+def update_position(body: UpdatePositionBody):
+    deal_id = body.dealId
+    payload = body.model_dump(exclude={"dealId"}, exclude_none=True)
+    try:
+        return cap.update_position(deal_id, payload)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+@app.delete("/close_position/{deal_id}")
+def close_position(deal_id: str):
+    try:
+        return cap.close_position(deal_id)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+@app.get("/market/{epic}")
+def market_info(epic: str):
+    try:
+        return cap.get_market(epic)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+@app.get("/prices/{epic}")
+def prices(
+    epic: str,
+    resolution: str = Query(default="HOUR"),
+    max: int = Query(default=50),
+    from_ts: Optional[str] = Query(default=None, alias="from"),
+    to_ts: Optional[str] = Query(default=None, alias="to"),
+):
+    try:
+        return cap.get_prices(epic, resolution, max, from_ts, to_ts)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+@app.get("/markets")
+def markets(searchTerm: Optional[str] = Query(default=None)):
+    try:
+        return cap.get_markets(searchTerm)
+    except CapitalError as e:
+        _cap_error(e)
+
+
+# ── Backtest results ──────────────────────────────────────────────────────────
+
+@app.get("/backtest/runs")
+def backtest_runs(instrument: Optional[str] = Query(default=None)):
+    """List all run directories, newest first."""
+    if not RESULTS_DIR.exists():
+        return {"runs": [], "count": 0}
+
+    runs = []
+    search_dirs = [RESULTS_DIR / instrument.upper()] if instrument else sorted(RESULTS_DIR.iterdir())
+    for inst_dir in search_dirs:
+        if not inst_dir.is_dir():
+            continue
+        for run_dir in sorted(inst_dir.iterdir(), reverse=True):
+            if not run_dir.is_dir():
+                continue
+            report_path = run_dir / "report.json"
+            entry: Dict[str, Any] = {
+                "instrument": inst_dir.name,
+                "run_id": run_dir.name,
+                "path": str(run_dir),
+                "has_report": report_path.exists(),
+            }
+            if report_path.exists():
+                try:
+                    rpt = json.loads(report_path.read_text())
+                    s = rpt.get("summary", {})
+                    entry["summary"] = {
+                        "total_trades": s.get("total_trades"),
+                        "total_return_pct": round(s.get("total_return_pct", 0), 2),
+                        "sharpe_ratio": round(s.get("sharpe_ratio", 0), 4),
+                        "max_drawdown_pct": round(s.get("max_drawdown_pct", 0), 4),
+                        "win_rate": round(s.get("win_rate", 0), 2),
+                        "timestamp": rpt.get("timestamp"),
+                    }
+                except Exception:
+                    pass
+            runs.append(entry)
+    return {"runs": runs, "count": len(runs)}
+
+
+@app.get("/backtest/runs/{instrument}/{run_id}")
+def backtest_run_detail(instrument: str, run_id: str):
+    """Return full report.json for a run."""
+    report_path = RESULTS_DIR / instrument.upper() / run_id / "report.json"
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail=f"Run not found: {instrument}/{run_id}")
+    return json.loads(report_path.read_text())
+
+
+@app.get("/backtest/trades/{instrument}/{run_id}")
+def backtest_trades(instrument: str, run_id: str, limit: int = Query(default=500, le=10000)):
+    """Return trades.csv rows as JSON (newest first, limited)."""
+    import csv
+    trades_path = RESULTS_DIR / instrument.upper() / run_id / "trades.csv"
+    if not trades_path.exists():
+        raise HTTPException(status_code=404, detail=f"trades.csv not found: {instrument}/{run_id}")
+    rows = []
+    with trades_path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    rows = rows[-limit:][::-1]   # last N, reversed (newest first)
+    return {"trades": rows, "count": len(rows), "run_id": run_id, "instrument": instrument.upper()}

@@ -64,7 +64,11 @@ analysis:
     mtf:                          # Multi-timeframe confluence
       h1_bb_period: 20            # H1 Bollinger Band period
       h1_bb_std: 2.0              # H1 BB std deviation
-      daily_sma_period: 20        # Daily SMA period for bias filter
+      h4_bb_period: 20            # 4h Bollinger Band period
+      h4_bb_std: 2.0              # 4h BB std deviation
+      daily_bb_period: 20         # Daily Bollinger Band period
+      daily_bb_std: 2.0           # Daily BB std deviation
+      daily_sma_period: 20        # Daily SMA period for bias filter (legacy)
 
     stochastic:
       enabled: false
@@ -90,7 +94,13 @@ analysis:
     require_bb: false
     require_stochastic: false
     require_volume: false
-    require_h1_bb: true            # H1 midline trend gate — BUY only above H1 BB mid, SELL only below
+    require_h1_bb: false           # H1 BB location gate — blocks entries when H1 price is near resistance/support band
+    h1_bb_upper_block: 0.75       # block BUY  when H1 band_pct > this (price near H1 upper band = resistance)
+    h1_bb_lower_block: 0.25       # block SELL when H1 band_pct < this (price near H1 lower band = support)
+    require_mtf_bb: false          # MTF BB confluence gate — votes across H1 + 4h + Daily band_pct
+    mtf_min_votes: 2               # how many TFs must agree price is near a wall to block the signal
+    mtf_bb_upper_block: 0.75       # shared upper threshold for all TFs in MTF mode
+    mtf_bb_lower_block: 0.25       # shared lower threshold for all TFs in MTF mode
     require_daily_bias: false      # Daily SMA bias gate — too restrictive, cuts 85% of trades
     block_ranging_days: false      # Reserve: block low-range daily bars
     edge_detection: true      # only fire on signal state change
@@ -230,6 +240,18 @@ storage:
   batch_size: 10
   flush_interval_seconds: 30
 
+# M1 Exit Validation — runs automatically after backtest if m1_data_path exists.
+# Reloads the backtest trades CSV and re-checks every SL/TP exit against M1 candles
+# to detect gap-throughs and wrong exit-type assumptions.
+m1_validation:
+  enabled: true
+  # Path to M1 candle CSV (from subset_m1_data.py or collect_m1_candles.py).
+  # Leave blank to skip validation.
+  data_path: "../cloud-function/data/GOLD_M1_20240101_20251231.csv"
+  # Timezone offset to align M1 timestamps with backtest timestamps.
+  # Kaggle XAU data is GMT+1 → set -1 to convert to UTC. Capital.com data → 0.
+  tz_offset_hours: -1
+
 # Monitoring skill configuration
 monitoring:
   enabled: true
@@ -307,6 +329,13 @@ backtesting:
     block_before_minutes: 30
     block_after_minutes: 30
   
+  # Dynamic position sizing — scale up as profit accumulates, never below base size
+  dynamic_sizing:
+    enabled: false
+    scale_every_usd: 1000    # Add size_increment for every $X of profit above initial capital
+    size_increment: 1        # Units to add per step (same units as position_size)
+    max_size: null           # Optional cap on maximum size (null = no cap)
+
   # Parallel processing
   workers: 12
 

@@ -111,6 +111,8 @@ class ReportingSkill(Skill):
             'final_capital': results.get('final_capital', 0),
             'total_pnl': results.get('total_pnl', 0),
             'total_return_pct': results.get('total_return_pct', 0),
+            'avg_margin_per_trade': results.get('avg_margin_per_trade', 0),
+            'return_on_margin_pct': results.get('return_on_margin_pct', 0),
             'total_trades': results.get('total_trades', 0),
             'win_rate': results.get('win_rate', 0),
             'sharpe_ratio': results.get('sharpe_ratio', 0),
@@ -271,21 +273,41 @@ class ReportingSkill(Skill):
     def _analyze_monthly_performance(self, results: Dict) -> List[Dict]:
         """Analyze monthly performance"""
         trades = results.get('trades', [])
-        
+
         if not trades:
             return []
         
         df = pd.DataFrame(trades)
         df['exit_time'] = pd.to_datetime(df['exit_time'])
         df['year_month'] = df['exit_time'].dt.to_period('M')
-        
+
         monthly = df.groupby('year_month').agg({
             'pnl': ['sum', 'count', 'mean'],
         }).reset_index()
-        
         monthly.columns = ['month', 'total_pnl', 'trades', 'avg_pnl']
         monthly['month'] = monthly['month'].astype(str)
-        
+
+        # Monthly max drawdown: worst peak-to-trough on the running equity within each month
+        initial_capital = results.get('initial_capital', 10000.0)
+        df_sorted = df.sort_values('exit_time').copy()
+        df_sorted['cumulative_pnl'] = df_sorted['pnl'].cumsum() + initial_capital
+
+        def _month_drawdown(group):
+            eq = group['cumulative_pnl'].values
+            peak = eq[0]
+            max_dd = 0.0
+            for v in eq:
+                if v > peak:
+                    peak = v
+                dd = peak - v
+                if dd > max_dd:
+                    max_dd = dd
+            return max_dd
+
+        dd_by_month = df_sorted.groupby(df_sorted['exit_time'].dt.to_period('M')).apply(_month_drawdown)
+        dd_by_month.index = dd_by_month.index.astype(str)
+        monthly['max_drawdown'] = monthly['month'].map(dd_by_month).fillna(0)
+
         return monthly.to_dict('records')
     
     def save_report(self, report: Dict, filename: str = 'report'):
@@ -357,7 +379,9 @@ class ReportingSkill(Skill):
         <strong>Initial Capital:</strong> ${report['summary'].get('initial_capital', 0):,.2f}<br>
         <strong>Final Capital:</strong> ${report['summary'].get('final_capital', 0):,.2f}<br>
         <strong>Total P&L:</strong> <span class="{'positive' if report['summary'].get('total_pnl', 0) > 0 else 'negative'}">${report['summary'].get('total_pnl', 0):,.2f}</span><br>
-        <strong>Return:</strong> <span class="{'positive' if report['summary'].get('total_return_pct', 0) > 0 else 'negative'}">{report['summary'].get('total_return_pct', 0):.2f}%</span>
+        <strong>Return on Capital:</strong> <span class="{'positive' if report['summary'].get('total_return_pct', 0) > 0 else 'negative'}">{report['summary'].get('total_return_pct', 0):.2f}%</span><br>
+        <strong>Avg Margin / Trade:</strong> ${report['summary'].get('avg_margin_per_trade', 0):,.2f}<br>
+        <strong>Return on Margin:</strong> <span class="{'positive' if report['summary'].get('return_on_margin_pct', 0) > 0 else 'negative'}">{report['summary'].get('return_on_margin_pct', 0):.2f}%</span>
     </div>
     
     <div class="metric">
@@ -430,17 +454,19 @@ class ReportingSkill(Skill):
         ws.write(row, 0, 'Trading Bot Backtest — Performance Summary', workbook.add_format({'bold': True, 'font_size': 14}))
         row += 2
         items = [
-            ('Initial Capital',      summary.get('initial_capital', 0),      num),
-            ('Final Capital',        summary.get('final_capital', 0),         num),
-            ('Total P&L',            summary.get('total_pnl', 0),             pos if summary.get('total_pnl', 0) >= 0 else neg),
-            ('Return (%)',           summary.get('total_return_pct', 0) / 100, pct),
-            ('Total Trades',         summary.get('total_trades', 0),          plain),
-            ('Win Rate (%)',         summary.get('win_rate', 0) / 100,        pct),
-            ('Profit Factor',        summary.get('profit_factor', 0),         num),
-            ('Sharpe Ratio',         summary.get('sharpe_ratio', 0),          num),
-            ('Max Drawdown ($)',     summary.get('max_drawdown', 0),          neg),
-            ('Max Drawdown (%)',     summary.get('max_drawdown_pct', 0) / 100, pct),
-            ('Expectancy / Trade',   summary.get('expectancy_per_trade', 0), num),
+            ('Initial Capital',         summary.get('initial_capital', 0),          num),
+            ('Final Capital',           summary.get('final_capital', 0),             num),
+            ('Total P&L',               summary.get('total_pnl', 0),                 pos if summary.get('total_pnl', 0) >= 0 else neg),
+            ('Return on Capital (%)',   summary.get('total_return_pct', 0) / 100,    pct),
+            ('Avg Margin / Trade ($)',  summary.get('avg_margin_per_trade', 0),      num),
+            ('Return on Margin (%)',    summary.get('return_on_margin_pct', 0) / 100, pct),
+            ('Total Trades',            summary.get('total_trades', 0),              plain),
+            ('Win Rate (%)',            summary.get('win_rate', 0) / 100,            pct),
+            ('Profit Factor',           summary.get('profit_factor', 0),             num),
+            ('Sharpe Ratio',            summary.get('sharpe_ratio', 0),              num),
+            ('Max Drawdown ($)',        summary.get('max_drawdown', 0),              neg),
+            ('Max Drawdown (%)',        summary.get('max_drawdown_pct', 0) / 100,    pct),
+            ('Expectancy / Trade',      summary.get('expectancy_per_trade', 0),      num),
         ]
         for label, value, fmt in items:
             ws.write(row, 0, label, lbl)
@@ -506,16 +532,17 @@ class ReportingSkill(Skill):
         monthly = report.get('monthly_performance', [])
         if monthly:
             ws5 = workbook.add_worksheet('Monthly')
-            headers = ['Month', 'Total P&L', 'Trades', 'Avg P&L']
+            headers = ['Month', 'Total P&L', 'Trades', 'Avg P&L', 'Max Drawdown ($)']
             for c, h in enumerate(headers):
                 ws5.write(0, c, h, hdr)
-            ws5.set_column('A:D', 15)
+            ws5.set_column('A:E', 18)
             for r, m in enumerate(monthly, start=1):
                 ws5.write(r, 0, str(m.get('month', '')), plain)
                 pnl_val = m.get('total_pnl', 0)
                 ws5.write(r, 1, pnl_val, pos if pnl_val >= 0 else neg)
                 ws5.write(r, 2, m.get('trades', 0), plain)
                 ws5.write(r, 3, m.get('avg_pnl', 0), num)
+                ws5.write(r, 4, m.get('max_drawdown', 0), neg)
 
         workbook.close()
         print(f"📊 Excel report saved: {filepath}")

@@ -1,0 +1,69 @@
+# BTCUSD (BTC/USD) instrument-specific overrides
+# Deep-merged over trading_config.yaml at runtime
+#
+# Capital.com specs (demo account):
+#   Price: ~$60,000–100,000  |  Epic: BTCUSD  |  Spread: ~$50/contract
+#   Trading pip convention: 1 pip = $1.00 price move
+#   pip_size = 1.0  →  stop_loss_pips = 300 means $300 price distance
+#
+# Risk per trade (0.1 BTC, SL=300 pips):
+#   SL risk   = 300 × 1.0 × 0.1 = $30  (0.3% of $10k) — conservative for BTC volatility
+#   TP reward = 900 × 1.0 × 0.1 = $90  (1:3 R:R)
+#   Spread cost = $50.00 × 0.1 = $5.00  (16.7% of SL risk — wide spread is a BTC reality)
+#
+# Note: Increase position_size to 0.3–0.5 once strategy performance is validated.
+
+bot:
+  name: "BTCUSD M5 SupertrendVWAP Bot"
+
+market_data:
+  instrument: BTCUSD
+  timeframe: M5
+  resample_to: M5
+
+backtest:
+  data_path: "../cloud-function/data/BTCUSD_M5_150000bars.csv"
+  report_prefix: "BTCUSD"
+  leverage: 2                   # Capital.com BTCUSD leverage (crypto retail limit)
+
+backtesting:
+  initial_capital: 20000.0          # Start with $20k for BTCUSD (higher volatility than GOLD/EURUSD)
+  position_size: 0.1            # 0.1 BTC per trade
+  spread_cost_usd: 50.00        # $50/contract → $5.00 total  (typical BTC spread)
+  slippage_cost_usd: 5.00       # $5.00/contract → $0.50 total  (BTC market-order slip)
+  dynamic_sizing:
+    enabled: true
+    method: percent              # 'steps' (fixed ladder) or 'percent' (proportional to capital)
+    size_per_capital: 200000     # percent mode: 0.1 BTC per $20,000 of capital
+                                 # $20k → 0.1 BTC, $60k → 0.3 BTC, $100k → 0.5 BTC (cap)
+    scale_every_usd: 2000        # steps mode (unused when method=percent): +0.012 BTC per $2k profit
+    size_increment: 0.012
+    max_size: 0.5                # Cap at 0.5 BTC (~$425 SL risk)
+
+analysis:
+  indicators:
+    supertrend:
+      atr_period: 7
+      multiplier: 2           # Slightly wider for BTC's higher volatility
+    ema:
+      period: 21
+    sma:
+      fast_period: 25
+      slow_period: 30
+    mtf:
+      h1_bb_period: 20
+      h1_bb_std: 2.0
+      daily_sma_period: 20
+  signal_rules:
+    require_h1_bb: false
+    require_mtf_bb: false
+  sl_tp:
+    method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
+
+risk:
+  pip_size: 1.0                 # 1 pip = $1.00 price move
+  stop_loss_pips: 850           # 850 pips × $1.00 = $850 SL distance per BTC
+  take_profit_pips: 5000         # 5000 pips × $1.00 = $5000 TP distance  (1:5 R:R)
+
+execution:
+  instrument: BTCUSD

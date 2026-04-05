@@ -86,6 +86,7 @@ EPIC_ALIASES = {
     'US500':  'US500',
     'OIL':    'OIL',
     'BTCUSD': 'BTCUSD',
+    'ETHUSD': 'ETHUSD',
 }
 
 BATCH_SIZE = 1000          # Max bars per API call
@@ -162,19 +163,36 @@ def parse_candle(price: dict) -> dict | None:
 
 # ── Core fetch loop ──────────────────────────────────────────────────────────
 
-def fetch_all_bars(client: CapitalAPIClient, epic: str, resolution: str, total_bars: int) -> list:
+def fetch_all_bars(
+    client: CapitalAPIClient,
+    epic: str,
+    resolution: str,
+    total_bars: int,
+    from_date: str = None,
+    to_date: str = None,
+) -> list:
     """
-    Fetch `total_bars` candles by paginating backwards using the 'to' parameter.
-    Capital.com API: omit 'from', set 'to' = oldest timestamp from previous batch.
+    Fetch candles by paginating backwards using the 'to' parameter.
+
+    Two modes:
+      - Date range (--from / --to): fetch all candles between two ISO dates.
+        Stops when all_candles contains a candle older than from_date.
+      - Bar count (--bars): fetch the most recent `total_bars` candles.
+
     Returns list of candle dicts sorted oldest → newest, deduplicated.
     """
     all_candles = {}   # keyed by timestamp for dedup
-    to_timestamp = None  # None = start from most recent
+    to_timestamp = to_date  # None = start from most recent
     batch_num = 0
+    date_range_mode = from_date is not None
 
-    while len(all_candles) < total_bars:
+    while True:
+        # In bar-count mode, stop when we have enough
+        if not date_range_mode and len(all_candles) >= total_bars:
+            break
+
         remaining = total_bars - len(all_candles)
-        batch = min(remaining, BATCH_SIZE)
+        batch = min(remaining if not date_range_mode else BATCH_SIZE, BATCH_SIZE)
 
         params = {
             'resolution': resolution,
@@ -182,11 +200,14 @@ def fetch_all_bars(client: CapitalAPIClient, epic: str, resolution: str, total_b
         }
         if to_timestamp:
             params['to'] = to_timestamp
+        if from_date and not to_timestamp:
+            # First batch in date-range mode: anchor the end to to_date
+            pass  # to_timestamp is already set to to_date above
 
         batch_num += 1
         logger.info(
             f"  Batch {batch_num}: to={to_timestamp or 'now'} "
-            f"(requesting {batch} bars, fetched so far: {len(all_candles)}/{total_bars})"
+            f"(fetched so far: {len(all_candles)})"
         )
 
         try:
@@ -205,8 +226,15 @@ def fetch_all_bars(client: CapitalAPIClient, epic: str, resolution: str, total_b
 
         for price in prices:
             candle = parse_candle(price)
-            if candle and candle['timestamp'] not in all_candles:
-                all_candles[candle['timestamp']] = candle
+            if candle:
+                ts = candle['timestamp']
+                # In date-range mode, skip candles outside the requested window
+                if from_date and ts < from_date:
+                    continue
+                if to_date and ts > to_date:
+                    continue
+                if ts not in all_candles:
+                    all_candles[ts] = candle
             snap = price.get('snapshotTime', '')
             if oldest_snapshot is None or snap < oldest_snapshot:
                 oldest_snapshot = snap
@@ -216,6 +244,11 @@ def fetch_all_bars(client: CapitalAPIClient, epic: str, resolution: str, total_b
 
         if new_candles == 0:
             logger.warning("  No new candles — reached end of available history.")
+            break
+
+        # In date-range mode, stop once we've paginated past from_date
+        if date_range_mode and oldest_snapshot and oldest_snapshot[:19].replace('/', '-') < from_date:
+            logger.info(f"  ✅ Reached from_date boundary ({from_date}) — stopping.")
             break
 
         # Paginate backwards: set 'to' to the oldest snapshot time
@@ -248,10 +281,19 @@ def main():
     )
     parser.add_argument('--epic',      required=True,  help='Instrument epic or alias (e.g. EURUSD, GOLD, US100)')
     parser.add_argument('--timeframe', required=True,  help='Timeframe: M1, M5, M15, M30, H1, H4, D1, W1')
-    parser.add_argument('--bars',      type=int, default=50000, help='Total bars to fetch (default: 50000)')
+    parser.add_argument('--bars',      type=int, default=50000, help='Total bars to fetch (default: 50000). Ignored if --from is set.')
+    parser.add_argument('--from',      dest='from_date', default=None,
+                        help='Start date (ISO format: 2024-01-01 or 2024-01-01T00:00:00). Enables date-range mode.')
+    parser.add_argument('--to',        dest='to_date',   default=None,
+                        help='End date (ISO format: 2024-03-31 or 2024-03-31T23:59:59). Defaults to now if --from is set.')
     parser.add_argument('--output',    default=None,   help='Output CSV path (default: cloud-function/data/<EPIC>_<TF>_<BARS>bars.csv)')
     parser.add_argument('--env',       default=None,   help='demo or live (overrides CAPITAL_ENVIRONMENT)')
     args = parser.parse_args()
+
+    # Validate date-range args
+    if args.from_date and not args.to_date:
+        args.to_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"   --to not set; defaulting to now: {args.to_date}")
 
     # Resolve timeframe
     resolution = TIMEFRAME_MAP.get(args.timeframe.upper())
@@ -266,6 +308,18 @@ def main():
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+    elif args.from_date:
+        # Date-range mode: name includes date span, not bar count
+        date_tag = args.from_date[:10].replace('-', '') + '_' + args.to_date[:10].replace('-', '')
+        instrument = epic.upper()
+        for alias, full_epic in EPIC_ALIASES.items():
+            if full_epic == epic:
+                instrument = alias
+                break
+        filename = f"{instrument}_{args.timeframe.upper()}_{date_tag}.csv"
+        output_dir = PROJECT_ROOT.parent / 'cloud-function' / 'data'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / filename
     else:
         output_path = derive_output_name(epic, args.timeframe.upper(), args.bars)
 
@@ -277,7 +331,11 @@ def main():
         logger.error("CAPITAL_API_KEY not set. Add it to .env or export it.")
         sys.exit(1)
 
-    logger.info(f"🚀 Fetching {args.bars} × {args.timeframe} bars for {args.epic} ({epic}) [{env}]")
+    if args.from_date:
+        logger.info(f"🚀 Fetching {args.timeframe} bars for {args.epic} ({epic}) [{env}]")
+        logger.info(f"   Date range: {args.from_date} → {args.to_date}")
+    else:
+        logger.info(f"🚀 Fetching {args.bars} × {args.timeframe} bars for {args.epic} ({epic}) [{env}]")
     logger.info(f"   Output → {output_path}")
 
     # Authenticate
@@ -289,7 +347,11 @@ def main():
 
     # Fetch
     start = time.time()
-    candles = fetch_all_bars(client, epic, resolution, args.bars)
+    candles = fetch_all_bars(
+        client, epic, resolution, args.bars,
+        from_date=args.from_date,
+        to_date=args.to_date,
+    )
     elapsed = time.time() - start
 
     if not candles:

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily M1 candle collection — runs 00:15 UTC (15 min after midnight, previous day complete)
+
+[Timer]
+# 00:15 UTC every day — previous trading day is fully closed
+OnCalendar=*-*-* 00:15:00 UTC
+# Run immediately if missed (e.g. server was down)
+Persistent=true
+
+[Install]
+WantedBy=timers.target

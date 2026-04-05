@@ -60,10 +60,8 @@ firebase-adminsdk*.json
 htmlcov/
 
 # ── Generated backtest reports ────────────────────────────────────────────────
-trading-bot-skills/reports/*.json
-trading-bot-skills/reports/*.html
-trading-bot-skills/reports/*.xlsx
-trading-bot-skills/reports/*.csv
+trading-bot-skills/reports/
+trading-bot-skills/results/
 
 # ── Claude IDE settings ───────────────────────────────────────────────────────
 .claude/

@@ -55,26 +55,31 @@ class SimulatedTrade:
     # P&L
     pnl: float = 0.0
     pnl_pct: float = 0.0
-    
+
     # Costs
     spread_cost: float = 0.0
     slippage_cost: float = 0.0
+
+    # Margin (entry_price × size / leverage) — set by BacktestingSkill at entry
+    margin: float = 0.0
     
     def calculate_pnl(self):
         """Calculate P&L for the trade"""
         if self.exit_price is None:
             return
-        
+
         if self.side == OrderSide.BUY:
             pnl_points = self.exit_price - self.entry_price
         else:  # SELL
             pnl_points = self.entry_price - self.exit_price
-        
+
         # costs are already total (per-unit × size stored at trade creation)
         gross_pnl = pnl_points * self.size
         total_costs = self.spread_cost + self.slippage_cost
         self.pnl = gross_pnl - total_costs
-        self.pnl_pct = (self.pnl / (self.entry_price * self.size)) * 100
+        # pnl_pct on margin (not notional) — reflects true leveraged return per trade
+        denominator = self.margin if self.margin > 0 else (self.entry_price * self.size)
+        self.pnl_pct = (self.pnl / denominator) * 100
     
     def to_dict(self):
         """Convert trade to dictionary"""
@@ -91,6 +96,7 @@ class SimulatedTrade:
             'status': self.status.value,
             'pnl': self.pnl,
             'pnl_pct': self.pnl_pct,
+            'margin': self.margin,
             'spread_cost': self.spread_cost,
             'slippage_cost': self.slippage_cost
         }
@@ -153,6 +159,9 @@ class BacktestingSkill(Skill):
         super().__init__(config, event_bus)
         self._config = config  # keep full config for sl_tp_engine dispatch
 
+        # Leverage (from backtest section — used for margin calculation)
+        self.leverage = float(config.get('backtest', {}).get('leverage', 1.0))
+
         # Support both flat config and nested config
         bt_config = config if 'start_date' in config else config.get('backtesting', {})
         self.initial_capital = bt_config.get('initial_capital', 10000.0)
@@ -161,6 +170,20 @@ class BacktestingSkill(Skill):
         self.slippage_cost_usd = bt_config.get('slippage_cost_usd', 0.05)
         self.commission_per_trade = bt_config.get('commission_per_trade', 2.0)
         self.intra_candle_simulation = bt_config.get('intra_candle_simulation', True)
+
+        # Dynamic position sizing — scale up on accumulated profit, never below base
+        dyn_cfg = bt_config.get('dynamic_sizing', {})
+        self.dynamic_sizing_enabled          = dyn_cfg.get('enabled', False)
+        self.dynamic_sizing_method           = dyn_cfg.get('method', 'steps')  # 'steps' or 'percent'
+        # steps mode
+        self.dynamic_sizing_scale_every_usd  = float(dyn_cfg.get('scale_every_usd', 1000.0))
+        self.dynamic_sizing_size_increment   = float(dyn_cfg.get('size_increment', 1.0))
+        # percent mode
+        self.dynamic_sizing_size_per_capital = float(dyn_cfg.get('size_per_capital', 10000.0))
+        # shared cap
+        self.dynamic_sizing_max_size         = dyn_cfg.get('max_size', None)
+        if self.dynamic_sizing_max_size is not None:
+            self.dynamic_sizing_max_size = float(self.dynamic_sizing_max_size)
 
         # Minimum hold time before a reverse-signal exit is allowed
         filters_config = config.get('backtesting_filters', {})
@@ -204,6 +227,12 @@ class BacktestingSkill(Skill):
         print(f"   SL: {self.stop_loss_pips} pips, TP: {self.take_profit_pips} pips")
         if self.max_hold_minutes:
             print(f"   Max hold: {self.max_hold_minutes} min ({self.max_hold_minutes//60}h)")
+        if self.dynamic_sizing_enabled:
+            max_str = f", max={self.dynamic_sizing_max_size}" if self.dynamic_sizing_max_size else ""
+            if self.dynamic_sizing_method == 'percent':
+                print(f"   Dynamic sizing: ON (percent) — 1 unit per ${self.dynamic_sizing_size_per_capital:,.0f} capital{max_str}")
+            else:
+                print(f"   Dynamic sizing: ON (steps) — 1 unit per ${self.dynamic_sizing_scale_every_usd:,.0f} capital{max_str}")
     
     def validate_config(self) -> bool:
         """Validate backtesting configuration"""
@@ -217,6 +246,36 @@ class BacktestingSkill(Skill):
         
         return True
     
+    def _compute_position_size(self) -> float:
+        """
+        Return the position size for the next trade.
+
+        Two modes (set via dynamic_sizing.method):
+
+        'steps'   — fixed ladder: add size_increment for each full scale_every_usd
+                    of profit above initial_capital.  Only scales up, never below base.
+
+        'percent' — proportional: size = capital / size_per_capital, so every dollar
+                    of capital growth is immediately reflected.  Scales down too if
+                    capital drops below initial (but min is still base position_size).
+
+        Both modes respect max_size if configured.
+        """
+        if not self.dynamic_sizing_enabled:
+            return self.position_size
+
+        if self.dynamic_sizing_method == 'percent':
+            size = self.capital / self.dynamic_sizing_size_per_capital
+            size = max(size, self.position_size)  # floor at base
+        else:  # steps — 1 step per scale_every_usd of capital, each step = size_increment units
+            steps = int(self.capital / self.dynamic_sizing_scale_every_usd)
+            size = steps * self.dynamic_sizing_size_increment
+            size = max(size, self.position_size)  # never go below base
+
+        if self.dynamic_sizing_max_size is not None:
+            size = min(size, self.dynamic_sizing_max_size)
+        return size
+
     def execute(self, context: Context) -> bool:
         """
         Simulate trade execution based on signal in context.
@@ -274,15 +333,18 @@ class BacktestingSkill(Skill):
             side = OrderSide.SELL
         
         # Create simulated trade
+        current_size = self._compute_position_size()
+        margin = (entry_price * current_size / self.leverage) if self.leverage > 0 else (entry_price * current_size)
         trade = SimulatedTrade(
             entry_time=context.timestamp,
             entry_price=entry_price,
             side=side,
-            size=self.position_size,
+            size=current_size,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            spread_cost=self.spread_cost_usd * self.position_size,
-            slippage_cost=self.slippage_cost_usd * self.position_size
+            spread_cost=self.spread_cost_usd * current_size,
+            slippage_cost=self.slippage_cost_usd * current_size,
+            margin=margin,
         )
         
         self.open_positions.append(trade)
@@ -434,22 +496,38 @@ class BacktestingSkill(Skill):
         total_losses = abs(sum(t.pnl for t in self.closed_positions if t.pnl < 0))
         profit_factor = total_wins / max(total_losses, 0.01)
         
-        # Sharpe ratio (simplified)
+        # Sharpe ratio — resampled to daily returns to avoid inflation from
+        # irregular per-trade sampling (a 3-hour trade is not a daily return).
+        # Annualised with √252 trading days.
+        sharpe_ratio = 0
         if len(self.equity_curve) > 1:
-            equity_series = pd.Series([e['equity'] for e in self.equity_curve])
-            returns = equity_series.pct_change().dropna()
-            sharpe_ratio = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() > 0 else 0
-        else:
-            sharpe_ratio = 0
+            eq = pd.DataFrame(self.equity_curve)
+            eq['timestamp'] = pd.to_datetime(eq['timestamp'])
+            eq = eq.set_index('timestamp').sort_index()
+            # Forward-fill equity to get a value for every calendar day in range
+            daily = eq['equity'].resample('1D').last().ffill().dropna()
+            if len(daily) > 1:
+                daily_returns = daily.pct_change().dropna()
+                if daily_returns.std() > 0:
+                    sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
         
         # Expectancy per trade
         expectancy = (win_rate/100 * avg_win) + ((100-win_rate)/100 * avg_loss)
         
+        # Return on margin: P&L relative to average margin deployed per trade
+        # (avg margin = entry_price × size / leverage — the actual cash tied up per trade)
+        margins = [t.margin for t in self.closed_positions if t.margin > 0]
+        avg_margin = sum(margins) / len(margins) if margins else self.initial_capital
+        return_on_margin_pct = (self.total_pnl / avg_margin * 100) if avg_margin > 0 else 0
+
         results = {
             'initial_capital': self.initial_capital,
             'final_capital': self.capital,
             'total_pnl': self.total_pnl,
             'total_return_pct': (self.capital - self.initial_capital) / self.initial_capital * 100,
+            'return_on_margin_pct': return_on_margin_pct,
+            'avg_margin_per_trade': avg_margin,
+            'leverage': self.leverage,
             'total_trades': self.total_trades,
             'winning_trades': self.winning_trades,
             'losing_trades': self.losing_trades,
