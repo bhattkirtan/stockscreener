@@ -251,6 +251,34 @@ class StorageSkill(Skill):
         else:
             logger.error(f"❌ Failed to save position: {deal_id}")
     
+    async def save_open_position(
+        self,
+        deal_id: str,
+        epic: str,
+        direction: str,
+        level: float,
+        size: float,
+        stop_level=None,
+        profit_level=None,
+        opened_at: str = None,
+    ) -> None:
+        """
+        Upsert an open position from the broker (OPU or startup seed).
+        Called directly from _poll_positions when a position is detected
+        via WebSocket OPU or the REST startup seed — outside the normal
+        execution pipeline.
+        """
+        await self._save_position({
+            'deal_id':     deal_id,
+            'epic':        epic,
+            'direction':   direction,
+            'entry_price': level,
+            'size':        size,
+            'stop_loss':   stop_level,
+            'take_profit': profit_level,
+            'opened_at':   opened_at or datetime.now().isoformat(),
+        })
+
     async def close_position(self, deal_id: str, close_price: float, close_reason: str):
         """
         Close position in Firestore (ALWAYS called in finally block)

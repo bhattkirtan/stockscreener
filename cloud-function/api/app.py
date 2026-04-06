@@ -157,7 +157,7 @@ def bot_positions(
 ):
     rows = db.kv_get_all("active_positions")
     if status != "all":
-        rows = [r for r in rows if r.get("status") == status]
+        rows = [r for r in rows if r.get("status", "").upper() == status.upper()]
     if epic:
         rows = [r for r in rows if r.get("epic") == epic]
     rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)

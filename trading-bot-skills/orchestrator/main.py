@@ -173,10 +173,28 @@ async def _poll_positions(
                 result.append((deal_id, pos))
         return result
 
+    async def _persist_open_position(deal_id: str, pos: dict) -> None:
+        """Write a broker position to SQLite active_positions via StorageSkill."""
+        if 'storage' not in orchestrator.skills:
+            return
+        try:
+            await orchestrator.skills['storage'].save_open_position(
+                deal_id=deal_id,
+                epic=epic,
+                direction=pos.get('direction', 'BUY'),
+                level=float(pos.get('level') or pos.get('entry_price') or 0.0),
+                size=float(pos.get('size') or 0.0),
+                stop_level=pos.get('stopLevel') or pos.get('stop_loss'),
+                profit_level=pos.get('profitLevel') or pos.get('take_profit'),
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to persist position {deal_id} to storage: {e}")
+
     # Seed known positions from REST on startup
     try:
         for deal_id, pos in _positions_for_epic(capital.get_open_positions() or []):
             known[deal_id] = pos
+            await _persist_open_position(deal_id, pos)
         logger.info(f"📋 Tracking {len(known)} open position(s) for {epic}")
     except Exception as e:
         logger.warning(f"⚠️ Initial positions fetch failed: {e}")
@@ -188,7 +206,7 @@ async def _poll_positions(
 
         if status == 'OPEN':
             if deal_id not in known:
-                known[deal_id] = {
+                pos = {
                     'dealId':      deal_id,
                     'direction':   update.get('direction', 'BUY'),
                     'level':       update.get('level', 0.0),
@@ -196,6 +214,8 @@ async def _poll_positions(
                     'stopLevel':   update.get('stopLevel'),
                     'profitLevel': update.get('profitLevel'),
                 }
+                known[deal_id] = pos
+                await _persist_open_position(deal_id, pos)
                 logger.info(f"📈 New position tracked via OPU: {deal_id}")
 
         elif status == 'CLOSED':
