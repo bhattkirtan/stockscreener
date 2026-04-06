@@ -92,6 +92,14 @@ class RiskSkill(Skill):
         self.has_open_position = False
         self.open_position_deal_id: Optional[str] = None
         self.open_position_direction: Optional[str] = None
+
+        # Startup flip gate: block entries until the trend has flipped at least
+        # once since the bot started. Prevents entering on the first live candle
+        # just because the indicator already shows a signal.
+        # Set _startup_flip_seen = True externally when resuming a live position
+        # so the gate doesn't apply after that position closes.
+        self._startup_signal: Optional[str] = None
+        self._startup_flip_seen: bool = False
         
     async def execute(self, context) -> 'Context':
         """
@@ -104,7 +112,25 @@ class RiskSkill(Skill):
         signal    = context.signal
         candle_ts = context.current_candle.get('timestamp') if context.current_candle else None
 
-        # 0. Max positions — hard stop, no trading if position already open
+        # 0a. Startup flip gate — don't enter on the first signal seen after bot
+        # start; wait for the trend to flip at least once first.
+        # Bypassed if _startup_flip_seen is True (set when resuming a live position).
+        if not self._startup_flip_seen:
+            if self._startup_signal is None:
+                self._startup_signal = signal
+                context.is_allowed  = False
+                context.risk_reason = f"⏳ Startup: recorded initial signal={signal}, waiting for trend flip"
+                return context
+            elif signal == self._startup_signal:
+                context.is_allowed  = False
+                context.risk_reason = f"⏳ Startup: trend hasn't flipped yet (still {signal})"
+                return context
+            else:
+                # Trend has flipped from startup signal — normal operation from here
+                self._startup_flip_seen = True
+                logger.info(f"✅ Startup flip detected: {self._startup_signal} → {signal} — entries now enabled")
+
+        # 0b. Max positions — hard stop, no trading if position already open
         if self.has_open_position:
             context.is_allowed  = False
             context.risk_reason = "🚫 Max positions: position already open"

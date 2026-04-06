@@ -316,8 +316,11 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 pos = open_positions[0]
                 risk.open_position_deal_id = pos.get('dealId')
                 risk.open_position_direction = pos.get('direction', 'BUY')
+                # Startup flip gate: already in a live position — mark as satisfied
+                # so normal entry logic resumes after this position closes
+                risk._startup_flip_seen = True
         else:
-            logger.info(f"✅ No open positions for {epic} — starting clean")
+            logger.info(f"✅ No open positions for {epic} — starting clean, waiting for first trend flip")
     except Exception as e:
         logger.warning(f"⚠️ Could not check open positions on startup: {e} — assuming none open")
 
@@ -440,16 +443,6 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                     }
                     orchestrator.skills['analysis'].update_h1_candle(candle)
                     logger.debug(f"📊 H1 BB updated: close={candle['close']}")
-
-            # Position update callback: SL/TP/manual close → orchestrator
-            async def on_position_update(update: dict) -> None:
-                await orchestrator.on_position_closed(
-                    deal_id=update['deal_id'],
-                    direction=update['direction'],
-                    close_reason=update['close_reason'],
-                    pnl=update['pnl'],
-                    close_price=update['close_price'],
-                )
 
             ws.on_candle = on_candle
             ws.on_h1_candle = on_h1_candle

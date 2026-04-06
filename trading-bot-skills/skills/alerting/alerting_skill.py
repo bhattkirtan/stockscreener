@@ -64,8 +64,7 @@ class AlertingSkill(Skill):
                 self.mock_mode = True
                 self.telegram_client = TelegramAPIClient(mock_mode=True)
         else:
-            self.telegram_client = TelegramAPIClient(mock_mode=True)
-            logger.warning("⚠️ Alerting Skill running in MOCK MODE")
+            self.telegram_client = None
         
         print(f"📢 Alerting Skill initialized: telegram={self.telegram_enabled}")
     
@@ -76,7 +75,7 @@ class AlertingSkill(Skill):
         Args:
             event: Event with order details
         """
-        if not self.alert_on_trade_opened:
+        if not self.telegram_enabled or not self.alert_on_trade_opened:
             return
         
         # Extract order details from event payload
@@ -111,7 +110,7 @@ class AlertingSkill(Skill):
         Args:
             event: Event with position close details
         """
-        if not self.alert_on_trade_closed:
+        if not self.telegram_enabled or not self.alert_on_trade_closed:
             return
         
         # Extract close details from event payload
@@ -150,7 +149,7 @@ class AlertingSkill(Skill):
         Args:
             event: Event with error details
         """
-        if not self.alert_on_error:
+        if not self.telegram_enabled or not self.alert_on_error:
             return
         
         # Extract error details from event payload
@@ -195,7 +194,7 @@ class AlertingSkill(Skill):
         Args:
             context: Context with position data
         """
-        if not self.alert_on_trade_opened:
+        if not self.telegram_enabled or not self.alert_on_trade_opened:
             return
         
         position = context.current_position
@@ -247,7 +246,7 @@ class AlertingSkill(Skill):
             duration: Trade duration string
             deal_id: Deal ID
         """
-        if not self.alert_on_trade_closed:
+        if not self.telegram_enabled or not self.alert_on_trade_closed:
             return
         
         # Send via Telegram client
@@ -274,7 +273,7 @@ class AlertingSkill(Skill):
         Args:
             context: Context with errors
         """
-        if not self.alert_on_error:
+        if not self.telegram_enabled or not self.alert_on_error:
             return
         
         errors = context.errors[-3:]  # Last 3 errors
@@ -299,6 +298,8 @@ class AlertingSkill(Skill):
         Args:
             message: Message text
         """
+        if not self.telegram_enabled:
+            return
         success = self.telegram_client.send_message(message)
         
         if not success:

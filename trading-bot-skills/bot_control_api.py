@@ -288,6 +288,29 @@ def _stop_bot(bot_id: str) -> None:
             _bots.pop(bot_id, None)
 
 
+# ── Bot process monitor ───────────────────────────────────────────────────────
+
+def _monitor_bots_loop() -> None:
+    """
+    Polls running bot processes every 10 seconds.
+    When a process has exited unexpectedly, updates DB so state stays in sync.
+    """
+    while True:
+        with _bots_lock:
+            for bot_id in list(_bots.keys()):
+                entry = _bots[bot_id]
+                if entry["proc"].poll() is not None:  # process has exited
+                    cfg = entry.get("config", {"bot_id": bot_id})
+                    _record_bot_stopped(bot_id, cfg)
+                    try:
+                        entry["log_fh"].close()
+                    except Exception:
+                        pass
+                    _bots.pop(bot_id, None)
+                    logger.warning(f"⚠️ Bot {bot_id} exited unexpectedly (rc={entry['proc'].returncode})")
+        time.sleep(10)
+
+
 # ── Scheduler thread ──────────────────────────────────────────────────────────
 
 def _in_trading_hours(schedule: Dict[str, Any]) -> bool:
@@ -345,6 +368,7 @@ def on_startup():
             )
         except Exception:
             pass
+    threading.Thread(target=_monitor_bots_loop, daemon=True).start()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
 
 
