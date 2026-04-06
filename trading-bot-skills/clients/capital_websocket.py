@@ -314,35 +314,46 @@ class CapitalWebSocketClient:
           MANUAL      — manually closed / reverse signal
         """
         status = (payload.get('status') or payload.get('dealStatus') or '').upper()
-
         deal_id = payload.get('dealId') or payload.get('dealReference', '')
         direction = (payload.get('direction') or '').upper()
-        close_price = payload.get('level') or payload.get('closeLevel') or 0.0
-        profit = payload.get('profit') or payload.get('pnl') or 0.0
-        reason_raw = (payload.get('reason') or payload.get('dealStatus') or '').upper()
 
-        # Map Capital.com reason → internal close_reason
-        reason_map = {
-            'STOP_CLOSE': 'SL_HIT',
-            'LIMIT_CLOSE': 'TP_HIT',
-            'MANUAL': 'SIGNAL',
-        }
-        close_reason = reason_map.get(reason_raw, reason_raw or 'UNKNOWN')
+        if not self.on_position_update:
+            return
 
-        logger.info(
-            f"📋 Trade event: deal={deal_id} status={status} "
-            f"reason={close_reason} pnl={profit}"
-        )
+        if status == 'OPEN':
+            logger.info(f"📋 Trade opened via OPU: deal={deal_id} direction={direction}")
+            await self.on_position_update({
+                'status': 'OPEN',
+                'deal_id': deal_id,
+                'direction': direction,
+                'level': payload.get('level') or payload.get('openLevel') or 0.0,
+                'size': payload.get('size') or payload.get('dealSize') or 0.0,
+                'stopLevel': payload.get('stopLevel'),
+                'profitLevel': payload.get('limitLevel') or payload.get('profitLevel'),
+            })
 
-        if status == 'CLOSED' and self.on_position_update:
-            update = {
+        elif status == 'CLOSED':
+            close_price = payload.get('level') or payload.get('closeLevel') or 0.0
+            profit = payload.get('profit') or payload.get('pnl') or 0.0
+            reason_raw = (payload.get('reason') or '').upper()
+            reason_map = {
+                'STOP_CLOSE': 'SL_HIT',
+                'LIMIT_CLOSE': 'TP_HIT',
+                'MANUAL': 'SIGNAL',
+            }
+            close_reason = reason_map.get(reason_raw, reason_raw or 'UNKNOWN')
+            logger.info(
+                f"📋 Trade closed via OPU: deal={deal_id} "
+                f"reason={close_reason} pnl={profit}"
+            )
+            await self.on_position_update({
+                'status': 'CLOSED',
                 'deal_id': deal_id,
                 'direction': direction,
                 'close_price': float(close_price),
                 'pnl': float(profit),
                 'close_reason': close_reason,
-            }
-            await self.on_position_update(update)
+            })
 
     # ── Accessors ─────────────────────────────────────────────────────────────
 
