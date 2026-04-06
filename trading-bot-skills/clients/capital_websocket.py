@@ -4,8 +4,15 @@ Capital.com WebSocket Client
 Streams live price data from Capital.com:
 - OHLC candles (M5 resolution)
 - Live quotes (bid/offer prices)
-- Automatic keepalive ping every 8 minutes
-- Auto-reconnect with exponential backoff
+- Automatic keepalive ping every 30 seconds
+
+Supported WebSocket destinations (per Capital.com docs):
+  marketData.subscribe   — live bid/ask quotes
+  OHLCMarketData.subscribe — OHLC candles (M1/M5/M15/H1/D)
+  ping                   — keepalive
+
+Position lifecycle (open/close) is NOT available over WebSocket.
+Use GET /api/v1/history/activity for close detection.
 """
 
 import asyncio
@@ -44,7 +51,7 @@ class CapitalWebSocketClient:
         cst: str,
         security_token: str,
         ws_url: str = WS_URL,
-        ping_interval: int = 30,  # 30s — keep alive even during low-activity periods
+        ping_interval: int = 30,
     ):
         self.cst = cst
         self.security_token = security_token
@@ -60,10 +67,9 @@ class CapitalWebSocketClient:
         self.latest_candles: Dict[str, Dict] = {}
 
         # Callbacks — set these before calling run()
-        self.on_quote: Optional[Callable] = None           # async fn(quote_data: dict)
-        self.on_candle: Optional[Callable] = None          # async fn(candle_data: dict) — M5
-        self.on_h1_candle: Optional[Callable] = None       # async fn(candle_data: dict) — H1
-        self.on_position_update: Optional[Callable] = None # async fn(update: dict)
+        self.on_quote: Optional[Callable] = None   # async fn(quote_data: dict)
+        self.on_candle: Optional[Callable] = None  # async fn(candle_data: dict) — M5
+        self.on_h1_candle: Optional[Callable] = None  # async fn(candle_data: dict) — H1
 
     # ── Connection ────────────────────────────────────────────────────────────
 
@@ -135,30 +141,6 @@ class CapitalWebSocketClient:
         })
         logger.info(f"📊 Subscribed to {resolution} OHLC candles: {epics}")
 
-    async def subscribe_trades(self) -> None:
-        """
-        Subscribe to trade/position lifecycle events.
-        Fires whenever a position is opened, updated, or closed (SL/TP/manual).
-        """
-        await self._send({
-            'destination': 'trade.subscribe',
-            'correlationId': 'trade-sub',
-            'cst': self.cst,
-            'securityToken': self.security_token,
-            'payload': {},
-        })
-        logger.info("📋 Subscribed to trade position updates")
-
-    async def unsubscribe_quotes(self, epics: list) -> None:
-        """Unsubscribe from live quotes."""
-        await self._send({
-            'destination': 'marketData.unsubscribe',
-            'correlationId': 'quotes-unsub',
-            'cst': self.cst,
-            'securityToken': self.security_token,
-            'payload': {'epics': epics},
-        })
-
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -214,9 +196,6 @@ class CapitalWebSocketClient:
 
             elif destination == 'ohlc.event':
                 await self._handle_ohlc(payload)
-
-            elif destination in ('trade.event', 'opu'):
-                await self._handle_trade_update(payload)
 
             elif destination == 'ping':
                 logger.debug("💓 Ping acknowledged")
@@ -296,64 +275,6 @@ class CapitalWebSocketClient:
             await self.on_h1_candle(candle_data)
         elif self.on_candle:
             await self.on_candle(candle_data)
-
-    async def _handle_trade_update(self, payload: dict) -> None:
-        """
-        Handle position lifecycle events from Capital.com.
-
-        Capital.com sends these via 'trade.event' / 'opu' destination.
-        Status values:
-          OPEN        — position just opened
-          UPDATED     — SL/TP modified
-          CLOSED      — position closed (SL, TP, or manual)
-          DELETED     — order cancelled
-
-        Close reasons (payload['reason']):
-          STOP_CLOSE  — stop loss hit
-          LIMIT_CLOSE — take profit hit
-          MANUAL      — manually closed / reverse signal
-        """
-        status = (payload.get('status') or payload.get('dealStatus') or '').upper()
-        deal_id = payload.get('dealId') or payload.get('dealReference', '')
-        direction = (payload.get('direction') or '').upper()
-
-        if not self.on_position_update:
-            return
-
-        if status == 'OPEN':
-            logger.info(f"📋 Trade opened via OPU: deal={deal_id} direction={direction}")
-            await self.on_position_update({
-                'status': 'OPEN',
-                'deal_id': deal_id,
-                'direction': direction,
-                'level': payload.get('level') or payload.get('openLevel') or 0.0,
-                'size': payload.get('size') or payload.get('dealSize') or 0.0,
-                'stopLevel': payload.get('stopLevel'),
-                'profitLevel': payload.get('limitLevel') or payload.get('profitLevel'),
-            })
-
-        elif status == 'CLOSED':
-            close_price = payload.get('level') or payload.get('closeLevel') or 0.0
-            profit = payload.get('profit') or payload.get('pnl') or 0.0
-            reason_raw = (payload.get('reason') or '').upper()
-            reason_map = {
-                'STOP_CLOSE': 'SL_HIT',
-                'LIMIT_CLOSE': 'TP_HIT',
-                'MANUAL': 'SIGNAL',
-            }
-            close_reason = reason_map.get(reason_raw, reason_raw or 'UNKNOWN')
-            logger.info(
-                f"📋 Trade closed via OPU: deal={deal_id} "
-                f"reason={close_reason} pnl={profit}"
-            )
-            await self.on_position_update({
-                'status': 'CLOSED',
-                'deal_id': deal_id,
-                'direction': direction,
-                'close_price': float(close_price),
-                'pnl': float(profit),
-                'close_reason': close_reason,
-            })
 
     # ── Accessors ─────────────────────────────────────────────────────────────
 

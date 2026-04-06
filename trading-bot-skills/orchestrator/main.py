@@ -150,16 +150,27 @@ async def _poll_positions(
     capital,
     orchestrator: TradingOrchestrator,
     epic: str,
-    ws,
-    interval: int = 60,
+    interval: int = 10,
 ) -> None:
     """
-    Track position lifecycle using two mechanisms:
-      1. WebSocket OPU (trade.subscribe) — instant open/close events.
-      2. REST poll every `interval` seconds — reconciliation fallback for any
-         positions that closed without a matching OPU (e.g. connectivity gap).
+    Track position lifecycle via REST activity polling.
+
+    Capital.com WebSocket does not support position/trade events — only
+    OHLC candles and quotes are available over the stream. Position close
+    detection uses two REST mechanisms:
+
+      1. Activity poll every `interval` seconds (default 10 s):
+         GET /api/v1/history/activity — catches POSITION_OPENED and
+         POSITION_CLOSED events quickly after they occur.
+
+      2. Full positions reconciliation every 60 s:
+         GET /api/v1/positions — source-of-truth fallback for any event
+         the activity poll might have missed during a connectivity gap.
     """
     known: dict[str, dict] = {}
+    # Tracks (deal_id, action_type) pairs already processed to prevent
+    # double-firing when the activity lookback window overlaps polls.
+    processed: set[str] = set()
 
     def _positions_for_epic(raw: list) -> list[tuple[str, dict]]:
         result = []
@@ -185,90 +196,126 @@ async def _poll_positions(
                 level=float(pos.get('level') or pos.get('entry_price') or 0.0),
                 size=float(pos.get('size') or 0.0),
                 stop_level=pos.get('stopLevel') or pos.get('stop_loss'),
-                profit_level=pos.get('profitLevel') or pos.get('take_profit'),
+                profit_level=pos.get('profitLevel') or pos.get('limitLevel') or pos.get('take_profit'),
             )
         except Exception as e:
             logger.warning(f"⚠️ Failed to persist position {deal_id} to storage: {e}")
 
-    # Seed known positions from REST on startup
+    async def _handle_close(deal_id: str, close_level: float, description: str) -> None:
+        """Fire on_position_closed for a deal that just closed."""
+        pos = known.pop(deal_id, None)
+        direction = (pos.get('direction', 'BUY') if pos else 'BUY')
+        entry = float(pos.get('level', 0.0) if pos else 0.0)
+
+        # Derive close reason from activity description
+        desc_upper = description.upper()
+        if any(w in desc_upper for w in ('STOP', ' SL')):
+            close_reason = 'SL_HIT'
+        elif any(w in desc_upper for w in ('LIMIT', 'TAKE PROFIT', ' TP', 'PROFIT')):
+            close_reason = 'TP_HIT'
+        else:
+            close_reason = 'SIGNAL'
+
+        logger.info(f"🎯 Position closed via activity: {deal_id} reason={close_reason} @ {close_level}")
+        await orchestrator.on_position_closed(
+            deal_id=deal_id,
+            direction=direction,
+            close_reason=close_reason,
+            pnl=0.0,
+            entry_price=entry,
+            close_price=close_level,
+        )
+
+    # ── Startup seed: pull existing open positions from REST ──────────────────
     try:
         for deal_id, pos in _positions_for_epic(capital.get_open_positions() or []):
             known[deal_id] = pos
             await _persist_open_position(deal_id, pos)
+            # Mark as already-seen so the activity poll doesn't re-fire OPEN
+            processed.add(f"{deal_id}:POSITION_OPENED")
         logger.info(f"📋 Tracking {len(known)} open position(s) for {epic}")
     except Exception as e:
         logger.warning(f"⚠️ Initial positions fetch failed: {e}")
 
-    # ── Primary path: WebSocket OPU ──────────────────────────────────────────
-    async def _on_position_update(update: dict) -> None:
-        status = update.get('status', 'CLOSED')
-        deal_id = update.get('deal_id', '')
+    # ── Poll loop ─────────────────────────────────────────────────────────────
+    reconcile_counter = 0
+    reconcile_every = max(1, 60 // interval)  # every ~60 s
 
-        if status == 'OPEN':
-            if deal_id not in known:
-                pos = {
-                    'dealId':      deal_id,
-                    'direction':   update.get('direction', 'BUY'),
-                    'level':       update.get('level', 0.0),
-                    'size':        update.get('size', 0.0),
-                    'stopLevel':   update.get('stopLevel'),
-                    'profitLevel': update.get('profitLevel'),
-                }
-                known[deal_id] = pos
-                await _persist_open_position(deal_id, pos)
-                logger.info(f"📈 New position tracked via OPU: {deal_id}")
-
-        elif status == 'CLOSED':
-            pos = known.pop(deal_id, None)
-            direction  = update.get('direction') or (pos.get('direction', 'BUY') if pos else 'BUY')
-            entry      = (pos.get('level', 0.0) if pos else 0.0)
-            logger.info(f"🎯 Position closed via OPU: {deal_id} {update.get('close_reason')} @ {update.get('close_price')}")
-            await orchestrator.on_position_closed(
-                deal_id=deal_id,
-                direction=direction,
-                close_reason=update.get('close_reason', 'UNKNOWN'),
-                pnl=update.get('pnl', 0.0),
-                entry_price=entry,
-                close_price=update.get('close_price', 0.0),
-            )
-
-    ws.on_position_update = _on_position_update
-
-    # ── Fallback: REST reconciliation poll ───────────────────────────────────
     try:
         while True:
             await asyncio.sleep(interval)
+
+            # ── Primary: activity poll ────────────────────────────────────────
             try:
-                current: dict[str, dict] = {}
-                for deal_id, pos in _positions_for_epic(capital.get_open_positions() or []):
-                    current[deal_id] = pos
+                # Look back 3× the interval to cover any gap between polls
+                activities = capital.get_activity(
+                    last_period_seconds=interval * 3,
+                    epic=epic,
+                )
+                for activity in activities:
+                    if activity.get('epic', '').upper() != epic.upper():
+                        continue
+                    details = activity.get('details', {})
+                    description = activity.get('description', '')
 
-                # Positions missing from REST that OPU didn't catch → closed externally
-                for deal_id, pos in list(known.items()):
-                    if deal_id not in current:
-                        known.pop(deal_id, None)
-                        direction = pos.get('direction', 'BUY')
-                        entry = pos.get('level', 0.0)
-                        logger.warning(f"📉 Position closed (REST fallback, OPU missed): {deal_id}")
-                        await orchestrator.on_position_closed(
-                            deal_id=deal_id,
-                            direction=direction,
-                            close_reason='CLOSED',
-                            pnl=0.0,
-                            entry_price=entry,
-                            close_price=0.0,
-                        )
+                    for action in details.get('actions', []):
+                        action_type = action.get('actionType', '')
+                        deal_id = action.get('dealId') or activity.get('dealId', '')
+                        if not deal_id:
+                            continue
+                        key = f"{deal_id}:{action_type}"
+                        if key in processed:
+                            continue
+                        processed.add(key)
 
-                # Positions in REST not in known → OPU OPEN was missed, start tracking
-                for deal_id, pos in current.items():
-                    if deal_id not in known:
-                        known[deal_id] = pos
-                        logger.warning(f"📈 Position tracked (REST fallback, OPU missed): {deal_id}")
+                        if action_type == 'POSITION_OPENED':
+                            if deal_id not in known:
+                                pos = {
+                                    'dealId':      deal_id,
+                                    'direction':   details.get('direction', 'BUY'),
+                                    'level':       float(details.get('level') or 0.0),
+                                    'size':        float(details.get('size') or 0.0),
+                                    'stopLevel':   details.get('stopLevel'),
+                                    'profitLevel': details.get('limitLevel'),
+                                }
+                                known[deal_id] = pos
+                                await _persist_open_position(deal_id, pos)
+                                logger.info(f"📈 New position tracked via activity: {deal_id}")
+
+                        elif action_type in ('POSITION_CLOSED', 'POSITION_PARTIALLY_CLOSED'):
+                            close_level = float(details.get('level') or 0.0)
+                            await _handle_close(deal_id, close_level, description)
 
             except Exception as e:
-                logger.warning(f"⚠️ Position reconciliation poll error: {e}")
+                logger.warning(f"⚠️ Activity poll error: {e}")
+
+            # ── Fallback: full positions reconciliation every ~60 s ───────────
+            reconcile_counter += 1
+            if reconcile_counter >= reconcile_every:
+                reconcile_counter = 0
+                try:
+                    current: dict[str, dict] = {
+                        deal_id: pos
+                        for deal_id, pos in _positions_for_epic(capital.get_open_positions() or [])
+                    }
+                    # Positions gone from broker but still in known → missed close
+                    for deal_id, pos in list(known.items()):
+                        if deal_id not in current:
+                            close_key = f"{deal_id}:POSITION_CLOSED"
+                            if close_key not in processed:
+                                processed.add(close_key)
+                                logger.warning(f"📉 Position closed (REST fallback): {deal_id}")
+                                await _handle_close(deal_id, 0.0, '')
+                    # Positions at broker not in known → missed open
+                    for deal_id, pos in current.items():
+                        if deal_id not in known:
+                            known[deal_id] = pos
+                            await _persist_open_position(deal_id, pos)
+                            logger.warning(f"📈 Position tracked (REST fallback): {deal_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ REST reconciliation error: {e}")
+
     except asyncio.CancelledError:
-        ws.on_position_update = None
         raise
 
 
@@ -466,19 +513,16 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
 
             ws.on_candle = on_candle
             ws.on_h1_candle = on_h1_candle
-            # NOTE: trade.subscribe is not supported by Capital.com's streaming API.
-            # Position close events are detected via REST polling (see _poll_positions below).
 
             await ws.connect()
             await ws.subscribe_ohlc([epic], resolution=resolution)
             if 'analysis' in orchestrator.skills and orchestrator.skills['analysis'].require_h1_bb:
                 await ws.subscribe_ohlc([epic], resolution='HOUR')
-            await ws.subscribe_trades()  # OPU — instant position open/close events
-            logger.info(f"✅ Streaming {resolution} + H1 candles + trade events for {epic}")
+            logger.info(f"✅ Streaming {resolution} + H1 candles for {epic}")
 
-            # Start position tracker (OPU primary, REST reconciliation fallback)
+            # Start position tracker: activity poll (10 s) + REST reconciliation (60 s)
             poll_task = asyncio.create_task(
-                _poll_positions(capital, orchestrator, epic, ws, interval=60)
+                _poll_positions(capital, orchestrator, epic, interval=10)
             )
 
             retry = 0  # Reset backoff on successful connect
