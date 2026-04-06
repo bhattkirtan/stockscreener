@@ -150,6 +150,51 @@ def bot_status(bot_id: str = Query(default="gold_m5_bot")):
     return data
 
 
+@app.post("/bot/sync-positions")
+def sync_positions(env: Optional[str] = Query(default=None)):
+    """
+    Pull open positions from Capital.com and upsert them into active_positions.
+    Fixes the gap where positions opened outside the bot pipeline (manual trades,
+    positions that existed at bot startup) are missing from the UI.
+    Returns the number of positions synced.
+    """
+    try:
+        raw = cap.get_positions(env=env)
+    except CapitalError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+    positions = raw.get("positions", [])
+    synced = 0
+    now = datetime.utcnow().isoformat()
+
+    for entry in positions:
+        pos    = entry.get("position", {})
+        market = entry.get("market", {})
+        deal_id = pos.get("dealId")
+        if not deal_id:
+            continue
+
+        doc = {
+            "position_id":  deal_id,
+            "deal_id":      deal_id,
+            "epic":         market.get("epic", ""),
+            "direction":    pos.get("direction", ""),
+            "size":         pos.get("size", 0),
+            "open_level":   pos.get("level", 0),
+            "current_level": pos.get("level", 0),
+            "pnl":          pos.get("upl", 0),
+            "stop_loss":    pos.get("stopLevel"),
+            "take_profit":  pos.get("profitLevel"),
+            "opened_at":    pos.get("createdDateUTC") or now,
+            "status":       "OPEN",
+            "synced_at":    now,
+        }
+        db.kv_set("active_positions", deal_id, doc, merge=True)
+        synced += 1
+
+    return {"synced": synced, "total_broker_positions": len(positions)}
+
+
 @app.get("/bot/positions")
 def bot_positions(
     status: str = Query(default="open"),
