@@ -125,7 +125,29 @@ class TradingOrchestrator:
                     self.total_signals += 1
                     logger.info(f"📊 Signal: {context.signal} at {candle['close']}")
 
-            # 3. Risk Skill (validate signal, check cooldown)
+            # 3a. Reverse-signal close: if an opposite position is open, close it first
+            if context.signal and 'risk' in self.skills:
+                risk_skill = self.skills['risk']
+                if (
+                    risk_skill.has_open_position
+                    and risk_skill.open_position_direction
+                    and context.signal != risk_skill.open_position_direction
+                ):
+                    deal_to_close = risk_skill.open_position_deal_id
+                    closed_direction = risk_skill.open_position_direction
+                    logger.info(f"🔄 Reverse signal {context.signal} — closing {closed_direction} position {deal_to_close}")
+                    if 'execution' in self.skills and deal_to_close:
+                        await self.skills['execution'].close_position(deal_to_close)
+                    await self.on_position_closed(
+                        deal_id=deal_to_close or 'unknown',
+                        direction=closed_direction,
+                        close_reason='Reverse Signal',
+                        pnl=0.0,
+                        entry_price=0.0,
+                        close_price=candle.get('close', 0.0),
+                    )
+
+            # 3b. Risk Skill (validate signal, check cooldown)
             if 'risk' in self.skills and context.signal:
                 context = await self.skills['risk'].execute(context)
                 if not context.is_allowed:
@@ -139,7 +161,10 @@ class TradingOrchestrator:
                     self.total_trades += 1
                     logger.info(f"✅ Trade opened: {context.signal} @ {candle['close']}, deal={context.deal_id}")
                     if 'risk' in self.skills:
-                        self.skills['risk'].has_open_position = True
+                        risk = self.skills['risk']
+                        risk.has_open_position = True
+                        risk.open_position_deal_id = context.deal_id
+                        risk.open_position_direction = context.signal
 
             # 5. Storage Skill (save to Firestore)
             if 'storage' in self.skills and context.deal_id:
@@ -187,6 +212,8 @@ class TradingOrchestrator:
         if 'risk' in self.skills:
             risk_skill = self.skills['risk']
             risk_skill.has_open_position = False
+            risk_skill.open_position_deal_id = None
+            risk_skill.open_position_direction = None
             risk_skill.on_position_closed(
                 direction=direction,
                 close_reason=close_reason,

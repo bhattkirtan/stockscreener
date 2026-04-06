@@ -124,7 +124,17 @@ def login(body: LoginBody):
 def bot_status(bot_id: str = Query(default="gold_m5_bot")):
     data = db.kv_get("bot_status", bot_id)
     if data is None:
-        raise HTTPException(status_code=404, detail=f"Bot '{bot_id}' not found")
+        return {
+            "bot_id": bot_id,
+            "status": "STOPPED",
+            "uptime_seconds": 0,
+            "last_heartbeat": None,
+            "current_capital": None,
+            "total_trades": 0,
+            "open_positions_count": 0,
+            "win_rate": None,
+            "total_pnl": None,
+        }
 
     # Mark stale if no heartbeat for >2 min
     hb = data.get("last_heartbeat")

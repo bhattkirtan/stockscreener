@@ -120,7 +120,7 @@ capital_com:
   password: ${CAPITAL_PASSWORD}
   api_key: ${CAPITAL_API_KEY}
   environment: live  # ⚠️ Use 'demo' first, then 'live'
-  epic: CS.D.CFDGOLD.CFD.IP
+  epic: GOLD
   position_size: 0.5
   sl_pips: 10
   tp_pips: 30

@@ -26,7 +26,7 @@ class TestExecutionSkill:
             'password': 'test_password',
             'api_key': 'test_api_key',
             'environment': 'demo',
-            'epic': 'CS.D.CFDGOLD.CFD.IP',
+            'epic': 'GOLD',
             'position_size': 0.5,
             'sl_pips': 10,
             'tp_pips': 30,
@@ -47,7 +47,7 @@ class TestExecutionSkill:
     
     def test_initialization(self, skill):
         """Test skill initializes correctly"""
-        assert skill.epic == 'CS.D.CFDGOLD.CFD.IP'
+        assert skill.epic == 'GOLD'
         assert skill.position_size == 0.5
         assert skill.mock_mode == True
     

@@ -35,7 +35,7 @@ class CapitalWebSocketClient:
         client = CapitalWebSocketClient(tokens['CST'], tokens['X-SECURITY-TOKEN'])
         client.on_candle = my_candle_handler   # async callable
         await client.connect()
-        await client.subscribe_ohlc(['CS.D.CFDGOLD.CFD.IP'], resolution='MINUTE_5')
+        await client.subscribe_ohlc(['GOLD'], resolution='MINUTE_5')
         await client.run()
     """
 
@@ -44,7 +44,7 @@ class CapitalWebSocketClient:
         cst: str,
         security_token: str,
         ws_url: str = WS_URL,
-        ping_interval: int = 480,  # 8 minutes — Capital.com times out at 10 min
+        ping_interval: int = 30,  # 30s — keep alive even during low-activity periods
     ):
         self.cst = cst
         self.security_token = security_token
@@ -118,7 +118,7 @@ class CapitalWebSocketClient:
         Subscribe to OHLC candle stream.
 
         Args:
-            epics: List of instrument epics, e.g. ['CS.D.CFDGOLD.CFD.IP']
+            epics: List of instrument epics, e.g. ['GOLD']
             resolution: MINUTE_5 | MINUTE_15 | HOUR | DAY
             bar_type: 'classic' or 'heikin_ashi'
         """

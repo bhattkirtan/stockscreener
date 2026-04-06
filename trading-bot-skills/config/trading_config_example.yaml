@@ -24,7 +24,7 @@ capital_com:
   environment: demo  # 'demo' or 'live'
   
   # Market settings
-  epic: CS.D.CFDGOLD.CFD.IP  # GOLD epic code
+  epic: GOLD  # GOLD epic code
   
   # Order settings
   position_size: 0.5  # Position size (e.g., 0.5 = 0.5 lots)

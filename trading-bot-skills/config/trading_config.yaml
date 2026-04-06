@@ -3,7 +3,7 @@
 
 # General bot settings
 bot:
-  name: "GOLD M5 SupertrendVWAP Bot"
+  name: "Gold M5 Bot"
   mode: AUTO  # AUTO (opens trades) or SIGNAL_ONLY (logs signals)
   
 # Market data skill configuration

@@ -18,6 +18,7 @@ import argparse
 import logging
 import sys
 import os
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -145,6 +146,114 @@ def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str) 
     logger.info(f"✅ Registered {len(orchestrator.skills)} skills")
 
 
+async def _poll_positions(
+    capital,
+    orchestrator: TradingOrchestrator,
+    epic: str,
+    ws,
+    interval: int = 30,
+) -> None:
+    """
+    Detect position closes using two mechanisms:
+      1. marketData.subscribe quotes (fast) — fires on_position_closed the moment
+         the bid/ask price crosses a tracked position's SL or TP level.
+      2. REST poll every `interval` seconds — catches manual/system closes where
+         the position simply disappears from /api/v1/positions.
+    """
+    known: dict[str, dict] = {}
+
+    # Fetch initial open positions so we know what to track
+    try:
+        for p in (capital.get_open_positions() or []):
+            pos = p.get('position', p)
+            deal_id = pos.get('dealId')
+            if deal_id:
+                known[deal_id] = pos
+        logger.info(f"📋 Tracking {len(known)} open position(s)")
+    except Exception as e:
+        logger.warning(f"⚠️ Initial positions fetch failed: {e}")
+
+    # ── Fast path: quote callback ────────────────────────────────────────────
+    async def _on_quote(quote: dict) -> None:
+        bid = quote.get('bid')
+        offer = quote.get('offer')
+        if not bid or not offer:
+            return
+        for deal_id, pos in list(known.items()):
+            direction = pos.get('direction', 'BUY')
+            sl = pos.get('stopLevel')
+            tp = pos.get('profitLevel')
+            hit = False
+            reason = 'SL_HIT'
+            close_px = bid
+            if direction == 'BUY':
+                if sl and bid <= sl:
+                    hit, reason, close_px = True, 'SL_HIT', bid
+                elif tp and bid >= tp:
+                    hit, reason, close_px = True, 'TP_HIT', bid
+            else:  # SELL
+                if sl and offer >= sl:
+                    hit, reason, close_px = True, 'SL_HIT', offer
+                elif tp and offer <= tp:
+                    hit, reason, close_px = True, 'TP_HIT', offer
+            if hit:
+                known.pop(deal_id, None)
+                entry = pos.get('level', 0.0)
+                size = pos.get('size', 1.0)
+                pnl = (close_px - entry) * size if direction == 'BUY' else (entry - close_px) * size
+                logger.info(f"🎯 Position close detected via quote: {deal_id} {reason} @ {close_px}")
+                await orchestrator.on_position_closed(
+                    deal_id=deal_id,
+                    direction=direction,
+                    close_reason=reason,
+                    pnl=round(pnl, 2),
+                    entry_price=entry,
+                    close_price=close_px,
+                )
+
+    ws.on_quote = _on_quote
+
+    # ── Slow path: REST poll ─────────────────────────────────────────────────
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                current: dict[str, dict] = {}
+                for p in (capital.get_open_positions() or []):
+                    pos = p.get('position', p)
+                    deal_id = pos.get('dealId')
+                    if deal_id:
+                        current[deal_id] = pos
+
+                # Positions that disappeared → closed externally
+                for deal_id, pos in list(known.items()):
+                    if deal_id not in current:
+                        known.pop(deal_id, None)
+                        direction = pos.get('direction', 'BUY')
+                        entry = pos.get('level', 0.0)
+                        logger.info(f"📉 Position closed externally (REST): {deal_id}")
+                        await orchestrator.on_position_closed(
+                            deal_id=deal_id,
+                            direction=direction,
+                            close_reason='CLOSED',
+                            pnl=0.0,
+                            entry_price=entry,
+                            close_price=0.0,
+                        )
+
+                # New positions opened elsewhere → start tracking them
+                for deal_id, pos in current.items():
+                    if deal_id not in known:
+                        known[deal_id] = pos
+                        logger.info(f"📈 New position tracked: {deal_id}")
+
+            except Exception as e:
+                logger.warning(f"⚠️ Position poll error: {e}")
+    except asyncio.CancelledError:
+        ws.on_quote = None
+        raise
+
+
 async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environment: str) -> None:
     """
     Live / demo trading loop:
@@ -159,7 +268,14 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
     exec_cfg = config.get('execution', {})
     timeframe = config.get('market_data', {}).get('timeframe', 'M5')
     resolution = TIMEFRAME_TO_RESOLUTION.get(timeframe, 'MINUTE_5')
-    epic = exec_cfg.get('epic') or config.get('market_data', {}).get('epic', 'CS.D.CFDGOLD.CFD.IP')
+    market_cfg = config.get('market_data', {})
+    epic = (
+        exec_cfg.get('epic')
+        or market_cfg.get('epic')
+        or market_cfg.get('instrument')
+    )
+    if not epic:
+        raise ValueError("No epic/instrument configured. Set market_data.instrument in your YAML or pass --instrument.")
 
     # ── 1. Authenticate ───────────────────────────────────────────────────────
     logger.info(f"🔐 Authenticating with Capital.com ({environment.upper()})...")
@@ -190,7 +306,13 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 "blocking new entries until they close"
             )
             if 'risk' in orchestrator.skills:
-                orchestrator.skills['risk'].has_open_position = True
+                risk = orchestrator.skills['risk']
+                risk.has_open_position = True
+                # Populate direction/deal_id from first open position so reverse-signal close works
+                first = open_positions[0]
+                pos = first.get('position', first)
+                risk.open_position_deal_id = pos.get('dealId')
+                risk.open_position_direction = pos.get('direction', 'BUY')
         else:
             logger.info("✅ No open positions — starting clean")
     except Exception as e:
@@ -328,17 +450,28 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
 
             ws.on_candle = on_candle
             ws.on_h1_candle = on_h1_candle
-            ws.on_position_update = on_position_update
+            # NOTE: trade.subscribe is not supported by Capital.com's streaming API.
+            # Position close events are detected via REST polling (see _poll_positions below).
 
             await ws.connect()
             await ws.subscribe_ohlc([epic], resolution=resolution)
             if 'analysis' in orchestrator.skills and orchestrator.skills['analysis'].require_h1_bb:
                 await ws.subscribe_ohlc([epic], resolution='HOUR')
-            await ws.subscribe_trades()
-            logger.info(f"✅ Streaming {resolution} + H1 candles + trade events for {epic}")
+            await ws.subscribe_quotes([epic])  # marketData.subscribe — feeds on_quote for fast SL/TP detection
+            logger.info(f"✅ Streaming {resolution} + H1 candles + live quotes for {epic}")
+
+            # Start position close detector (quotes + REST fallback)
+            poll_task = asyncio.create_task(
+                _poll_positions(capital, orchestrator, epic, ws, interval=30)
+            )
 
             retry = 0  # Reset backoff on successful connect
-            await ws.run()  # Blocks until disconnect
+            try:
+                await ws.run()  # Blocks until disconnect
+            finally:
+                poll_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await poll_task
 
         except asyncio.CancelledError:
             logger.info("⏸️ WebSocket task cancelled — shutting down")
@@ -370,13 +503,63 @@ async def main() -> None:
         default='demo',
         help='live = real money | demo = paper trading | backtest = historical data',
     )
+    parser.add_argument(
+        '--instrument',
+        default=None,
+        help='Instrument override (e.g. GOLD, US100). Loads config/instruments/<INSTRUMENT>.yaml if available.',
+    )
+    parser.add_argument(
+        '--timeframe',
+        default=None,
+        help='Timeframe override (e.g. M5, H1).',
+    )
+    parser.add_argument(
+        '--bot-id',
+        dest='bot_id',
+        default=None,
+        help='Explicit bot ID used for logging and status (e.g. gold_m5_bot). '
+             'If not set, derived from config bot.name.',
+    )
+    parser.add_argument(
+        '--quantity',
+        type=float,
+        default=None,
+        help='Position size (contracts/lots) override. Overrides the instrument config value.',
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
 
+    # Apply CLI instrument/timeframe overrides
+    if args.instrument:
+        instr_upper = args.instrument.upper()
+        config.setdefault('market_data', {})['instrument'] = instr_upper
+        # Load instrument-specific config overlay if it exists
+        inst_path = Path(__file__).parent.parent / 'config' / 'instruments' / f'{instr_upper}.yaml'
+        if inst_path.exists():
+            import yaml as _yaml
+            with open(inst_path) as _f:
+                inst_cfg = _yaml.safe_load(_f)
+            # Deep-merge: instrument config values override base config
+            for k, v in inst_cfg.items():
+                if isinstance(v, dict) and isinstance(config.get(k), dict):
+                    config[k].update(v)
+                else:
+                    config[k] = v
+    if args.timeframe:
+        config.setdefault('market_data', {})['timeframe'] = args.timeframe.upper()
+    if args.quantity is not None:
+        config.setdefault('execution', {})['position_size'] = args.quantity
+        config.setdefault('risk', {})['position_size'] = args.quantity
+
     # Bot identity for logging / Firestore
-    bot_name = config.get('bot', {}).get('name', 'gold_m5_bot')
-    bot_id = bot_name.lower().replace(' ', '_')
+    # Prefer explicit --bot-id CLI arg; fall back to deriving from config name
+    if args.bot_id:
+        bot_id = args.bot_id
+        bot_name = bot_id
+    else:
+        bot_name = config.get('bot', {}).get('name', 'gold_m5_bot')
+        bot_id = bot_name.lower().replace(' ', '_')
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # ── Logging setup ─────────────────────────────────────────────────────────

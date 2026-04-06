@@ -144,8 +144,14 @@ def log_query(
 
     if filters:
         for key, value in filters.items():
-            sql += f" AND json_extract(data, '$.{key}') = ?"
-            params.append(value)
+            if key == "bot_id":
+                # Support prefix match: 'gold_m5_bot' matches 'gold_m5_bot_something'
+                sql += f" AND (json_extract(data, '$.{key}') = ? OR json_extract(data, '$.{key}') LIKE ?)"
+                params.append(value)
+                params.append(f"{value}%")
+            else:
+                sql += f" AND json_extract(data, '$.{key}') = ?"
+                params.append(value)
 
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)

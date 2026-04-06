@@ -37,7 +37,7 @@ import os
 from typing import Any, Optional
 
 import requests
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
@@ -239,8 +239,19 @@ def get_run_chart(run_id: str):
 
 
 @router.get("/optimize/{run_id}/chart-data")
-def get_run_chart_data(run_id: str):
-    return _forward_backtest("GET", f"/optimize/{run_id}/chart-data")
+def get_run_chart_data(
+    run_id: str,
+    from_ts: Optional[int] = Query(None, alias="from"),
+    to_ts: Optional[int] = Query(None, alias="to"),
+):
+    parts = []
+    if from_ts is not None:
+        parts.append(f"from={from_ts}")
+    if to_ts is not None:
+        parts.append(f"to={to_ts}")
+    qs = "&".join(parts)
+    path = f"/optimize/{run_id}/chart-data" + (f"?{qs}" if qs else "")
+    return _forward_backtest("GET", path)
 
 
 @router.delete("/optimize/{run_id}")
@@ -249,6 +260,11 @@ def delete_run(run_id: str):
 
 
 # ── Bot control ──────────────────────────────────────────────────────────────
+
+@router.get("/bot/configs")
+def bot_configs():
+    return _forward_bot_control("GET", "/configs")
+
 
 @router.get("/bot/process")
 def bot_process():
@@ -262,8 +278,8 @@ async def bot_start(request: Request):
 
 
 @router.post("/bot/stop")
-def bot_stop():
-    return _forward_bot_control("POST", "/stop")
+def bot_stop(bot_id: str):
+    return _forward_bot_control("POST", f"/stop?bot_id={bot_id}")
 
 
 @router.get("/bot/schedule")

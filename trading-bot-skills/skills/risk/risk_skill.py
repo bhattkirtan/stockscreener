@@ -85,10 +85,13 @@ class RiskSkill(Skill):
         
         # Position sizing
         self.position_size_pct = config.get('position_size_pct', 2.0)
+        self.position_size = config.get('position_size', 0.5)
         
         # Position tracking for cooldown
         self.last_closed_position = None
         self.has_open_position = False
+        self.open_position_deal_id: Optional[str] = None
+        self.open_position_direction: Optional[str] = None
         
     async def execute(self, context) -> 'Context':
         """
@@ -382,16 +385,7 @@ class RiskSkill(Skill):
         return True, "No cooldown required"
     
     def _calculate_position_size(self) -> float:
-        """
-        Calculate position size based on risk parameters.
-        
-        Returns:
-            Position size (contracts/lots)
-        """
-        # For GOLD trading, use fixed size based on capital
-        # 2% of $10k = $200 risk per trade
-        # With 20 pip SL and $1/pip, that's 0.5 contracts
-        return 0.5  # 0.5 contracts for GOLD
+        return self.position_size
     
     def on_position_closed(
         self, 

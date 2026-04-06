@@ -49,7 +49,7 @@ class ExecutionSkill(Skill):
         self.sl_pips = config.get('sl_pips', 20)
         self.tp_pips = config.get('tp_pips', 40)
         self.position_size = config.get('position_size', 0.5)
-        self.epic = config.get('epic', 'CS.D.CFDGOLD.CFD.IP')  # Default: GOLD
+        self.epic = config.get('epic', 'GOLD')  # Default: GOLD
         
         # Initialize Capital.com API client
         capital_config = config.get('capital_com', {})

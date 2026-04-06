@@ -208,8 +208,12 @@ def resample_ohlcv(df: pd.DataFrame, target_minutes: int) -> pd.DataFrame:
     return resampled
 
 
-def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str, max_points: int = 3000, data_path: str = None) -> None:
-    """Persist compact chart data for native UI plotting (price, supertrend, trade markers)."""
+def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str, max_points: int = None, data_path: str = None) -> None:
+    """Persist full-resolution chart data for native UI plotting (price, supertrend, trade markers).
+
+    All bars are written without downsampling — the API serves time-range slices so the
+    frontend only receives the bars it needs for the currently visible week.
+    """
     try:
         df = full_df.copy()
         if 'timestamp' in df.columns:
@@ -223,9 +227,7 @@ def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str,
             print('⚠️ Native chart data skipped: required columns missing')
             return
 
-        if len(df) > max_points:
-            stride = max(1, len(df) // max_points)
-            df = df.iloc[::stride].copy()
+        # No downsampling — write every bar so the API can slice by time range
 
         def _safe_float(val, default=0.0):
             try:
@@ -262,9 +264,15 @@ def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str,
                 'exit_reason': str(t.get('exit_reason', '')),
             })
 
+        unix_times = [int(pd.Timestamp(p['timestamp']).timestamp()) for p in series]
         meta = {
             'bars': len(series),
+            'total_bars': len(series),
             'trades': len(trades_payload),
+            'full_range': {
+                'from': min(unix_times) if unix_times else 0,
+                'to': max(unix_times) if unix_times else 0,
+            },
             'generated_at': datetime.utcnow().isoformat(),
         }
         if data_path:

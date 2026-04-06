@@ -202,7 +202,7 @@ class CapitalAPIClient:
         Place a market order
 
         Args:
-            epic: Market identifier (e.g., 'CS.D.CFDGOLD.CFD.IP')
+            epic: Market identifier (e.g., 'GOLD')
             direction: 'BUY' or 'SELL'
             size: Position size (e.g., 0.5)
             stop_level: Stop loss price (optional)
@@ -375,7 +375,7 @@ class CapitalAPIClient:
         Fetch historical OHLC candles from Capital.com API
         
         Args:
-            epic: Market identifier (e.g., 'CS.D.CFDGOLD.CFD.IP')
+            epic: Market identifier (e.g., 'GOLD')
             resolution: Candle resolution - MINUTE, MINUTE_5, MINUTE_15, HOUR, DAY, WEEK
             max_bars: Maximum number of candles to fetch (default: 100, max: 1000)
             from_date: Start date in ISO format 'YYYY-MM-DDTHH:MM:SS' (optional)
@@ -400,11 +400,11 @@ class CapitalAPIClient:
             
         Example:
             # Get last 100 M5 candles for GOLD
-            candles = client.get_historical_prices('CS.D.CFDGOLD.CFD.IP', 'MINUTE_5', 100)
+            candles = client.get_historical_prices('GOLD', 'MINUTE_5', 100)
             
             # Get specific date range
             candles = client.get_historical_prices(
-                'CS.D.CFDGOLD.CFD.IP',
+                'GOLD',
                 'MINUTE_5',
                 max_bars=500,
                 from_date='2026-03-01T00:00:00',
@@ -415,38 +415,17 @@ class CapitalAPIClient:
         
         path = f'/api/v1/prices/{epic}'
         
-        # Build query parameters
+        # Build query parameters — only add from/to when explicitly provided.
+        # Capital.com demo API returns 404 when date-range params are present for some epics.
         params = {
             'resolution': resolution,
             'max': min(max_bars, 1000)  # Capital.com max is 1000
         }
         
-        # If date range not provided, calculate based on resolution and bars
-        if not from_date:
-            to_dt = datetime.utcnow() if not to_date else datetime.fromisoformat(to_date.replace('Z', ''))
-            
-            # Calculate minutes per bar based on resolution
-            minutes_per_bar = {
-                'MINUTE': 1,
-                'MINUTE_5': 5,
-                'MINUTE_15': 15,
-                'MINUTE_30': 30,
-                'HOUR': 60,
-                'HOUR_4': 240,
-                'DAY': 1440,
-                'WEEK': 10080
-            }.get(resolution, 5)
-            
-            # Add 50% buffer for market closures/gaps
-            minutes_back = max_bars * minutes_per_bar * 1.5
-            from_dt = to_dt - timedelta(minutes=minutes_back)
-            
-            from_date = from_dt.strftime('%Y-%m-%dT%H:%M:%S')
-            if not to_date:
-                to_date = to_dt.strftime('%Y-%m-%dT%H:%M:%S')
-        
-        params['from'] = from_date
-        params['to'] = to_date
+        if from_date:
+            params['from'] = from_date
+        if to_date:
+            params['to'] = to_date
         
         try:
             logger.info(f"📊 Fetching {max_bars} {resolution} candles for {epic}")

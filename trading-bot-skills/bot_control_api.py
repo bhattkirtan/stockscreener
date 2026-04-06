@@ -21,15 +21,17 @@ import threading
 import time
 from datetime import datetime, time as dtime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DATA_DIR      = Path(os.getenv("DATA_DIR", "/data"))
-SCHEDULE_FILE = DATA_DIR / "bot_schedule.json"
-BOT_LOG_FILE  = DATA_DIR / "bot_process.log"
+DATA_DIR       = Path(os.getenv("DATA_DIR", "/data"))
+CONFIG_DIR     = Path(os.getenv("CONFIG_DIR", "/app/config/instruments"))
+SCHEDULE_FILE  = DATA_DIR / "bot_schedule.json"
+DB_PATH        = DATA_DIR / "trading.db"
 
 app = FastAPI(title="Bot Control API", version="1.0.0")
 app.add_middleware(
@@ -39,33 +41,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Process state ─────────────────────────────────────────────────────────────
+# ── Process state (multi-bot) ────────────────────────────────────────────────
+# Each entry: bot_id -> {proc, start_time, error, config, log_fh}
 
-_proc:            Optional[subprocess.Popen] = None
-_proc_lock        = threading.Lock()
-_proc_start_time: Optional[str] = None
-_last_error:      Optional[str] = None
-_last_config:     Dict[str, Any] = {}
+_bots:      Dict[str, Dict[str, Any]] = {}
+_bots_lock  = threading.Lock()
 
 
-def _is_running() -> bool:
-    return _proc is not None and _proc.poll() is None
+def _is_running(bot_id: str) -> bool:
+    entry = _bots.get(bot_id)
+    return entry is not None and entry["proc"].poll() is None
 
 
-def _proc_status() -> Dict[str, Any]:
-    running = _is_running()
-    rc = None if running else (_proc.returncode if _proc else None)
+def _bot_status(bot_id: str) -> Dict[str, Any]:
+    entry = _bots.get(bot_id)
+    if not entry:
+        return {
+            "running": False, "pid": None, "status": "stopped",
+            "started_at": None, "mode": None, "instrument": None,
+            "timeframe": None, "bot_id": bot_id, "exit_code": None, "error": None,
+        }
+    proc    = entry["proc"]
+    running = proc.poll() is None
+    rc      = None if running else proc.returncode
+    cfg     = entry.get("config", {})
     return {
         "running":    running,
-        "pid":        _proc.pid if running and _proc else None,
-        "status":     "running" if running else ("error" if _last_error else "stopped"),
-        "started_at": _proc_start_time,
-        "mode":       _last_config.get("mode"),
-        "instrument": _last_config.get("instrument"),
-        "timeframe":  _last_config.get("timeframe"),
+        "pid":        proc.pid if running else None,
+        "status":     "running" if running else ("error" if entry.get("error") else "stopped"),
+        "started_at": entry.get("start_time"),
+        "mode":       cfg.get("mode"),
+        "instrument": cfg.get("instrument"),
+        "timeframe":  cfg.get("timeframe"),
+        "bot_id":     bot_id,
         "exit_code":  rc,
-        "error":      _last_error,
+        "error":      entry.get("error"),
     }
+
+
+def _all_bots_status() -> List[Dict[str, Any]]:
+    return [_bot_status(bid) for bid in list(_bots.keys())]
 
 
 # ── Schedule helpers ──────────────────────────────────────────────────────────
@@ -99,56 +114,162 @@ def _save_schedule(schedule: Dict[str, Any]) -> None:
     SCHEDULE_FILE.write_text(json.dumps(schedule, indent=2))
 
 
+# ── Bot state persistence (SQLite kv_store) ──────────────────────────────────
+
+import sqlite3 as _sqlite3
+
+
+def _db_conn():
+    return _sqlite3.connect(str(DB_PATH), check_same_thread=False)
+
+
+def _db_ensure_table(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS kv_store "
+        "(collection TEXT NOT NULL, doc_id TEXT NOT NULL, data TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL, PRIMARY KEY (collection, doc_id))"
+    )
+    conn.commit()
+
+
+def _upsert_bot_state(conn, bot_id: str, cfg: Dict[str, Any]) -> None:
+    """Upsert current state into kv_store(collection='bot_state')."""
+    conn.execute(
+        "INSERT INTO kv_store (collection, doc_id, data, updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(collection, doc_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+        ("bot_state", bot_id, json.dumps(cfg), datetime.utcnow().isoformat()),
+    )
+
+
+def _append_bot_event(conn, bot_id: str, event: str, cfg: Dict[str, Any]) -> None:
+    """Append a start/stop event to append_log(collection='bot_events') for history."""
+    now = datetime.utcnow().isoformat()
+    data = {**cfg, "event": event, "timestamp": now}
+    conn.execute(
+        "INSERT INTO append_log (collection, doc_id, data, created_at) VALUES (?,?,?,?)",
+        ("bot_events", bot_id, json.dumps(data), now),
+    )
+
+
+def _save_bot_state() -> None:
+    """Upsert every known bot's current state into kv_store."""
+    try:
+        conn = _db_conn()
+        _db_ensure_table(conn)
+        for bot_id, entry in _bots.items():
+            cfg = {**entry["config"], "status": "running" if _is_running(bot_id) else "stopped"}
+            _upsert_bot_state(conn, bot_id, cfg)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _record_bot_started(bot_id: str, cfg: Dict[str, Any]) -> None:
+    try:
+        conn = _db_conn()
+        _db_ensure_table(conn)
+        _upsert_bot_state(conn, bot_id, {**cfg, "status": "running"})
+        _append_bot_event(conn, bot_id, "started", cfg)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _record_bot_stopped(bot_id: str, cfg: Dict[str, Any]) -> None:
+    try:
+        conn = _db_conn()
+        _db_ensure_table(conn)
+        _upsert_bot_state(conn, bot_id, {**cfg, "status": "stopped"})
+        _append_bot_event(conn, bot_id, "stopped", cfg)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _load_bot_state() -> List[Dict[str, Any]]:
+    """Return bot configs whose status is 'running' (i.e. were active at last shutdown)."""
+    try:
+        conn = _db_conn()
+        _db_ensure_table(conn)
+        rows = conn.execute(
+            "SELECT data FROM kv_store WHERE collection='bot_state' "
+            "AND json_extract(data, '$.status')='running'"
+        ).fetchall()
+        conn.close()
+        return [json.loads(r[0]) for r in rows]
+    except Exception:
+        return []
+
+
 # ── Bot lifecycle ─────────────────────────────────────────────────────────────
 
-def _start_bot(mode: str = "demo", instrument: str = "GOLD", timeframe: str = "M5") -> None:
-    global _proc, _proc_start_time, _last_error, _last_config
+def _start_bot(mode: str = "demo", instrument: str = "GOLD", timeframe: str = "M5", quantity: float = None) -> str:
+    """Start a bot for the given instrument/timeframe. Returns bot_id."""
+    bot_id = f"{instrument.lower()}_{timeframe.lower()}_bot"
 
-    with _proc_lock:
-        if _is_running():
-            return
-
-        _last_error  = None
-        _last_config = {"mode": mode, "instrument": instrument, "timeframe": timeframe}
+    with _bots_lock:
+        if _is_running(bot_id):
+            return bot_id  # already running, nothing to do
 
         cmd = [
             "python", "orchestrator/main.py",
             "--mode",       mode,
             "--instrument", instrument,
             "--timeframe",  timeframe,
+            "--bot-id",     bot_id,
         ]
+        if quantity is not None:
+            cmd += ["--quantity", str(quantity)]
 
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        log_fh = open(BOT_LOG_FILE, "a")
+        log_path = DATA_DIR / f"{bot_id}.log"
+        log_fh   = open(log_path, "a")
+        cfg = {"mode": mode, "instrument": instrument, "timeframe": timeframe, "bot_id": bot_id, "quantity": quantity}
         try:
-            _proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 cwd="/app",
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
             )
-            _proc_start_time = datetime.utcnow().isoformat()
+            _bots[bot_id] = {
+                "proc":       proc,
+                "start_time": datetime.utcnow().isoformat(),
+                "error":      None,
+                "log_fh":     log_fh,
+                "config":     cfg,
+            }
         except Exception as exc:
-            _last_error = str(exc)
             log_fh.close()
             raise
 
+    _record_bot_started(bot_id, cfg)
+    return bot_id
 
-def _stop_bot() -> None:
-    global _proc, _last_error
 
-    with _proc_lock:
-        if _proc is None or not _is_running():
+def _stop_bot(bot_id: str) -> None:
+    with _bots_lock:
+        entry = _bots.get(bot_id)
+        if not entry or not _is_running(bot_id):
             return
         try:
-            _proc.send_signal(signal.SIGTERM)
-            _proc.wait(timeout=15)
+            entry["proc"].send_signal(signal.SIGTERM)
+            entry["proc"].wait(timeout=15)
         except subprocess.TimeoutExpired:
-            _proc.kill()
-        except Exception as exc:
-            _last_error = str(exc)
+            entry["proc"].kill()
+        except Exception:
+            pass
         finally:
-            _proc = None
+            try:
+                entry["log_fh"].close()
+            except Exception:
+                pass
+            cfg = entry.get("config", {"bot_id": bot_id})
+            _record_bot_stopped(bot_id, cfg)
+            _bots.pop(bot_id, None)
 
 
 # ── Scheduler thread ──────────────────────────────────────────────────────────
@@ -173,15 +294,18 @@ def _scheduler_loop() -> None:
         try:
             schedule = _load_schedule()
             if schedule.get("enabled"):
-                should = _in_trading_hours(schedule)
-                if should and not _is_running():
+                instrument = schedule.get("instrument", "GOLD")
+                timeframe  = schedule.get("timeframe",  "M5")
+                bot_id     = f"{instrument.lower()}_{timeframe.lower()}_bot"
+                should     = _in_trading_hours(schedule)
+                if should and not _is_running(bot_id):
                     _start_bot(
-                        mode=       schedule.get("mode",       "demo"),
-                        instrument= schedule.get("instrument", "GOLD"),
-                        timeframe=  schedule.get("timeframe",  "M5"),
+                        mode=       schedule.get("mode", "demo"),
+                        instrument= instrument,
+                        timeframe=  timeframe,
                     )
-                elif not should and _is_running():
-                    _stop_bot()
+                elif not should and _is_running(bot_id):
+                    _stop_bot(bot_id)
         except Exception:
             pass
         time.sleep(60)
@@ -192,6 +316,17 @@ def _scheduler_loop() -> None:
 @app.on_event("startup")
 def on_startup():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Restore bots that were running before the last shutdown/restart
+    for cfg in _load_bot_state():
+        try:
+            _start_bot(
+                mode=       cfg.get("mode", "demo"),
+                instrument= cfg.get("instrument", "GOLD"),
+                timeframe=  cfg.get("timeframe", "M5"),
+                quantity=   cfg.get("quantity"),
+            )
+        except Exception:
+            pass
     threading.Thread(target=_scheduler_loop, daemon=True).start()
 
 
@@ -204,32 +339,35 @@ def health():
 
 @app.get("/process")
 def process_status():
-    return _proc_status()
+    """Returns all known bot statuses as a list."""
+    return {"bots": _all_bots_status()}
 
 
 class StartRequest(BaseModel):
     mode:       str = "demo"
     instrument: str = "GOLD"
     timeframe:  str = "M5"
+    quantity:   float = None
 
 
 @app.post("/start")
 def start(req: StartRequest):
-    if _is_running():
-        raise HTTPException(status_code=409, detail="Bot is already running")
+    bot_id = f"{req.instrument.lower()}_{req.timeframe.lower()}_bot"
+    if _is_running(bot_id):
+        raise HTTPException(status_code=409, detail=f"{bot_id} is already running")
     try:
-        _start_bot(req.mode, req.instrument, req.timeframe)
+        _start_bot(req.mode, req.instrument, req.timeframe, req.quantity)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return _proc_status()
+    return _bot_status(bot_id)
 
 
 @app.post("/stop")
-def stop():
-    if not _is_running():
-        raise HTTPException(status_code=409, detail="Bot is not running")
-    _stop_bot()
-    return _proc_status()
+def stop(bot_id: str):
+    if not _is_running(bot_id):
+        raise HTTPException(status_code=409, detail=f"{bot_id} is not running")
+    _stop_bot(bot_id)
+    return _bot_status(bot_id)
 
 
 @app.get("/schedule")
@@ -256,3 +394,31 @@ def update_schedule(req: ScheduleRequest):
         schedule["trading_hours"] = req.trading_hours
     _save_schedule(schedule)
     return schedule
+
+
+@app.get("/configs")
+def list_configs():
+    """Return available bot configs derived from instrument YAML files."""
+    configs: List[Dict[str, Any]] = []
+    if not CONFIG_DIR.exists():
+        return {"configs": configs, "count": 0}
+    for yaml_path in sorted(CONFIG_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(yaml_path.read_text())
+            md   = data.get("market_data", {})
+            risk = data.get("risk", {})
+            instrument = md.get("instrument", yaml_path.stem)
+            timeframe  = md.get("timeframe", "M5")
+            bot_id     = f"{instrument.lower()}_{timeframe.lower()}_bot"
+            configs.append({
+                "id":               bot_id,
+                "name":             data.get("bot", {}).get("name", f"{instrument} {timeframe} Bot"),
+                "instrument":       instrument,
+                "timeframe":        timeframe,
+                "pip_size":         risk.get("pip_size", 1.0),
+                "stop_loss_pips":   risk.get("stop_loss_pips", 20),
+                "take_profit_pips": risk.get("take_profit_pips", 60),
+            })
+        except Exception:
+            pass
+    return {"configs": configs, "count": len(configs)}

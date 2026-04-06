@@ -62,7 +62,7 @@ capital_com:
   password: your_password
   api_key: your_api_key
   environment: demo  # or 'live'
-  epic: CS.D.CFDGOLD.CFD.IP
+  epic: GOLD
 ```
 
 ---

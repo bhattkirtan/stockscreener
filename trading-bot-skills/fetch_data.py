@@ -5,12 +5,12 @@ fetch_data.py — Download historical OHLC data from Capital.com
 Usage:
     python3 fetch_data.py --epic EURUSD --timeframe M5 --bars 150000
     python3 fetch_data.py --epic EURUSD --timeframe M15 --bars 50000
-    python3 fetch_data.py --epic CS.D.CFDGOLD.CFD.IP --timeframe M5 --bars 150000 --env live
+    python3 fetch_data.py --epic GOLD --timeframe M5 --bars 150000 --env live
     python3 fetch_data.py --epic EURUSD --timeframe M5 --bars 10000 --output custom_name.csv
 
 Epics (common):
     EURUSD              EUR/USD forex (auto-resolved to CS.D.EURUSD.CFD.IP)
-    GOLD                Gold CFD (auto-resolved to CS.D.CFDGOLD.CFD.IP)
+    GOLD                Gold CFD (auto-resolved to GOLD)
     US100               NASDAQ 100 (auto-resolved to CS.D.NASDAQ.CFD.IP)
     Or any raw Capital.com epic (e.g. CS.D.EURUSD.CFD.IP)
 

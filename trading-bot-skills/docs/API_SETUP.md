@@ -58,7 +58,7 @@ capital_com:
   password: your_password_here
   api_key: your_api_key_here
   environment: demo  # Change to 'live' for real trading
-  epic: CS.D.CFDGOLD.CFD.IP
+  epic: GOLD
   position_size: 0.5
   sl_pips: 20
   tp_pips: 40

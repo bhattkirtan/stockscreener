@@ -5,11 +5,11 @@ import subprocess
 import threading
 import uuid
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -156,11 +156,66 @@ def _build_reporting_payload(report: Dict[str, Any], instrument: str, run_id: st
     }
 
 
-def _load_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
+def _load_chart_data(
+    instrument: str,
+    run_id: str,
+    from_ts: Optional[int] = None,
+    to_ts: Optional[int] = None,
+) -> Dict[str, Any]:
     data_file = RESULTS_DIR / instrument.upper() / run_id / "chart_data.json"
     if not data_file.exists():
         raise FileNotFoundError(f"Missing chart data file: {data_file}")
-    return json.loads(data_file.read_text())
+    payload = json.loads(data_file.read_text())
+
+    def _parse_ts(s: str) -> int:
+        """Parse ISO timestamp string → unix int (UTC). Uses stdlib only."""
+        try:
+            s = str(s).strip()
+            # Replace space separator with T for fromisoformat compatibility
+            if " " in s and "T" not in s:
+                s = s.replace(" ", "T", 1)
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except Exception:
+            return 0
+
+    # Always expose the full range in meta so the frontend knows total extent
+    series = payload.get("series", [])
+    payload.setdefault("meta", {})
+    payload["meta"].setdefault("total_bars", len(series))
+    # Use pre-computed full_range from chart_data.json if available; otherwise derive it
+    if "full_range" not in payload["meta"] and series:
+        all_ts = [_parse_ts(p.get("timestamp", "")) for p in series]
+        payload["meta"]["full_range"] = {"from": min(all_ts), "to": max(all_ts)}
+
+    # Filter series to requested range
+    if from_ts is not None or to_ts is not None:
+        def _in_range_series(p: Dict) -> bool:
+            t = _parse_ts(p.get("timestamp", ""))
+            if from_ts is not None and t < from_ts:
+                return False
+            if to_ts is not None and t > to_ts:
+                return False
+            return True
+
+        def _in_range_trade(t: Dict) -> bool:
+            et = t.get("entry_time") or t.get("exit_time")
+            if not et:
+                return True
+            ts = _parse_ts(str(et))
+            if from_ts is not None and ts < from_ts:
+                return False
+            if to_ts is not None and ts > to_ts:
+                return False
+            return True
+
+        payload["series"] = [p for p in series if _in_range_series(p)]
+        payload["trades"] = [t for t in payload.get("trades", []) if _in_range_trade(t)]
+        payload["meta"]["bars"] = len(payload["series"])
+
+    return payload
 
 
 def _load_trades_csv(instrument: str, run_id: str) -> list[Dict[str, Any]]:
@@ -537,11 +592,15 @@ def get_trade_chart(run_id: str):
 
 
 @app.get("/optimize/{run_id}/chart-data")
-def get_trade_chart_data(run_id: str) -> Dict[str, Any]:
+def get_trade_chart_data(
+    run_id: str,
+    from_ts: Optional[int] = Query(None, alias="from"),
+    to_ts: Optional[int] = Query(None, alias="to"),
+) -> Dict[str, Any]:
     run = get_run(run_id)
     instrument = str(run.get("instrument", "GOLD")).upper()
     try:
-        return _load_chart_data(instrument, run_id)
+        return _load_chart_data(instrument, run_id, from_ts, to_ts)
     except FileNotFoundError:
         try:
             return _build_legacy_chart_data(instrument, run_id)

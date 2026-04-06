@@ -74,3 +74,4 @@ m1_validation:
 
 execution:
   instrument: GOLD
+  epic: GOLD
