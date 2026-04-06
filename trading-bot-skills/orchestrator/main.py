@@ -162,14 +162,24 @@ async def _poll_positions(
     """
     known: dict[str, dict] = {}
 
-    # Fetch initial open positions so we know what to track
-    try:
-        for p in (capital.get_open_positions() or []):
+    def _positions_for_epic(raw: list) -> list[tuple[str, dict]]:
+        """Return (deal_id, position_dict) pairs filtered to this bot's epic."""
+        result = []
+        for p in raw:
+            market_epic = p.get('market', {}).get('epic', '')
+            if market_epic and market_epic.upper() != epic.upper():
+                continue
             pos = p.get('position', p)
             deal_id = pos.get('dealId')
             if deal_id:
-                known[deal_id] = pos
-        logger.info(f"📋 Tracking {len(known)} open position(s)")
+                result.append((deal_id, pos))
+        return result
+
+    # Fetch initial open positions so we know what to track
+    try:
+        for deal_id, pos in _positions_for_epic(capital.get_open_positions() or []):
+            known[deal_id] = pos
+        logger.info(f"📋 Tracking {len(known)} open position(s) for {epic}")
     except Exception as e:
         logger.warning(f"⚠️ Initial positions fetch failed: {e}")
 
@@ -219,11 +229,8 @@ async def _poll_positions(
             await asyncio.sleep(interval)
             try:
                 current: dict[str, dict] = {}
-                for p in (capital.get_open_positions() or []):
-                    pos = p.get('position', p)
-                    deal_id = pos.get('dealId')
-                    if deal_id:
-                        current[deal_id] = pos
+                for deal_id, pos in _positions_for_epic(capital.get_open_positions() or []):
+                    current[deal_id] = pos
 
                 # Positions that disappeared → closed externally
                 for deal_id, pos in list(known.items()):
@@ -299,22 +306,27 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
 
     # ── Restore state: check for positions left open from a previous session ────
     try:
-        open_positions = capital.get_open_positions()
+        def _epic_positions(raw: list) -> list[dict]:
+            return [p.get('position', p) for p in raw
+                    if not p.get('market', {}).get('epic') or
+                    p.get('market', {}).get('epic', '').upper() == epic.upper()]
+
+        all_positions = capital.get_open_positions() or []
+        open_positions = _epic_positions(all_positions)
         if open_positions:
             logger.warning(
-                f"⚠️ Found {len(open_positions)} open position(s) from previous session — "
+                f"⚠️ Found {len(open_positions)} open position(s) for {epic} from previous session — "
                 "blocking new entries until they close"
             )
             if 'risk' in orchestrator.skills:
                 risk = orchestrator.skills['risk']
                 risk.has_open_position = True
                 # Populate direction/deal_id from first open position so reverse-signal close works
-                first = open_positions[0]
-                pos = first.get('position', first)
+                pos = open_positions[0]
                 risk.open_position_deal_id = pos.get('dealId')
                 risk.open_position_direction = pos.get('direction', 'BUY')
         else:
-            logger.info("✅ No open positions — starting clean")
+            logger.info(f"✅ No open positions for {epic} — starting clean")
     except Exception as e:
         logger.warning(f"⚠️ Could not check open positions on startup: {e} — assuming none open")
 
