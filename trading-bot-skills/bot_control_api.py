@@ -23,10 +23,15 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import logging
+
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DATA_DIR       = Path(os.getenv("DATA_DIR", "/data"))
 CONFIG_DIR     = Path(os.getenv("CONFIG_DIR", "/app/config/instruments"))
@@ -204,21 +209,6 @@ def _load_bot_state() -> List[Dict[str, Any]]:
         return []
 
 
-def _clear_bot_states() -> None:
-    """Mark all bots as stopped — called on clean shutdown so they don't auto-restore."""
-    try:
-        conn = _db_conn()
-        _db_ensure_table(conn)
-        conn.execute(
-            "UPDATE kv_store SET data=json_set(data,'$.status','stopped'), "
-            "updated_at=? WHERE collection='bot_state'",
-            (datetime.utcnow().isoformat(),),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
 
 # ── Bot lifecycle ─────────────────────────────────────────────────────────────
 
@@ -355,10 +345,12 @@ def _scheduler_loop() -> None:
 @app.on_event("startup")
 def on_startup():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # Restore bots that were running before an unexpected crash.
-    # On a clean shutdown/redeploy, on_shutdown() clears these states first,
-    # so only genuinely crash-interrupted bots are restored here.
-    for cfg in _load_bot_state():
+    # Restore all bots that were running before shutdown (clean or crash).
+    # Bots won't enter the market immediately — RiskSkill's startup flip gate
+    # blocks entries until the trend changes direction at least once.
+    for i, cfg in enumerate(_load_bot_state()):
+        if i > 0:
+            time.sleep(5)  # stagger startup: Capital.com rate-limits POST /session to 1 req/sec
         try:
             _start_bot(
                 mode=       cfg.get("mode", "demo"),
@@ -370,15 +362,6 @@ def on_startup():
             pass
     threading.Thread(target=_monitor_bots_loop, daemon=True).start()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
-
-
-@app.on_event("shutdown")
-def on_shutdown():
-    # On clean shutdown (SIGTERM / graceful redeploy), mark all bots stopped
-    # so they are NOT auto-restored on next startup.
-    # If the process is killed (SIGKILL / crash), this handler won't run,
-    # leaving DB states as 'running' → bots will be restored on next startup.
-    _clear_bot_states()
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

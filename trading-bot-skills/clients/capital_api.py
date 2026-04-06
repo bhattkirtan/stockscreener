@@ -260,7 +260,45 @@ class CapitalAPIClient:
         except Exception as e:
             logger.error(f"❌ Failed to get positions: {e}")
             raise
-    
+
+    def get_activity(
+        self,
+        last_period_seconds: int = 120,
+        epic: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Fetch recent account activity for position close detection.
+
+        Uses GET /api/v1/history/activity with type==POSITION;status==EXECUTED
+        to find recently closed positions including close reason (SL/TP/USER)
+        and close level.
+
+        Args:
+            last_period_seconds: Look-back window in seconds (default 120)
+            epic: Optional instrument filter
+
+        Returns:
+            List of activity dicts from Capital.com
+        """
+        try:
+            filter_parts = ['type==POSITION', 'status==EXECUTED']
+            if epic:
+                filter_parts.append(f'epic=={epic}')
+
+            params = {
+                'lastPeriod': last_period_seconds,
+                'detailed': 'true',
+                'filter': ';'.join(filter_parts),
+            }
+            response = self._request('GET', '/api/v1/history/activity', params=params)
+            activities = response.json().get('activities', [])
+            logger.debug(f"📋 Activity poll: {len(activities)} executed position event(s)")
+            return activities
+
+        except Exception as e:
+            logger.error(f"❌ Failed to get activity: {e}")
+            return []
+
     def close_position(self, deal_id: str) -> Dict:
         """
         Close an open position
