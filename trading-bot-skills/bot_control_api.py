@@ -190,7 +190,7 @@ def _record_bot_stopped(bot_id: str, cfg: Dict[str, Any]) -> None:
 
 
 def _load_bot_state() -> List[Dict[str, Any]]:
-    """Return bot configs whose status is 'running' (i.e. were active at last shutdown)."""
+    """Return bot configs whose status is 'running' (i.e. survived a crash without clean shutdown)."""
     try:
         conn = _db_conn()
         _db_ensure_table(conn)
@@ -202,6 +202,22 @@ def _load_bot_state() -> List[Dict[str, Any]]:
         return [json.loads(r[0]) for r in rows]
     except Exception:
         return []
+
+
+def _clear_bot_states() -> None:
+    """Mark all bots as stopped — called on clean shutdown so they don't auto-restore."""
+    try:
+        conn = _db_conn()
+        _db_ensure_table(conn)
+        conn.execute(
+            "UPDATE kv_store SET data=json_set(data,'$.status','stopped'), "
+            "updated_at=? WHERE collection='bot_state'",
+            (datetime.utcnow().isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 # ── Bot lifecycle ─────────────────────────────────────────────────────────────
@@ -316,7 +332,9 @@ def _scheduler_loop() -> None:
 @app.on_event("startup")
 def on_startup():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # Restore bots that were running before the last shutdown/restart
+    # Restore bots that were running before an unexpected crash.
+    # On a clean shutdown/redeploy, on_shutdown() clears these states first,
+    # so only genuinely crash-interrupted bots are restored here.
     for cfg in _load_bot_state():
         try:
             _start_bot(
@@ -328,6 +346,15 @@ def on_startup():
         except Exception:
             pass
     threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    # On clean shutdown (SIGTERM / graceful redeploy), mark all bots stopped
+    # so they are NOT auto-restored on next startup.
+    # If the process is killed (SIGKILL / crash), this handler won't run,
+    # leaving DB states as 'running' → bots will be restored on next startup.
+    _clear_bot_states()
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
