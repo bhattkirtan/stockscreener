@@ -53,6 +53,21 @@ services:
     networks:
       - internal
 
+  # ── Bar updater (incremental candle sync, runs every 15 min) ────────────────
+  bar-updater:
+    build:
+      context: ./trading-bot-skills
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DB_PATH=/data/trading.db
+    command: python bar_updater.py --interval 900
+    volumes:
+      - trading_data:/data
+    networks:
+      - internal
+
   # ── Trading bot (live/demo process manager + scheduler) ──────────────────────
   trading-bot:
     build:

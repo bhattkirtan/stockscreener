@@ -22,6 +22,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def _conn():
 
 
 def _ensure_schema():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with _conn() as con:
         con.executescript("""
             CREATE TABLE IF NOT EXISTS kv_store (
@@ -63,6 +65,19 @@ def _ensure_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_append_collection
                 ON append_log (collection, created_at DESC);
+            CREATE TABLE IF NOT EXISTS candles (
+                epic       TEXT NOT NULL,
+                timeframe  TEXT NOT NULL,
+                timestamp  TEXT NOT NULL,
+                open       REAL NOT NULL,
+                high       REAL NOT NULL,
+                low        REAL NOT NULL,
+                close      REAL NOT NULL,
+                volume     INTEGER DEFAULT 0,
+                PRIMARY KEY (epic, timeframe, timestamp)
+            );
+            CREATE INDEX IF NOT EXISTS idx_candles_lookup
+                ON candles (epic, timeframe, timestamp DESC);
         """)
 
 
@@ -241,6 +256,72 @@ class SQLiteAPIClient:
             return False
 
     # ── Generic ───────────────────────────────────────────────────────────────
+
+    # ── Historical Candles ────────────────────────────────────────────────────
+
+    def insert_candles(self, epic: str, timeframe: str, candles: List[Dict]) -> int:
+        """Upsert OHLCV candles. Returns number of rows written."""
+        if not candles:
+            return 0
+        rows = [
+            (epic, timeframe, c['timestamp'],
+             float(c['open']), float(c['high']), float(c['low']), float(c['close']),
+             int(c.get('volume', 0)))
+            for c in candles
+        ]
+        with _conn() as con:
+            con.executemany(
+                "INSERT OR REPLACE INTO candles "
+                "(epic, timeframe, timestamp, open, high, low, close, volume) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        return len(rows)
+
+    def count_candles(self, epic: str, timeframe: str) -> int:
+        """Return total stored bars for this epic/timeframe."""
+        with _conn() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM candles WHERE epic=? AND timeframe=?",
+                (epic, timeframe),
+            ).fetchone()
+        return row[0] if row else 0
+
+    def query_candles(
+        self,
+        epic: str,
+        timeframe: str,
+        limit: int = None,
+        from_ts: str = None,
+        to_ts: str = None,
+    ) -> List[Dict]:
+        """
+        Return candles sorted oldest→newest.
+
+        limit  — if set, return the most recent `limit` bars (useful for backtests
+                 that say "give me the last 215 000 bars").
+        from_ts / to_ts — ISO timestamp strings for date-range filtering.
+        """
+        filters = "WHERE epic=? AND timeframe=?"
+        params: list = [epic, timeframe]
+        if from_ts:
+            filters += " AND timestamp >= ?"
+            params.append(from_ts)
+        if to_ts:
+            filters += " AND timestamp <= ?"
+            params.append(to_ts)
+
+        if limit:
+            # Grab the most recent `limit` rows, then re-sort ascending
+            inner = f"SELECT timestamp,open,high,low,close,volume FROM candles {filters} ORDER BY timestamp DESC LIMIT ?"
+            q = f"SELECT * FROM ({inner}) ORDER BY timestamp"
+            params.append(limit)
+        else:
+            q = f"SELECT timestamp,open,high,low,close,volume FROM candles {filters} ORDER BY timestamp"
+
+        with _conn() as con:
+            rows = con.execute(q, params).fetchall()
+        return [dict(r) for r in rows]
 
     def set_document(
         self,

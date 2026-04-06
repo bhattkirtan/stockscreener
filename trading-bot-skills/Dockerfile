@@ -38,7 +38,7 @@ COPY core/         ./core/
 COPY skills/       ./skills/
 COPY orchestrator/ ./orchestrator/
 COPY config/       ./config/
-COPY run_skills_backtest.py fetch_data.py view_trades.py backtest_api.py bot_control_api.py ./
+COPY run_skills_backtest.py fetch_data.py view_trades.py backtest_api.py bot_control_api.py bar_updater.py ./
 
 # Persistent data dirs (overridden by volumes in docker-compose)
 RUN useradd -m botuser \
