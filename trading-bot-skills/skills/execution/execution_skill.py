@@ -314,10 +314,40 @@ class ExecutionSkill(Skill):
             result = self.rest_client.close_position(deal_id=deal_id)
             logger.info(f"✅ Position closed: {deal_id}")
             return True
-        
+
         except Exception as e:
-            logger.error(f"❌ Failed to close position {deal_id}: {e}")
-            return False
+            if "404" not in str(e):
+                logger.error(f"❌ Failed to close position {deal_id}: {e}")
+                return False
+
+            # 404 — stale deal_id in local state (position was re-opened under a
+            # new ID after a restart, or the ID was never correctly persisted).
+            # Fall back: fetch real open positions for this instrument and close
+            # whichever one is actually there.
+            logger.warning(
+                f"⚠️ Position {deal_id} not found on broker (404) — "
+                f"fetching real open positions for {self.epic}"
+            )
+            try:
+                raw = self.rest_client.get_open_positions() or []
+                epic_positions = [
+                    p for p in raw
+                    if p.get('market', {}).get('epic', '').upper() == self.epic.upper()
+                ]
+                if not epic_positions:
+                    logger.warning(f"⚠️ No open {self.epic} positions on broker — position was already closed")
+                    return True
+                real_deal_id = epic_positions[0].get('position', {}).get('dealId')
+                if not real_deal_id:
+                    logger.error(f"❌ Could not extract dealId from broker position: {epic_positions[0]}")
+                    return False
+                logger.info(f"🔁 Closing real position {real_deal_id} instead of stale {deal_id}")
+                self.rest_client.close_position(deal_id=real_deal_id)
+                logger.info(f"✅ Position closed via fallback: {real_deal_id}")
+                return True
+            except Exception as fallback_err:
+                logger.error(f"❌ Fallback close also failed: {fallback_err}")
+                return False
     
     def validate_config(self) -> bool:
         """Validate execution configuration"""
