@@ -87,16 +87,14 @@ class NewsRSSAdapter:
     - Completely free
     """
     
-    # Free RSS feeds (no authentication needed)
+    # Free RSS feeds (verified working)
     RSS_FEEDS = {
-        'Reuters': 'https://www.reutersagency.com/feed/',
-        'CNBC': 'https://www.cnbc.com/id/100003114/device/rss/rss.html',
-        'MarketWatch': 'http://feeds.marketwatch.com/marketwatch/topstories/',
-        'BBC': 'http://feeds.bbci.co.uk/news/business/rss.xml',
-        'AP': 'https://hosted.ap.org/lineups/BUSINESS.rss',
-        'Bloomberg': 'https://www.bloomberg.com/feed/podcast/etf-report.xml',
-        'FT': 'https://www.ft.com/?format=rss',  # Limited free access
-        'WSJ': 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml'
+        'CNBC': 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114',
+        'MarketWatch': 'https://feeds.content.dowjones.io/public/rss/mw_topstories',
+        'BBC': 'https://feeds.bbci.co.uk/news/business/rss.xml',
+        'Yahoo': 'https://finance.yahoo.com/news/rssindex',
+        'Investing': 'https://www.investing.com/rss/news.rss',
+        'FT': 'https://www.ft.com/rss/home',
     }
     
     # High-impact keywords (from strategy.md Section 6.6.4)

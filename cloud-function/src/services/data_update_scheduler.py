@@ -105,6 +105,36 @@ class DataUpdateScheduler:
             import traceback
             traceback.print_exc()
     
+    def _save_news_to_sqlite(self, headlines: list) -> None:
+        """Upsert news headlines into SQLite kv_store for API consumption."""
+        import sqlite3
+        db_path = self.data_dir / "trading.db"
+        if not db_path.exists():
+            return
+        try:
+            now = datetime.utcnow().isoformat()
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS kv_store "
+                "(collection TEXT NOT NULL, doc_id TEXT NOT NULL, data TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL, PRIMARY KEY (collection, doc_id))"
+            )
+            payload = json.dumps({
+                'updated_at': now,
+                'total_headlines': len(headlines),
+                'high_impact_count': sum(1 for h in headlines if h.is_high_impact()),
+                'headlines': [h.to_dict() for h in headlines if h.is_high_impact()]
+            })
+            conn.execute(
+                "INSERT INTO kv_store (collection, doc_id, data, updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(collection, doc_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+                ("news_feed", "latest", payload, now),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"SQLite news save failed: {e}")
+
     def update_news(self):
         """Update news headlines"""
         logger.info("Updating news headlines...")
@@ -130,6 +160,9 @@ class DataUpdateScheduler:
             output_file = self.data_dir / "news_headlines.json"
             with open(output_file, 'w') as f:
                 json.dump(news_data, f, indent=2)
+
+            # Also persist to SQLite so the API can read it
+            self._save_news_to_sqlite(headlines)
 
             self.last_news_update = datetime.utcnow()
             logger.info(f"✅ News updated: {len(high_impact)} high-impact headlines")
