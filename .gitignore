@@ -62,6 +62,11 @@ htmlcov/
 # ── Generated backtest reports ────────────────────────────────────────────────
 trading-bot-skills/reports/
 trading-bot-skills/results/
+trading-bot-skills/logs/
+trading-bot-skills/data/optimization/
+trading-bot-skills/data/candles/
+trading-bot-skills/data/signals/
+trading-bot-skills/node_modules/
 
 # ── Claude IDE settings ───────────────────────────────────────────────────────
 .claude/

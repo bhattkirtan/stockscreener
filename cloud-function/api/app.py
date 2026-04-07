@@ -58,24 +58,48 @@ RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/data/results"))
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 # UI_PASSWORD is set via env var in the Docker .env file.
-# A random session token is minted once at startup; clients receive it on
-# successful login and must send it as:  Authorization: Bearer <token>
-# Restarting the container invalidates all active sessions.
+# Each successful login mints a unique per-session token (not shared).
+# Brute-force protection: IP locked out for LOCKOUT_SECONDS after MAX_FAILURES attempts.
+
+import time
+from collections import defaultdict
 
 UI_PASSWORD = os.getenv("UI_PASSWORD", "")
-_SESSION_TOKEN: str = secrets.token_hex(32)
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "https://capitalunlimited.de").split(",") if o.strip()]
+
+# Per-IP brute-force tracking  {ip: {"failures": int, "locked_until": float}}
+_login_attempts: dict = defaultdict(lambda: {"failures": 0, "locked_until": 0.0})
+MAX_FAILURES    = 5
+LOCKOUT_SECONDS = 15 * 60  # 15 minutes
+
+# Active sessions: token → expiry timestamp
+_SESSIONS: dict[str, float] = {}
+SESSION_TTL = 12 * 60 * 60  # 12 hours
 
 _PUBLIC_PATHS = {"/", "/auth/login"}
 
 app = FastAPI(title="Trading Bot API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(external_data.router)
 app.include_router(scheduler_proxy.router)
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return forwarded.split(",")[0].strip() if forwarded else request.client.host
+
+
+def _valid_session(token: str) -> bool:
+    expiry = _SESSIONS.get(token)
+    if expiry and time.time() < expiry:
+        return True
+    _SESSIONS.pop(token, None)
+    return False
 
 
 @app.middleware("http")
@@ -83,7 +107,7 @@ async def auth_middleware(request: Request, call_next):
     if not UI_PASSWORD or request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not secrets.compare_digest(token, _SESSION_TOKEN):
+    if not token or not _valid_session(token):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
@@ -93,7 +117,7 @@ def startup():
     db.init_db()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     auth_status = "enabled" if UI_PASSWORD else "disabled (UI_PASSWORD not set)"
-    logger.info(f"DB initialised, log dir ready — auth {auth_status}")
+    logger.info(f"DB initialised, log dir ready — auth {auth_status}, CORS origins={ALLOWED_ORIGINS}")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -109,12 +133,35 @@ class LoginBody(BaseModel):
     password: str
 
 @app.post("/auth/login")
-def login(body: LoginBody):
+def login(body: LoginBody, request: Request):
     if not UI_PASSWORD:
-        # Auth disabled — return a dummy token so the frontend still works
         return {"token": "no-auth"}
+
+    ip = _client_ip(request)
+    state = _login_attempts[ip]
+
+    # Check lockout
+    if time.time() < state["locked_until"]:
+        remaining = int(state["locked_until"] - time.time())
+        logger.warning(f"🔒 Login blocked (locked) from {ip} — {remaining}s remaining")
+        raise HTTPException(status_code=429, detail=f"Too many failed attempts. Try again in {remaining}s.")
+
     if secrets.compare_digest(body.password, UI_PASSWORD):
-        return {"token": _SESSION_TOKEN}
+        # Success — reset failures, mint a fresh per-session token
+        state["failures"] = 0
+        state["locked_until"] = 0.0
+        token = secrets.token_hex(32)
+        _SESSIONS[token] = time.time() + SESSION_TTL
+        logger.info(f"✅ Login successful from {ip}")
+        return {"token": token}
+
+    # Failed attempt
+    state["failures"] += 1
+    logger.warning(f"⚠️ Failed login attempt {state['failures']}/{MAX_FAILURES} from {ip}")
+    if state["failures"] >= MAX_FAILURES:
+        state["locked_until"] = time.time() + LOCKOUT_SECONDS
+        logger.warning(f"🔒 IP {ip} locked out for {LOCKOUT_SECONDS // 60} minutes")
+        raise HTTPException(status_code=429, detail=f"Too many failed attempts. Locked for {LOCKOUT_SECONDS // 60} minutes.")
     raise HTTPException(status_code=401, detail="Invalid password")
 
 
