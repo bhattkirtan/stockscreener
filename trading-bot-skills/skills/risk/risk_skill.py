@@ -8,10 +8,13 @@ EVENT-DRIVEN:
 """
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime, timedelta
+import logging
 import pytz
 import pandas as pd
 import sys
 import os
+
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path to import base_skill
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -93,11 +96,9 @@ class RiskSkill(Skill):
         self.open_position_deal_id: Optional[str] = None
         self.open_position_direction: Optional[str] = None
 
-        # Startup flip gate: block entries until the trend has flipped at least
-        # once since the bot started. Prevents entering on the first live candle
-        # just because the indicator already shows a signal.
-        # Set _startup_flip_seen = True externally when resuming a live position
-        # so the gate doesn't apply after that position closes.
+        # Startup flip gate: block entries until the Supertrend direction changes
+        # at least once since the bot started. Prevents entering mid-trend on restart.
+        # Set _startup_flip_seen = True externally when resuming a live position.
         self._startup_signal: Optional[str] = None
         self._startup_flip_seen: bool = False
         
@@ -126,7 +127,7 @@ class RiskSkill(Skill):
                 context.risk_reason = f"⏳ Startup: trend hasn't flipped yet (still {signal})"
                 return context
             else:
-                # Trend has flipped from startup signal — normal operation from here
+                # Trend has flipped — normal operation from here
                 self._startup_flip_seen = True
                 logger.info(f"✅ Startup flip detected: {self._startup_signal} → {signal} — entries now enabled")
 

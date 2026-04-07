@@ -129,61 +129,80 @@ def _apply_set_overrides(config: dict, set_args: list[str]) -> list[tuple[str, A
     return applied
 
 
-def _ensure_data(data_path: str, config: dict) -> None:
+def _ensure_candles_in_db(epic: str, timeframe: str, bars: int, config: dict) -> None:
     """
-    If data_path does not exist, download it via fetch_data.py.
+    Ensure the DB has reasonably up-to-date candles for this epic/timeframe.
 
-    Derives --epic and --bars from the instrument config and filename
-    so no manual intervention is needed.
+    Download logic:
+    - If the DB is empty → full download needed.
+    - If the most recent candle is stale (older than 2× the bar interval) → delta download
+      to catch up recent bars only.
+    - If we have data but fewer than requested bars → use what we have (old history is
+      not going to appear; don't re-download thousands of already-stored bars).
     """
-    if Path(data_path).exists():
-        return
+    import subprocess
+    from clients.sqlite_api import SQLiteAPIClient
+    from datetime import timezone
+    db = SQLiteAPIClient()
+    stored = db.count_candles(epic, timeframe)
 
-    print(f"⚠️  Data file not found: {data_path}")
-    print(f"⬇️  Auto-downloading...")
+    if stored == 0:
+        print(f"⚠️  DB has 0 candles for {epic}/{timeframe} — downloading {bars:,} bars...")
+        fetch_bars = bars
+    else:
+        # Check staleness: parse the newest timestamp from the DB
+        timeframe_minutes = {'M1': 1, 'M5': 5, 'M15': 15, 'M30': 30, 'H1': 60, 'H4': 240, 'D1': 1440}
+        interval_minutes = timeframe_minutes.get(timeframe, 5)
+        stale_threshold = pd.Timedelta(minutes=interval_minutes * 2)
 
-    # Resolve epic from instrument config (e.g. GOLD, EURUSD, US100)
-    epic = config.get('market_data', {}).get('instrument', 'GOLD')
-
-    # Parse bar count from filename (e.g. GOLD_M5_215000bars.csv → 215000)
-    stem = Path(data_path).stem          # 'GOLD_M5_215000bars'
-    bars = 150000                        # safe default
-    for part in stem.split('_'):
-        if part.endswith('bars') and part[:-4].isdigit():
-            bars = int(part[:-4])
-            break
-
-    # Timeframe from filename (e.g. GOLD_M5_... → M5)
-    timeframe = 'M5'
-    parts = stem.split('_')
-    if len(parts) >= 2 and parts[1].upper().startswith('M'):
-        timeframe = parts[1].upper()
+        rows = db.query_candles(epic, timeframe, limit=1)  # newest candle
+        if rows:
+            newest_ts = pd.Timestamp(rows[0]['timestamp'] if isinstance(rows[0], dict) else rows[0][0])
+            if newest_ts.tzinfo is None:
+                newest_ts = newest_ts.tz_localize('UTC')
+            age = pd.Timestamp.now(tz='UTC') - newest_ts
+            if age <= stale_threshold:
+                # Data is fresh and we have history — just use what's in the DB
+                if stored < bars:
+                    print(f"ℹ️  DB has {stored:,} candles for {epic}/{timeframe} (requested {bars:,}) — "
+                          f"using available history (data is up-to-date)")
+                return
+            else:
+                # Data exists but is stale — fetch only recent delta (1000 bars is enough to catch up)
+                fetch_bars = min(1000, bars)
+                print(f"⚠️  DB has {stored:,} candles for {epic}/{timeframe}, newest is {age} old — "
+                      f"fetching {fetch_bars:,} recent bars to catch up...")
+        else:
+            fetch_bars = bars
+            print(f"⚠️  DB has {stored:,} candles for {epic}/{timeframe}, need {bars:,} — downloading...")
 
     fetch_script = Path(__file__).parent / 'fetch_data.py'
     cmd = [
         sys.executable, str(fetch_script),
         '--epic',      epic,
         '--timeframe', timeframe,
-        '--bars',      str(bars),
-        '--output',    data_path,
+        '--bars',      str(fetch_bars),
     ]
-
     print(f"   Command: {' '.join(cmd)}")
-    import subprocess
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         raise RuntimeError(
-            f"Data download failed for {epic} {timeframe} {bars} bars.\n"
+            f"Data download failed for {epic} {timeframe} {fetch_bars} bars.\n"
             f"Check your API credentials in .env and try manually:\n"
-            f"  python3 fetch_data.py --epic {epic} --timeframe {timeframe} --bars {bars}"
+            f"  python3 fetch_data.py --epic {epic} --timeframe {timeframe} --bars {fetch_bars}"
         )
-    print(f"✅ Download complete: {data_path}")
+    print(f"✅ Download complete")
 
 
-def load_historical_data(data_path: str) -> pd.DataFrame:
-    """Load historical candle data"""
-    print(f"📊 Loading data from {data_path}...")
-    df = pd.read_csv(data_path)
+def load_historical_data(epic: str, timeframe: str, bars: int = None) -> pd.DataFrame:
+    """Load historical candles from SQLite for the given epic/timeframe."""
+    from clients.sqlite_api import SQLiteAPIClient
+    db = SQLiteAPIClient()
+    print(f"📊 Loading {epic}/{timeframe} from SQLite" + (f" (last {bars:,} bars)" if bars else "") + "...")
+    rows = db.query_candles(epic, timeframe, limit=bars)
+    if not rows:
+        raise RuntimeError(f"No candles found in DB for {epic}/{timeframe}. Run fetch_data.py first.")
+    df = pd.DataFrame(rows)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     print(f"✅ Loaded {len(df):,} candles")
     print(f"   Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
@@ -208,7 +227,7 @@ def resample_ohlcv(df: pd.DataFrame, target_minutes: int) -> pd.DataFrame:
     return resampled
 
 
-def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str, max_points: int = None, data_path: str = None) -> None:
+def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str, max_points: int = None) -> None:
     """Persist full-resolution chart data for native UI plotting (price, supertrend, trade markers).
 
     All bars are written without downsampling — the API serves time-range slices so the
@@ -275,8 +294,6 @@ def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str,
             },
             'generated_at': datetime.utcnow().isoformat(),
         }
-        if data_path:
-            meta['data_path'] = str(data_path)
         payload = {
             'series': series,
             'trades': trades_payload,
@@ -285,11 +302,6 @@ def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str,
         out_path = Path(out_dir) / 'chart_data.json'
         out_path.write_text(json.dumps(payload))
         print(f'📄 Native chart data saved: {out_path}')
-        # Write sidecar so legacy fallback can also find the exact source file
-        if data_path:
-            (Path(out_dir) / 'data_source.json').write_text(
-                json.dumps({'data_path': str(data_path)})
-            )
     except Exception as exc:
         print(f'⚠️ Native chart data generation skipped: {exc}')
 
@@ -573,7 +585,7 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
     except Exception as exc:
         print(f"⚠️ Excel report generation skipped: {exc}")
 
-    _write_native_chart_data(full_df, results, out_dir, data_path=config.get('backtest', {}).get('data_path'))
+    _write_native_chart_data(full_df, results, out_dir)
 
     # MTF rejection diagnostics
     if analysis.mtf_rejections:
@@ -813,29 +825,20 @@ def main():
     size = config.get('backtest', {}).get('position_size') or config.get('backtesting', {}).get('position_size', 1)
     print(f"   Timeframe: {tf} | SL: {sl} pts | TP: {tp} pts | Size: {size} unit(s)")
     
-    # Resolve data path
-    # --bars overrides the config file path: builds INSTRUMENT_TIMEFRAME_BARSbars.csv
-    if args.bars is not None:
-        instrument = config.get('market_data', {}).get('instrument', 'GOLD').upper()
-        timeframe  = (config.get('market_data', {}).get('resample_to')
-                      or config.get('market_data', {}).get('timeframe', 'M5')).upper()
-        # In Docker, write generated datasets to a writable volume path.
-        data_dir   = Path(os.getenv('BACKTEST_DATA_DIR', '/data/price_data'))
-        data_dir.mkdir(parents=True, exist_ok=True)
-        data_path  = str(data_dir / f'{instrument}_{timeframe}_{args.bars}bars.csv')
-        config.setdefault('backtest', {})['data_path'] = data_path
-        print(f"   Bars override: {args.bars:,} → {data_path}")
-    else:
-        data_path = config.get('backtest', {}).get('data_path', '../cloud-function/data/GOLD_M5_150000bars.csv')
+    # Resolve epic and base timeframe (the resolution stored in the DB)
+    instrument     = config.get('market_data', {}).get('instrument', 'GOLD').upper()
+    base_timeframe = config.get('market_data', {}).get('timeframe', 'M5').upper()
+    resample_to    = config.get('market_data', {}).get('resample_to', None)
+    bars = args.bars or 150000
 
-    _ensure_data(data_path, config)
-    df = load_historical_data(data_path)
+    # Ensure DB has enough bars at base resolution; download if not
+    _ensure_candles_in_db(instrument, base_timeframe, bars, config)
+    df = load_historical_data(instrument, base_timeframe, bars=bars)
 
     # Optionally resample to a higher timeframe (no extra download needed)
-    resample_to = config.get('market_data', {}).get('resample_to', None)
-    if resample_to and str(resample_to).upper() != 'M5':
-        minutes = int(str(resample_to).upper().replace('M', ''))
-        print(f"\n🔀 Resampling M5 → {resample_to.upper()}...")
+    if resample_to and str(resample_to).upper() != base_timeframe:
+        minutes = _timeframe_to_minutes(str(resample_to).upper())
+        print(f"\n🔀 Resampling {base_timeframe} → {resample_to.upper()}...")
         df = resample_ohlcv(df, minutes)
     
     # Apply --results-dir CLI override (takes priority over RESULTS_DIR env var)

@@ -211,25 +211,15 @@ def main():
 
     # Load config + data once (reused across all runs)
     config = load_config(instrument)
-    from run_skills_backtest import _ensure_data
-    from pathlib import Path as _Path
-    if args.bars is not None:
-        tf = (config.get('market_data', {}).get('resample_to')
-              or config.get('market_data', {}).get('timeframe', 'M5')).upper()
-        data_dir  = _Path(__file__).parent.parent / 'cloud-function' / 'data'
-        data_path = str(data_dir / f'{instrument}_{tf}_{args.bars}bars.csv')
-        config.setdefault('backtest', {})['data_path'] = data_path
-        print(f"   Bars override: {args.bars:,} → {data_path}")
-    else:
-        data_path = config.get('backtest', {}).get('data_path',
-                        f'../cloud-function/data/{instrument}_M5_150000bars.csv')
-    _ensure_data(data_path, config)
-    df = load_historical_data(data_path)
-
-    # Resample if needed
+    from run_skills_backtest import _ensure_candles_in_db, load_historical_data, _timeframe_to_minutes
+    base_tf   = config.get('market_data', {}).get('timeframe', 'M5').upper()
     resample_to = config.get('market_data', {}).get('resample_to')
-    if resample_to and str(resample_to).upper() not in ('M5', '5'):
-        minutes = int(str(resample_to).upper().replace('M', ''))
+    bars = args.bars or 150000
+    _ensure_candles_in_db(instrument, base_tf, bars, config)
+    df = load_historical_data(instrument, base_tf, bars=bars)
+
+    if resample_to and str(resample_to).upper() not in (base_tf, '5'):
+        minutes = _timeframe_to_minutes(str(resample_to).upper())
         df = resample_ohlcv(df, minutes)
 
     start = datetime.now()

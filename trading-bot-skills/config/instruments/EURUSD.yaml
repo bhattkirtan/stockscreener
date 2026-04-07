@@ -44,8 +44,8 @@ backtesting:
 analysis:
   indicators:
     supertrend:
-      atr_period: 7
-      multiplier: 2.0           # testing: between 2.0 (best return) and 3.0 (best DD)
+      atr_period: 14
+      multiplier: 1.5           # testing: between 2.0 (best return) and 3.0 (best DD)
     ema:
       period: 21
     sma:
@@ -56,7 +56,10 @@ analysis:
       h1_bb_std: 2.0
       daily_sma_period: 20
   signal_rules:
-    require_h1_bb: true
+    require_h1_bb: false
+    require_mtf_bb: false
+    require_ema: false
+    require_sma: false
   sl_tp:
     method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
 

@@ -43,8 +43,8 @@ backtesting:
 analysis:
   indicators:
     supertrend:
-      atr_period: 7
-      multiplier: 2           # Slightly wider for BTC's higher volatility
+      atr_period: 14
+      multiplier: 1.5           # Slightly wider for BTC's higher volatility
     ema:
       period: 21
     sma:
@@ -57,6 +57,8 @@ analysis:
   signal_rules:
     require_h1_bb: false
     require_mtf_bb: false
+    require_ema: false
+    require_sma: false
   sl_tp:
     method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
 

@@ -59,6 +59,8 @@ analysis:
   signal_rules:
     require_h1_bb: false
     require_mtf_bb: false
+    require_ema: false
+    require_sma: false
     mtf_min_votes: 2
   sl_tp:
     method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:

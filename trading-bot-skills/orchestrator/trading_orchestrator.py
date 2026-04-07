@@ -136,8 +136,9 @@ class TradingOrchestrator:
                     deal_to_close = risk_skill.open_position_deal_id
                     closed_direction = risk_skill.open_position_direction
                     logger.info(f"🔄 Reverse signal {context.signal} — closing {closed_direction} position {deal_to_close}")
+                    close_succeeded = True
                     if 'execution' in self.skills and deal_to_close:
-                        await self.skills['execution'].close_position(deal_to_close)
+                        close_succeeded = await self.skills['execution'].close_position(deal_to_close)
                     await self.on_position_closed(
                         deal_id=deal_to_close or 'unknown',
                         direction=closed_direction,
@@ -146,6 +147,19 @@ class TradingOrchestrator:
                         entry_price=0.0,
                         close_price=candle.get('close', 0.0),
                     )
+                    if not close_succeeded:
+                        # Broker rejected the close — old position may still be live.
+                        # Abort the new entry to prevent accumulating positions.
+                        logger.warning(
+                            f"⚠️ Reverse close failed for {deal_to_close} — skipping new entry to prevent position accumulation"
+                        )
+                        return
+
+                    # Wait briefly after close before opening the new position.
+                    # Capital.com needs a moment to settle the closed position before
+                    # accepting a new order on the same instrument — without this delay
+                    # the new order arrives while the close is still processing and gets DELETED.
+                    await asyncio.sleep(1.5)
 
             # 3b. Risk Skill (validate signal, check cooldown)
             if 'risk' in self.skills and context.signal:
@@ -165,6 +179,11 @@ class TradingOrchestrator:
                         risk.has_open_position = True
                         risk.open_position_deal_id = context.deal_id
                         risk.open_position_direction = context.signal
+                else:
+                    logger.warning(
+                        f"⚠️ Order rejected by broker — {context.signal} entry NOT opened. "
+                        f"Position flat, waiting for next signal."
+                    )
 
             # 5. Storage Skill (save to Firestore)
             if 'storage' in self.skills and context.deal_id:

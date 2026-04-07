@@ -68,41 +68,28 @@ def load_run(run_dir: Path):
 
 
 def load_price_data(run_dir: Path, trades: pd.DataFrame):
-    """
-    Find and load the price CSV. Tries:
-    1. instrument config data_path (relative to run_dir)
-    2. Walks up to find any matching CSV in cloud-function/data/
-    """
-    # Guess instrument from run_dir path: results/<INSTRUMENT>/...
-    instrument = run_dir.parent.name  # e.g. GOLD
+    """Load price candles from SQLite for the trade date range."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from clients.sqlite_api import SQLiteAPIClient
 
-    # Try instrument yaml for data_path
-    yaml_path = Path(__file__).parent / 'config' / 'instruments' / f'{instrument}.yaml'
-    data_path = None
-    if yaml_path.exists():
-        with open(yaml_path) as f:
-            cfg = yaml.safe_load(f)
-        rel = cfg.get('backtest', {}).get('data_path')
-        if rel:
-            data_path = (Path(__file__).parent / rel).resolve()
+    # Guess instrument + timeframe from run_dir path: results/<INSTRUMENT>/...
+    instrument = run_dir.parent.name.upper()  # e.g. GOLD
 
-    if data_path is None or not data_path.exists():
-        # Fallback: scan cloud-function/data/
-        data_dir = Path(__file__).parent.parent / 'cloud-function' / 'data'
-        candidates = sorted(data_dir.glob(f'{instrument}_M5_*.csv'))
-        if candidates:
-            data_path = candidates[-1]
-
-    if data_path is None or not data_path.exists():
-        return None
-
-    # Only load the date range we need (+/- 1 day buffer)
     start = trades['entry_time'].min() - pd.Timedelta(days=1)
     end   = trades['exit_time'].max()  + pd.Timedelta(days=1)
 
-    df = pd.read_csv(data_path, parse_dates=['timestamp'])
-    df = df[(df['timestamp'] >= start) & (df['timestamp'] <= end)].reset_index(drop=True)
-    return df
+    db = SQLiteAPIClient()
+    rows = db.query_candles(
+        instrument, 'M5',
+        from_ts=start.strftime('%Y-%m-%d %H:%M:%S'),
+        to_ts=end.strftime('%Y-%m-%d %H:%M:%S'),
+    )
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    return df.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

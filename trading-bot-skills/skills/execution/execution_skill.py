@@ -266,19 +266,28 @@ class ExecutionSkill(Skill):
                 guaranteed_stop=False
             )
             
-            # Extract deal_id from result
+            # Confirm the order to get the real dealId, fill price, and status
             deal_reference = result.get('dealReference')
-            
-            # Note: Capital.com returns dealReference immediately
-            # The actual dealId may need to be fetched later
-            # For now, use dealReference as the identifier
-            logger.info(f"✅ Order placed: {direction} {size} {self.epic} (ref: {deal_reference})")
-            
+            confirm = self.rest_client.confirm_order(deal_reference)
+            status     = confirm.get('status', '')
+            deal_id    = confirm.get('dealId') or deal_reference
+            fill_price = confirm.get('level') or entry_price
+
+            # Capital.com returns status=DELETED (or REJECTED) when the order fails
+            # (e.g. insufficient margin, outside market hours, size too small).
+            # Zero-prefixed dealIds (00000000-...) are also a sign of rejection.
+            if status in ('DELETED', 'REJECTED') or (deal_id and deal_id.startswith('00000000-0000-0000-')):
+                reason = confirm.get('reason') or confirm.get('rejectReason') or status
+                logger.error(
+                    f"❌ Order rejected by broker: ref={deal_reference} status={status} reason={reason}"
+                )
+                return None
+
             return {
-                'deal_id': deal_reference,
-                'entry_price': entry_price,  # Would need to fetch actual fill price
-                'direction': direction,
-                'size': size
+                'deal_id':     deal_id,
+                'entry_price': fill_price,
+                'direction':   direction,
+                'size':        size,
             }
         
         except Exception as e:

@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 DB_PATH = os.getenv("DB_PATH", "/data/trading.db")
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/data/results"))
-PRICE_DATA_DIR = Path(os.getenv("PRICE_DATA_DIR", "/data/price_data"))
 
 app = FastAPI(title="Backtest Runner API", version="1.0.0")
 
@@ -231,38 +230,14 @@ def _load_trades_csv(instrument: str, run_id: str) -> list[Dict[str, Any]]:
 
 
 def _build_legacy_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
-    """Build chart data from the saved historical price CSV + trades.csv.
+    """Build chart data from the SQLite candles table + trades.csv.
 
-    This is used when chart_data.json was not generated at run time (old runs).
-    We read the real OHLC candles directly from the downloaded price file so the
-    chart shows actual market prices rather than the equity curve.
+    Used when chart_data.json was not generated at run time (old runs).
     """
     run = get_run(run_id)
     timeframe = str(run.get("timeframe", "M5")).upper()
     bars = int(run.get("bars", 5000) or 5000)
     instr = instrument.upper()
-
-    # Check for data_source.json written by the backtest runner (most accurate)
-    run_dir = RESULTS_DIR / instr / run_id
-    data_source_file = run_dir / "data_source.json"
-    sourced_path = None
-    if data_source_file.exists():
-        try:
-            import json as _json
-            sourced_path = Path(_json.loads(data_source_file.read_text()).get("data_path", ""))
-        except Exception:
-            sourced_path = None
-
-    # Find the best matching price file: data_source.json > exact bar count > any candidate
-    price_dir = PRICE_DATA_DIR
-    candidates = sorted(price_dir.glob(f"{instr}_{timeframe}_*.csv"))
-    exact = price_dir / f"{instr}_{timeframe}_{bars}bars.csv"
-    if sourced_path and sourced_path.exists():
-        price_file = sourced_path
-    elif exact.exists():
-        price_file = exact
-    else:
-        price_file = candidates[-1] if candidates else None
 
     trades = []
     for t in _load_trades_csv(instrument, run_id):
@@ -278,25 +253,22 @@ def _build_legacy_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
             }
         )
 
-    if price_file is None or not price_file.exists():
-        raise FileNotFoundError(f"No price data file found for {instr} {timeframe}")
-
-    import pandas as pd
     import sys
     sys.path.insert(0, "/app")
+    import pandas as pd
+    from clients.sqlite_api import SQLiteAPIClient
     from core.indicators import calculate_supertrend
 
-    df = pd.read_csv(price_file)
-    # Normalise timestamp column name
-    for col in ("timestamp", "time", "date"):
-        if col in df.columns:
-            df = df.rename(columns={col: "timestamp"})
-            break
-    df = df.dropna(subset=["timestamp"])
-    df["close"] = pd.to_numeric(df.get("close", 0), errors="coerce").fillna(0)
-    df["open"]  = pd.to_numeric(df.get("open",  df["close"]), errors="coerce").fillna(df["close"])
-    df["high"]  = pd.to_numeric(df.get("high",  df["close"]), errors="coerce").fillna(df["close"])
-    df["low"]   = pd.to_numeric(df.get("low",   df["close"]), errors="coerce").fillna(df["close"])
+    db = SQLiteAPIClient()
+    rows = db.query_candles(instr, timeframe, limit=bars)
+    if not rows:
+        raise FileNotFoundError(f"No candles found in DB for {instr}/{timeframe}")
+
+    df = pd.DataFrame(rows)
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").fillna(0)
+    df["open"]  = pd.to_numeric(df["open"],  errors="coerce").fillna(df["close"])
+    df["high"]  = pd.to_numeric(df["high"],  errors="coerce").fillna(df["close"])
+    df["low"]   = pd.to_numeric(df["low"],   errors="coerce").fillna(df["close"])
     if "volume" not in df.columns:
         df["volume"] = 0
 
@@ -347,7 +319,7 @@ def _build_legacy_chart_data(instrument: str, run_id: str) -> Dict[str, Any]:
             "bars": len(series),
             "trades": len(trades),
             "generated_at": _utc_now(),
-            "source": "price-csv-fallback",
+            "source": "sqlite-candles",
         },
     }
 

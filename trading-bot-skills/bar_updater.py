@@ -74,7 +74,8 @@ def _load_instruments_config() -> List[Tuple[str, str]]:
         try:
             with open(path) as f:
                 cfg = yaml.safe_load(f) or {}
-            epic = cfg.get('market_data', {}).get('epic') or path.stem  # e.g. GOLD
+            md = cfg.get('market_data', {})
+            epic = md.get('epic') or md.get('instrument') or path.stem  # e.g. GOLD
             timeframe = str(cfg.get('market_data', {}).get('timeframe', 'M5')).upper()
             pairs.append((epic, timeframe))
         except Exception as exc:
@@ -134,8 +135,8 @@ def update_one(
         logger.info(f"  [{epic}/{timeframe}] Already up-to-date (latest: {latest_ts})")
         return 0
 
-    from_str = from_dt.strftime('%Y-%m-%d %H:%M:%S')
-    to_str   = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+    from_str = from_dt.strftime('%Y-%m-%dT%H:%M:%S')
+    to_str   = now_dt.strftime('%Y-%m-%dT%H:%M:%S')
 
     logger.info(f"  [{epic}/{timeframe}] Fetching {from_str} → {to_str}")
     resolved = resolve_epic(epic)

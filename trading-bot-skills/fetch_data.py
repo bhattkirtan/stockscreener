@@ -199,7 +199,8 @@ def fetch_all_bars(
             'max': batch,
         }
         if to_timestamp:
-            params['to'] = to_timestamp
+            # Capital.com requires ISO format with T separator (not space)
+            params['to'] = str(to_timestamp).replace(' ', 'T')
         if from_date and not to_timestamp:
             # First batch in date-range mode: anchor the end to to_date
             pass  # to_timestamp is already set to to_date above
@@ -271,6 +272,14 @@ def save_csv(candles: list, output_path: Path) -> None:
     logger.info(f"💾 Saved {len(candles)} candles → {output_path}")
 
 
+def save_to_db(candles: list, epic: str, timeframe: str) -> None:
+    """Upsert candles into the SQLite candles table."""
+    from clients.sqlite_api import SQLiteAPIClient
+    db = SQLiteAPIClient()
+    count = db.insert_candles(epic, timeframe, candles)
+    logger.info(f"💾 Saved {count} candles to SQLite [{epic}/{timeframe}]")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -286,7 +295,7 @@ def main():
                         help='Start date (ISO format: 2024-01-01 or 2024-01-01T00:00:00). Enables date-range mode.')
     parser.add_argument('--to',        dest='to_date',   default=None,
                         help='End date (ISO format: 2024-03-31 or 2024-03-31T23:59:59). Defaults to now if --from is set.')
-    parser.add_argument('--output',    default=None,   help='Output CSV path (default: cloud-function/data/<EPIC>_<TF>_<BARS>bars.csv)')
+    parser.add_argument('--output',    default=None,   help='Optional CSV export path. If omitted, data is written only to SQLite.')
     parser.add_argument('--env',       default=None,   help='demo or live (overrides CAPITAL_ENVIRONMENT)')
     args = parser.parse_args()
 
@@ -304,24 +313,10 @@ def main():
     # Resolve epic
     epic = resolve_epic(args.epic)
 
-    # Determine output path
-    if args.output:
-        output_path = Path(args.output)
+    # Determine optional CSV output path (only written when --output is given)
+    output_path = Path(args.output) if args.output else None
+    if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-    elif args.from_date:
-        # Date-range mode: name includes date span, not bar count
-        date_tag = args.from_date[:10].replace('-', '') + '_' + args.to_date[:10].replace('-', '')
-        instrument = epic.upper()
-        for alias, full_epic in EPIC_ALIASES.items():
-            if full_epic == epic:
-                instrument = alias
-                break
-        filename = f"{instrument}_{args.timeframe.upper()}_{date_tag}.csv"
-        output_dir = PROJECT_ROOT.parent / 'cloud-function' / 'data'
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / filename
-    else:
-        output_path = derive_output_name(epic, args.timeframe.upper(), args.bars)
 
     # Init API client
     env = args.env or os.getenv('CAPITAL_ENVIRONMENT', 'demo')
@@ -369,8 +364,13 @@ def main():
         f"\n   Elapsed:    {elapsed:.1f}s"
     )
 
-    save_csv(candles, output_path)
-    print(f"\n✅ Done: {output_path}")
+    save_to_db(candles, epic, args.timeframe.upper())
+
+    if output_path:
+        save_csv(candles, output_path)
+        print(f"\n✅ Done: DB + {output_path}")
+    else:
+        print(f"\n✅ Done: {len(candles):,} candles stored in SQLite [{epic}/{args.timeframe.upper()}]")
 
 
 if __name__ == '__main__':

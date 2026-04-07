@@ -244,6 +244,30 @@ class CapitalAPIClient:
             logger.error(f"❌ Failed to place order: {e}")
             raise
     
+    def confirm_order(self, deal_reference: str) -> Dict:
+        """
+        Confirm an order and get the real dealId.
+        Call this after place_order to resolve dealReference → dealId.
+        Capital.com: GET /api/v1/confirms/{dealReference}
+        """
+        try:
+            response = self._request('GET', f'/api/v1/confirms/{deal_reference}')
+            result = response.json()
+            deal_id = result.get('dealId')
+            status  = result.get('status')
+            reason  = result.get('reason') or result.get('rejectReason') or ''
+            if status in ('DELETED', 'REJECTED'):
+                logger.error(
+                    f"❌ Order confirm DELETED: ref={deal_reference} dealId={deal_id} "
+                    f"reason={reason} full={result}"
+                )
+            else:
+                logger.info(f"✅ Order confirmed: ref={deal_reference} → dealId={deal_id} status={status}")
+            return result
+        except Exception as e:
+            logger.warning(f"⚠️ Order confirm failed for {deal_reference}: {e}")
+            return {}
+
     def get_open_positions(self) -> List[Dict]:
         """
         Get all open positions
@@ -254,7 +278,7 @@ class CapitalAPIClient:
         try:
             response = self._request('GET', '/api/v1/positions')
             positions = response.json().get('positions', [])
-            logger.info(f"✅ Retrieved {len(positions)} open positions")
+            logger.debug(f"✅ Retrieved {len(positions)} open positions (all epics)")
             return positions
         
         except Exception as e:

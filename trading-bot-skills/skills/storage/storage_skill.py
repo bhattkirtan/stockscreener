@@ -220,6 +220,8 @@ class StorageSkill(Skill):
         
         entry_price = position.get('open_level') or position.get('entry_price', 0)
         size = position.get('size', 0)
+        upl = position.get('upl', 0.0) or 0.0
+        pnl_pct = (upl / (entry_price * size) * 100) if entry_price and size else 0.0
         document = {
             # UI-facing names (BotPosition schema)
             'position_id': deal_id,
@@ -228,9 +230,9 @@ class StorageSkill(Skill):
             'direction': position.get('direction'),
             'size': size,
             'open_level': entry_price,
-            'current_level': entry_price,
-            'pnl': 0.0,
-            'pnl_pct': 0.0,
+            'current_level': position.get('current_level') or entry_price,
+            'pnl': upl,
+            'pnl_pct': round(pnl_pct, 2),
             'stop_loss': position.get('stop_loss'),
             'take_profit': position.get('take_profit'),
             'opened_at': position.get('opened_at') or position.get('entry_time', datetime.now()).isoformat(),
@@ -261,22 +263,23 @@ class StorageSkill(Skill):
         stop_level=None,
         profit_level=None,
         opened_at: str = None,
+        upl: float = 0.0,
     ) -> None:
         """
-        Upsert an open position from the broker (OPU or startup seed).
-        Called directly from _poll_positions when a position is detected
-        via WebSocket OPU or the REST startup seed — outside the normal
-        execution pipeline.
+        Upsert an open position from the broker.
+        Called from _poll_positions on startup seed and REST reconciliation.
+        upl = unrealized P&L from Capital.com (position.upl).
         """
         await self._save_position({
-            'deal_id':     deal_id,
-            'epic':        epic,
-            'direction':   direction,
-            'entry_price': level,
-            'size':        size,
-            'stop_loss':   stop_level,
-            'take_profit': profit_level,
-            'opened_at':   opened_at or datetime.now().isoformat(),
+            'deal_id':       deal_id,
+            'epic':          epic,
+            'direction':     direction,
+            'entry_price':   level,
+            'size':          size,
+            'stop_loss':     stop_level,
+            'take_profit':   profit_level,
+            'opened_at':     opened_at or datetime.now().isoformat(),
+            'upl':           upl,
         })
 
     async def close_position(self, deal_id: str, close_price: float, close_reason: str):
