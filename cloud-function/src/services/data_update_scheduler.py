@@ -123,7 +123,13 @@ class DataUpdateScheduler:
                 'updated_at': now,
                 'total_headlines': len(headlines),
                 'high_impact_count': sum(1 for h in headlines if h.is_high_impact()),
-                'headlines': [h.to_dict() for h in headlines if h.is_high_impact()]
+                'headlines': [h.to_dict() for h in headlines if h.is_high_impact()],
+                # Index: epic → list of headline article_ids that affect it
+                'by_epic': {
+                    epic: [h.article_id for h in headlines
+                           if h.is_high_impact() and epic in h.affected_epics]
+                    for epic in ['GOLD', 'SILVER', 'EURUSD', 'BTCUSD', 'ETHUSD', 'US100']
+                },
             })
             conn.execute(
                 "INSERT INTO kv_store (collection, doc_id, data, updated_at) VALUES (?,?,?,?) "

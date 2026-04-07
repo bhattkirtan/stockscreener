@@ -44,6 +44,7 @@ class NewsHeadline:
     url: Optional[str] = None
     matched_keywords: List[str] = field(default_factory=list)
     severity: str = "high"  # high, medium, low
+    affected_epics: List[str] = field(default_factory=list)  # e.g. ['GOLD', 'EURUSD']
     
     def is_high_impact(self) -> bool:
         """Check if this is a high-impact headline"""
@@ -64,7 +65,8 @@ class NewsHeadline:
             'description': self.description,
             'url': self.url,
             'matched_keywords': self.matched_keywords,
-            'severity': self.severity
+            'severity': self.severity,
+            'affected_epics': self.affected_epics,
         }
 
 
@@ -97,32 +99,97 @@ class NewsRSSAdapter:
         'FT': 'https://www.ft.com/rss/home',
     }
     
-    # High-impact keywords (from strategy.md Section 6.6.4)
-    DEFAULT_KEYWORDS = [
-        # Crises
+    # Per-epic keyword map — headlines matching these keywords tag the corresponding epic(s)
+    # A headline can affect multiple epics (e.g. Fed rate hike → GOLD + EURUSD + US100)
+    EPIC_KEYWORDS: dict = {
+        'GOLD': [
+            # Monetary policy & inflation (biggest gold drivers)
+            'fed rate', 'federal reserve', 'rate hike', 'rate cut', 'interest rate',
+            'inflation', 'cpi', 'pce', 'deflation', 'stagflation',
+            # Safe-haven demand
+            'safe haven', 'gold', 'bullion', 'precious metal',
+            # Geopolitical risk
+            'war', 'conflict', 'invasion', 'military', 'sanctions', 'geopolitical',
+            'middle east', 'ukraine', 'iran', 'north korea',
+            # Dollar weakness
+            'dollar collapse', 'dollar index', 'dxy', 'usd weakens',
+            # Crisis
+            'recession', 'debt ceiling', 'u.s. debt', 'default', 'banking crisis',
+        ],
+        'SILVER': [
+            # Same as GOLD plus industrial
+            'fed rate', 'federal reserve', 'rate hike', 'rate cut', 'inflation', 'cpi',
+            'safe haven', 'silver', 'precious metal',
+            'war', 'conflict', 'geopolitical',
+            # Industrial demand
+            'solar', 'china manufacturing', 'pmi', 'industrial output', 'electric vehicle',
+        ],
+        'EURUSD': [
+            # ECB
+            'ecb', 'european central bank', 'lagarde', 'ecb rate', 'eurozone rate',
+            # US Fed
+            'fed rate', 'federal reserve', 'powell', 'fomc', 'rate hike', 'rate cut',
+            # EUR macro
+            'eurozone gdp', 'eurozone cpi', 'eurozone inflation', 'euro area',
+            'germany gdp', 'germany inflation', 'ifo', 'zew',
+            # USD macro
+            'non-farm payroll', 'nfp', 'us cpi', 'us inflation', 'us gdp',
+            'jobless claims', 'unemployment', 'ism',
+            # EUR political risk
+            'euro collapse', 'grexit', 'italexit', 'eu breakup', 'eu crisis',
+        ],
+        'BTCUSD': [
+            # Regulation
+            'bitcoin', 'btc', 'crypto', 'cryptocurrency', 'sec crypto', 'crypto ban',
+            'crypto regulation', 'crypto etf', 'spot bitcoin etf',
+            # Exchange events
+            'exchange hack', 'exchange collapse', 'exchange bankrupt',
+            'ftx', 'binance', 'coinbase', 'crypto exchange',
+            # Macro (crypto trades like risk-on asset)
+            'risk off', 'risk appetite', 'fed rate', 'liquidity',
+            # Mining
+            'bitcoin halving', 'mining ban', 'bitcoin mining',
+        ],
+        'ETHUSD': [
+            # Ethereum specific
+            'ethereum', 'eth', 'ether', 'defi', 'nft', 'web3', 'smart contract',
+            'ethereum etf', 'sec ethereum', 'crypto regulation',
+            # Broader crypto
+            'crypto', 'cryptocurrency', 'exchange hack', 'exchange collapse',
+            'risk off', 'fed rate', 'liquidity',
+        ],
+        'US100': [
+            # US macro
+            'fed rate', 'federal reserve', 'powell', 'fomc', 'rate hike', 'rate cut',
+            'us cpi', 'us inflation', 'non-farm payroll', 'nfp', 'us gdp', 'recession',
+            # Tech earnings
+            'nvidia', 'apple', 'microsoft', 'amazon', 'alphabet', 'google', 'meta',
+            'tesla', 'nasdaq', 'faang', 'tech earnings', 'earnings beat', 'earnings miss',
+            # Tech sector
+            'ai', 'artificial intelligence', 'semiconductor', 'chips act',
+            'tech layoffs', 'big tech', 'antitrust',
+            # Risk-off
+            'yield curve', 'treasury', '10-year yield', 'stock market crash',
+            'circuit breaker', 'trading halt', 'market selloff',
+        ],
+    }
+
+    # Global keywords — affect ALL epics (systemic shock)
+    GLOBAL_KEYWORDS = [
         'emergency', 'crash', 'collapse', 'crisis', 'panic',
-        
-        # Conflicts
-        'attack', 'war', 'conflict', 'invasion', 'strike',
-        
-        # Financial events
-        'default', 'bankruptcy', 'bailout', 'intervention',
-        
-        # Policy shocks
-        'emergency rate', 'surprise', 'unexpected',
-        
-        # Disasters
-        'disaster', 'outbreak', 'pandemic', 'earthquake',
-        
-        # Security
-        'cyber attack', 'terrorist', 'assassination',
-        
-        # Political
-        'coup', 'impeachment', 'resignation',
-        
-        # Market specific
-        'circuit breaker', 'trading halt', 'flash crash'
+        'attack', 'war', 'invasion',
+        'bankruptcy', 'bailout',
+        'disaster', 'pandemic', 'outbreak',
+        'cyber attack', 'terrorist',
+        'circuit breaker', 'trading halt', 'flash crash',
+        'black swan',
     ]
+
+    # High-impact keywords (union of all above — used for headline filtering)
+    DEFAULT_KEYWORDS = (
+        GLOBAL_KEYWORDS
+        + [kw for kws in EPIC_KEYWORDS.values() for kw in kws]
+    )
     
     def __init__(
         self,
@@ -218,7 +285,10 @@ class NewsRSSAdapter:
                     
                     # Classify severity
                     severity = self._classify_severity(matched, title)
-                    
+
+                    # Tag which epics this headline affects
+                    affected_epics = self._tag_epics(title, description)
+
                     # Create headline
                     headline = NewsHeadline(
                         article_id=self._generate_article_id(url),
@@ -228,7 +298,8 @@ class NewsRSSAdapter:
                         description=description,
                         url=url,
                         matched_keywords=matched,
-                        severity=severity
+                        severity=severity,
+                        affected_epics=affected_epics,
                     )
                     
                     # Validate before adding
@@ -310,6 +381,26 @@ class NewsRSSAdapter:
         # Single non-critical keyword = medium
         return "medium"
     
+    def _tag_epics(self, title: str, description: str) -> List[str]:
+        """
+        Return the list of epics affected by this headline.
+        Checks EPIC_KEYWORDS per instrument; if global keyword matched → all epics.
+        """
+        text = (title + ' ' + (description or '')).lower()
+
+        # Global shock → all instruments
+        for kw in self.GLOBAL_KEYWORDS:
+            if kw in text:
+                return list(self.EPIC_KEYWORDS.keys())
+
+        # Per-epic matching
+        affected = []
+        for epic, keywords in self.EPIC_KEYWORDS.items():
+            if any(kw in text for kw in keywords):
+                if epic not in affected:
+                    affected.append(epic)
+        return affected
+
     def _validate_headline(self, headline: NewsHeadline) -> bool:
         """
         Validate headline quality before saving
