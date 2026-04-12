@@ -24,6 +24,8 @@ class EventType(Enum):
     # Analysis Events
     SIGNAL_GENERATED = "SIGNAL_GENERATED"
     SIGNAL_REJECTED = "SIGNAL_REJECTED"
+    EXIT_SIGNAL = "EXIT_SIGNAL"          # M1 ST reversal / SL / TP — emitted by AnalysisSkill
+    M1_CANDLE_CLOSED = "M1_CANDLE_CLOSED"  # M1 bar closed — drives M1 exit checks
     
     # Risk Events
     RISK_APPROVED = "RISK_APPROVED"

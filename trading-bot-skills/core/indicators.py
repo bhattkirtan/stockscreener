@@ -179,6 +179,48 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
 
+def calculate_adx(df: pd.DataFrame, period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Average Directional Index (ADX) with +DI and -DI.
+
+    Returns: (adx, di_plus, di_minus)
+      adx      — trend strength 0-100 (>25 = trending, <20 = ranging)
+      di_plus  — bullish directional indicator
+      di_minus — bearish directional indicator
+    """
+    high  = df['high']
+    low   = df['low']
+    close = df['close']
+
+    # True Range
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+
+    # Directional Movement
+    up_move   = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    # Wilder smoothing (EWM with alpha=1/period)
+    alpha = 1.0 / period
+    atr_s    = tr.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+    dmp_s    = dm_plus.ewm(alpha=alpha,  min_periods=period, adjust=False).mean()
+    dmm_s    = dm_minus.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+    di_plus  = 100 * dmp_s / atr_s.replace(0, float('nan'))
+    di_minus = 100 * dmm_s / atr_s.replace(0, float('nan'))
+
+    dx = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, float('nan'))
+    adx = dx.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+    return adx, di_plus, di_minus
+
+
 def calculate_bollinger_bands(
     series: pd.Series, period: int = 20, std_dev: float = 2.0
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:

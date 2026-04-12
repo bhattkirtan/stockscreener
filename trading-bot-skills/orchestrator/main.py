@@ -554,14 +554,23 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                     orchestrator.skills['analysis'].update_h1_candle(candle)
                     logger.debug(f"📊 H1 BB updated: close={candle['close']}")
 
+            # Live tick quote callback → Supertrend tick exit
+            async def on_quote(quote_data: dict) -> None:
+                mid = quote_data.get('mid')
+                if mid and 'analysis' in orchestrator.skills:
+                    ts = quote_data.get('time')
+                    await orchestrator.skills['analysis'].on_price_tick(mid, ts)
+
             ws.on_candle = on_candle
             ws.on_h1_candle = on_h1_candle
+            ws.on_quote = on_quote
 
             await ws.connect()
             await ws.subscribe_ohlc([epic], resolution=resolution)
+            await ws.subscribe_quotes([epic])
             if 'analysis' in orchestrator.skills and orchestrator.skills['analysis'].require_h1_bb:
                 await ws.subscribe_ohlc([epic], resolution='HOUR')
-            logger.info(f"✅ Streaming {resolution} + H1 candles for {epic}")
+            logger.info(f"✅ Streaming {resolution} candles + live quotes for {epic}")
 
             # Start position tracker: activity poll (10 s) + REST reconciliation (60 s)
             poll_task = asyncio.create_task(

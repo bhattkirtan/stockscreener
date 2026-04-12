@@ -77,22 +77,36 @@ async def _single_run(config: dict, df: pd.DataFrame) -> dict:
 
 
 def run_grid(instrument: str, sl_values: list, tp_values: list,
-             position_size: float, base_config: dict, df: pd.DataFrame) -> pd.DataFrame:
+             position_size: float, base_config: dict, df: pd.DataFrame,
+             multiplier_values: list = None, atr_values: list = None,
+             adx_thresholds: list = None) -> pd.DataFrame:
     """
-    Iterate over all (SL, TP) combinations, run backtest for each,
-    collect metrics into a DataFrame.
+    Iterate over all (SL, TP[, multiplier][, atr_period][, adx_threshold]) combinations,
+    run backtest for each, collect metrics into a DataFrame.
+    ADX threshold of 0 means ADX filter disabled.
     """
-    combos = list(itertools.product(sl_values, tp_values))
+    mult_list = multiplier_values or [None]
+    atr_list  = atr_values or [None]
+    adx_list  = adx_thresholds or [None]
+    combos = list(itertools.product(sl_values, tp_values, mult_list, atr_list, adx_list))
     total = len(combos)
-    print(f"\n🔬 Grid search: {len(sl_values)} SL × {len(tp_values)} TP = {total} combinations")
+    dim_str = f"{len(sl_values)} SL × {len(tp_values)} TP"
+    if multiplier_values: dim_str += f" × {len(multiplier_values)} Mult"
+    if atr_values:        dim_str += f" × {len(atr_values)} ATR"
+    if adx_thresholds:    dim_str += f" × {len(adx_thresholds)} ADX"
+    print(f"\n🔬 Grid search: {dim_str} = {total} combinations")
     print(f"   Position size: {position_size} unit(s)")
     print("=" * 60)
 
     rows = []
 
-    for i, (sl, tp) in enumerate(combos, 1):
+    for i, (sl, tp, mult, atr, adx_thr) in enumerate(combos, 1):
         rr = round(tp / sl, 2)
-        print(f"\n[{i:3d}/{total}] SL={sl:5.0f}  TP={tp:5.0f}  R:R=1:{rr}", end="  ", flush=True)
+        extra = ""
+        if mult    is not None: extra += f"  Mult={mult}"
+        if atr     is not None: extra += f"  ATR={atr}"
+        if adx_thr is not None: extra += f"  ADX={'off' if adx_thr == 0 else adx_thr}"
+        print(f"\n[{i:3d}/{total}] SL={sl:5.0f}  TP={tp:5.0f}  R:R=1:{rr}{extra}", end="  ", flush=True)
 
         # Build per-run config (deep-copy so runs don't pollute each other)
         cfg = copy.deepcopy(base_config)
@@ -102,6 +116,16 @@ def run_grid(instrument: str, sl_values: list, tp_values: list,
         cfg.setdefault('risk', {})['take_profit_pips'] = tp
         cfg.setdefault('backtesting', {})['position_size'] = position_size
         cfg.setdefault('backtest', {})['position_size']    = position_size
+        if mult is not None:
+            cfg.setdefault('analysis', {}).setdefault('indicators', {}).setdefault('supertrend', {})['multiplier'] = mult
+        if atr is not None:
+            cfg.setdefault('analysis', {}).setdefault('indicators', {}).setdefault('supertrend', {})['atr_period'] = atr
+        if adx_thr is not None:
+            adx_on = adx_thr > 0
+            cfg.setdefault('analysis', {}).setdefault('indicators', {})['adx'] = {
+                'enabled': adx_on, 'period': 14, 'threshold': adx_thr if adx_on else 25
+            }
+            cfg.setdefault('analysis', {}).setdefault('signal_rules', {})['require_adx'] = adx_on
 
         try:
             results = asyncio.run(_single_run(cfg, df.copy()))
@@ -128,8 +152,12 @@ def run_grid(instrument: str, sl_values: list, tp_values: list,
             print(f"⚠  skipped (DD={max_dd:.1f}% > {MAX_DRAWDOWN}% cap)")
             continue
 
+        st_cfg = base_config.get('analysis', {}).get('indicators', {}).get('supertrend', {})
         row = {
             'sl': sl, 'tp': tp, 'rr': rr,
+            'multiplier': mult     if mult     is not None else st_cfg.get('multiplier', '—'),
+            'atr_period': atr      if atr      is not None else st_cfg.get('atr_period', '—'),
+            'adx_thresh': adx_thr  if adx_thr  is not None else 0,
             'total_trades': total_trades,
             'win_rate': round(win_rate, 1),
             'total_pnl': round(total_pnl, 2),
@@ -160,12 +188,22 @@ def print_summary(df_results: pd.DataFrame, instrument: str, position_size: floa
     print("\n" + "=" * 80)
     print(f"📊 OPTIMIZATION RESULTS — {instrument}  (size={position_size} unit, ranked by score)")
     print("=" * 80)
-    cols = ['sl', 'tp', 'rr', 'total_trades', 'win_rate', 'total_pnl',
-            'profit_factor', 'sharpe_ratio', 'max_drawdown_pct', 'score']
+    has_mult = 'multiplier' in df_results.columns and df_results['multiplier'].nunique() > 1
+    has_atr  = 'atr_period' in df_results.columns and df_results['atr_period'].nunique() > 1
+    has_adx  = 'adx_thresh' in df_results.columns and df_results['adx_thresh'].nunique() > 1
+    cols = (['sl', 'tp', 'rr']
+            + (['multiplier'] if has_mult else [])
+            + (['atr_period'] if has_atr  else [])
+            + (['adx_thresh'] if has_adx  else [])
+            + ['total_trades', 'win_rate', 'total_pnl', 'profit_factor', 'sharpe_ratio', 'max_drawdown_pct', 'score'])
     print(df_results[cols].head(20).to_string())
     print("\n🏆 Best combination:")
     best = df_results.iloc[0]
-    print(f"   SL={best['sl']:.0f}  TP={best['tp']:.0f}  R:R=1:{best['rr']}")
+    extra = ""
+    if has_mult: extra += f"  Multiplier={best['multiplier']}"
+    if has_atr:  extra += f"  ATR={best['atr_period']}"
+    if has_adx:  extra += f"  ADX={'off' if best['adx_thresh']==0 else best['adx_thresh']}"
+    print(f"   SL={best['sl']:.0f}  TP={best['tp']:.0f}  R:R=1:{best['rr']}{extra}")
     print(f"   Win Rate: {best['win_rate']:.1f}%  |  PnL: ${best['total_pnl']:+,.2f}  |  Profit Factor: {best['profit_factor']:.3f}")
     print(f"   Sharpe: {best['sharpe_ratio']:.3f}  |  Max DD: {best['max_drawdown_pct']:.1f}%  |  Trades: {best['total_trades']:.0f}")
     print("\n💡 Best practice tip: Choose the combo with the best Profit Factor (>1.5)")
@@ -184,6 +222,12 @@ def main():
                         help='SL range: --sl-range 15 50 5  (overrides default grid)')
     parser.add_argument('--tp-range', nargs=3, type=float, metavar=('MIN', 'MAX', 'STEP'),
                         help='TP range: --tp-range 50 200 25  (overrides default grid)')
+    parser.add_argument('--multiplier-range', nargs=3, type=float, metavar=('MIN', 'MAX', 'STEP'),
+                        help='Supertrend multiplier range: --multiplier-range 1.5 4.0 0.5')
+    parser.add_argument('--atr-range', nargs=3, type=int, metavar=('MIN', 'MAX', 'STEP'),
+                        help='Supertrend ATR period range: --atr-range 7 21 7')
+    parser.add_argument('--adx-thresholds', nargs='+', type=float,
+                        help='ADX threshold values to test (0=disabled): --adx-thresholds 0 20 25 30')
     args = parser.parse_args()
 
     instrument = args.instrument.upper()
@@ -201,13 +245,34 @@ def main():
     else:
         tp_values = DEFAULT_GRIDS.get(instrument, (US100_SL_RANGE, US100_TP_RANGE))[1]
 
+    # Build multiplier grid (optional)
+    mult_values = None
+    if args.multiplier_range:
+        mn, mx, step = args.multiplier_range
+        mult_values = [round(mn + i * step, 2) for i in range(round((mx - mn) / step) + 1)]
+
+    # Build ATR period grid (optional)
+    atr_values = None
+    if args.atr_range:
+        mn, mx, step = args.atr_range
+        atr_values = list(range(mn, mx + 1, step))
+
+    # ADX threshold grid (0 = disabled)
+    adx_thresholds = args.adx_thresholds if args.adx_thresholds else None
+
     print("🔬 PARAMETER GRID-SEARCH OPTIMIZER")
     print("=" * 60)
-    print(f"   Instrument : {instrument}")
-    print(f"   SL values  : {sl_values}")
-    print(f"   TP values  : {tp_values}")
-    print(f"   Size       : {args.size} unit(s)")
-    print(f"   Min trades : {MIN_TRADES}  |  Max DD: {MAX_DRAWDOWN}%")
+    print(f"   Instrument  : {instrument}")
+    print(f"   SL values   : {sl_values}")
+    print(f"   TP values   : {tp_values}")
+    if mult_values:
+        print(f"   Multipliers : {mult_values}")
+    if atr_values:
+        print(f"   ATR periods : {atr_values}")
+    if adx_thresholds:
+        print(f"   ADX thresh  : {adx_thresholds}")
+    print(f"   Size        : {args.size} unit(s)")
+    print(f"   Min trades  : {MIN_TRADES}  |  Max DD: {MAX_DRAWDOWN}%")
 
     # Load config + data once (reused across all runs)
     config = load_config(instrument)
@@ -223,7 +288,9 @@ def main():
         df = resample_ohlcv(df, minutes)
 
     start = datetime.now()
-    df_results = run_grid(instrument, sl_values, tp_values, args.size, config, df)
+    df_results = run_grid(instrument, sl_values, tp_values, args.size, config, df,
+                          multiplier_values=mult_values, atr_values=atr_values,
+                          adx_thresholds=adx_thresholds)
     elapsed = (datetime.now() - start).total_seconds()
 
     print_summary(df_results, instrument, args.size)

@@ -2,12 +2,22 @@
 # Deploy Trading Bot (Skills Architecture) to stockscreener-server
 # Server: 204.168.191.150 (Helsinki)
 # Usage:
-#   bash deploy_skills_bot.sh          → deploys, starts in DEMO mode
-#   bash deploy_skills_bot.sh live     → deploys, starts in LIVE mode
+#   bash deploy_skills_bot.sh                    → GOLD, DEMO mode
+#   bash deploy_skills_bot.sh demo GOLD          → GOLD, DEMO mode
+#   bash deploy_skills_bot.sh live GOLD          → GOLD, LIVE mode
+#   bash deploy_skills_bot.sh demo SILVER        → SILVER, DEMO mode
+#   bash deploy_skills_bot.sh demo EURUSD        → EURUSD, DEMO mode
+#   bash deploy_skills_bot.sh demo BTCUSD        → BTCUSD, DEMO mode
+#   bash deploy_skills_bot.sh demo ETHUSD        → ETHUSD, DEMO mode
+#   bash deploy_skills_bot.sh demo US100         → US100, DEMO mode
+#
+# Supported instruments: GOLD, SILVER, EURUSD, BTCUSD, ETHUSD, US100
 
 set -e
 
 MODE="${1:-demo}"
+INSTRUMENT="${2:-GOLD}"
+INSTRUMENT="${INSTRUMENT^^}"  # uppercase
 SERVER_IP="204.168.191.150"
 SERVER_USER="root"
 SSH_KEY="~/.ssh/stockscreener_server"
@@ -15,7 +25,7 @@ REMOTE_DIR="/opt/trading-bot-skills"
 SERVICE_NAME="trading-bot-skills"
 LOCAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/trading-bot-skills" && pwd)"
 
-echo "🚀 Deploying Trading Bot Skills to ${SERVER_IP} (${MODE} mode)..."
+echo "🚀 Deploying Trading Bot Skills to ${SERVER_IP} (instrument=${INSTRUMENT}, mode=${MODE})..."
 
 # ── Step 1: Stop & disable old trading-bot service ────────────────────────────
 echo ""
@@ -94,7 +104,7 @@ echo ""
 echo "⚙️  Installing systemd service (${SERVICE_NAME})..."
 ssh -i ${SSH_KEY} ${SERVER_USER}@${SERVER_IP} "cat > /etc/systemd/system/${SERVICE_NAME}.service" << EOF
 [Unit]
-Description=Capital.com Trading Bot (Skills Architecture) — ${MODE} mode
+Description=Capital.com Trading Bot — ${INSTRUMENT} ${MODE}
 After=network-online.target
 Wants=network-online.target
 
@@ -106,6 +116,7 @@ Environment="PATH=${REMOTE_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=-${REMOTE_DIR}/.env
 ExecStart=${REMOTE_DIR}/venv/bin/python3 ${REMOTE_DIR}/orchestrator/main.py \
     --config ${REMOTE_DIR}/config/trading_config.yaml \
+    --instrument ${INSTRUMENT} \
     --mode ${MODE}
 Restart=always
 RestartSec=15
@@ -133,7 +144,7 @@ systemctl status ${SERVICE_NAME} --no-pager
 ENDSSH
 
 echo ""
-echo "✅ Deployment complete!"
+echo "✅ Deployment complete! (instrument=${INSTRUMENT}, mode=${MODE})"
 echo ""
 echo "📋 Useful commands (run on server):"
 echo "   ssh -i ${SSH_KEY} ${SERVER_USER}@${SERVER_IP}"

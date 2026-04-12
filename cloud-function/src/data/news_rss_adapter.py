@@ -353,7 +353,9 @@ class NewsRSSAdapter:
         
         Returns list of matched keywords (empty if none)
         """
-    
+        text = (title + ' ' + (description or '')).lower()
+        return [kw for kw in self.keywords if kw in text]
+
     def _classify_severity(self, matched_keywords: List[str], title: str) -> str:
         """
         Classify headline severity based on matched keywords

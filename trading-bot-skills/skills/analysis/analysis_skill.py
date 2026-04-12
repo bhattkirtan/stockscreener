@@ -91,6 +91,12 @@ class AnalysisSkill(Skill):
         self.sma_slow_period = sma.get('slow_period', 30)
         self.sma_fast        = self.sma_fast_period  # alias
         self.sma_slow        = self.sma_slow_period  # alias
+        # Directional bias MA: close > bias_ma → BUY only; close < bias_ma → SELL only
+        self.sma_bias_period  = sma.get('bias_period', 100)
+        self.sma_bias_enabled = sma.get('bias_enabled', False)
+        # Slope filter: MA must also be pointing in the signal direction
+        # slope = MA[now] - MA[now - slope_lookback]; positive = rising, negative = falling
+        self.sma_bias_slope_bars    = sma.get('bias_slope_bars', 0)   # 0 = disabled
 
         # -- VWAP --------------------------------------------------------------
         vwap = ind.get('vwap', {})
@@ -109,6 +115,13 @@ class AnalysisSkill(Skill):
         self.rsi_period     = rsi.get('period', 14)
         self.rsi_overbought = rsi.get('overbought', 70)
         self.rsi_oversold   = rsi.get('oversold', 30)
+
+        # -- ADX ---------------------------------------------------------------
+        adx = ind.get('adx', {})
+        self.adx_enabled   = adx.get('enabled', False)
+        self.adx_period    = adx.get('period', 14)
+        self.adx_threshold = adx.get('threshold', 25)   # <threshold = ranging, skip signal
+        self.adx_di_filter = adx.get('di_filter', False) # also require DI+>DI- for BUY etc.
 
         # -- Bollinger Bands ---------------------------------------------------
         bb = ind.get('bollinger', {})
@@ -143,6 +156,45 @@ class AnalysisSkill(Skill):
             'risk_reward_ratio': 2.0,
             'swing_lookback': 20,
         })
+
+        # -- M1 exit -----------------------------------------------------------
+        m1_cfg = ind.get('m1_exit', config.get('m1_exit', {}))
+        self.m1_exit_enabled   = m1_cfg.get('enabled', False)
+        self.m1_st_period      = m1_cfg.get('atr_period', 14)
+        self.m1_st_multiplier  = m1_cfg.get('multiplier', 1.5)
+
+        # -- Tick exit (profit-based interval) ---------------------------------
+        # Levels sorted ascending by min_profit_pips.
+        # Each level: {'min_profit_pips': N, 'check_interval_sec': S}
+        # S=0 means check every tick.
+        te_cfg = config.get('tick_exit', {})
+        self.tick_exit_enabled = te_cfg.get('enabled', False)
+        raw_levels = te_cfg.get('levels', [])
+        self._tick_exit_levels = sorted(raw_levels, key=lambda x: x['min_profit_pips'])
+        # pip_size: main.py propagates risk.pip_size → analysis.sl_tp.pip_size
+        self._pip_size = config.get('sl_tp', {}).get('pip_size', config.get('pip_size', 1.0))
+        # Reverse-on-loss: close + open opposite when in a loss and ST + MA100 both agree
+        self.tick_reverse_on_loss    = te_cfg.get('reverse_on_loss', False)
+        self.tick_loss_check_interval = float(te_cfg.get('loss_check_interval_sec', 180))
+
+        # Position state — set by backtesting/orchestrator after a trade opens/closes.
+        # Used by on_m1_candle_closed to know whether to look for an exit.
+        self.current_position:    Optional[str]   = None   # 'BUY', 'SELL', or None
+        self.current_entry_price: Optional[float] = None
+        self.current_sl:          Optional[float] = None
+        self.current_tp:          Optional[float] = None
+
+        # Live tick exit: Supertrend trailing stop from last M5 candle close.
+        # BUY → exit if tick price < st_lower; SELL → exit if tick price > st_upper.
+        self.current_st_trail:    Optional[float] = None
+        self._tick_exit_fired:    bool            = False  # prevent duplicate exits per bar
+        self._last_tick_check_ts: Optional[float] = None  # epoch seconds of last check
+        # Latest MA100 value — updated every M5 candle close, used for reverse-on-loss bias check.
+        self.current_sma_bias:    Optional[float] = None
+
+        # Rolling M1 candle buffer for ST computation
+        self._m1_buffer:   list         = []
+        self._m1_prev_dir: Optional[int] = None   # last confirmed M1 ST direction
 
         # -- Edge detection state ----------------------------------------------
         self.last_signal_state = None
@@ -265,6 +317,47 @@ class AnalysisSkill(Skill):
         if ind is None:
             return  # NaN in required indicators
 
+        # Update Supertrend trailing stop and MA100 for live tick exit.
+        # Reset tick-exit-fired flag so a new bar allows a fresh check.
+        if self.current_position == 'BUY':
+            self.current_st_trail = ind.get('st_lower')
+        elif self.current_position == 'SELL':
+            self.current_st_trail = ind.get('st_upper')
+        self.current_sma_bias = ind.get('sma_bias')  # always update, used by reverse-on-loss
+        self._tick_exit_fired = False
+
+        # Check SL/TP on M5 bar for open position (fallback when M1 exit unavailable)
+        if self.current_position and self.event_bus:
+            candle_payload = event.payload.get('candle', {})
+            high = float(candle_payload.get('high', 0))
+            low  = float(candle_payload.get('low',  0))
+            ts   = candle_payload.get('timestamp')
+            exit_reason: Optional[str] = None
+            exit_price_val: float = 0.0
+
+            if self.current_sl is not None:
+                if self.current_position == 'BUY'  and low  <= self.current_sl:
+                    exit_reason, exit_price_val = 'SL_HIT', self.current_sl
+                elif self.current_position == 'SELL' and high >= self.current_sl:
+                    exit_reason, exit_price_val = 'SL_HIT', self.current_sl
+
+            if exit_reason is None and self.current_tp is not None:
+                if self.current_position == 'BUY'  and high >= self.current_tp:
+                    exit_reason, exit_price_val = 'TP_HIT', self.current_tp
+                elif self.current_position == 'SELL' and low  <= self.current_tp:
+                    exit_reason, exit_price_val = 'TP_HIT', self.current_tp
+
+            if exit_reason:
+                from core.event_bus import Event as _Evt, EventType as _ET
+                await self.event_bus.publish(_Evt(
+                    event_type=_ET.EXIT_SIGNAL,
+                    instrument=event.instrument,
+                    source='analysis_m5_sltp',
+                    payload={'reason': exit_reason, 'exit_price': exit_price_val,
+                             'candle': candle_payload, 'timestamp': ts}
+                ))
+                return  # don't also generate entry signal on exit bar
+
         signal = self._evaluate_signal(ind, latest, prev)
         if not signal:
             return
@@ -294,6 +387,250 @@ class AnalysisSkill(Skill):
             )
 
     # ------------------------------------------------------------------
+    # Position state — called by backtest runner / live orchestrator
+    # ------------------------------------------------------------------
+
+    def register_open_position(self, side: str, entry_price: float,
+                                sl: float = None, tp: float = None) -> None:
+        """Record an open position so M1 exit checks have context."""
+        self.current_position    = side
+        self.current_entry_price = entry_price
+        self.current_sl          = sl
+        self.current_tp          = tp
+        self._m1_prev_dir        = None   # reset: skip first M1 bar to avoid stale direction
+
+    def clear_position(self) -> None:
+        """Clear position state after a trade closes."""
+        self.current_position    = None
+        self.current_entry_price = None
+        self.current_sl          = None
+        self.current_tp          = None
+        self.current_st_trail    = None
+        self._tick_exit_fired    = False
+        self._last_tick_check_ts = None
+        self._m1_prev_dir        = None
+
+    # ------------------------------------------------------------------
+    # Live tick exit — fires on each incoming bid/ask quote
+    # ------------------------------------------------------------------
+
+    def _tick_check_interval_sec(self, price: float) -> float:
+        """
+        Return how many seconds must have elapsed since the last Supertrend
+        check before we look again.  Interval shrinks as unrealised profit grows.
+
+        Uses self._tick_exit_levels (sorted ascending by min_profit_pips).
+        Returns 0 if tick-based (no throttle).  Returns float('inf') if tick
+        exit is disabled or no position is open.
+
+        When in a loss and reverse_on_loss is enabled, returns
+        tick_loss_check_interval instead of inf.
+        """
+        if not self.tick_exit_enabled or not self.current_position or self.current_entry_price is None:
+            return float('inf')
+
+        pip = self._pip_size or 1.0
+        pnl_pips = (
+            (price - self.current_entry_price) / pip if self.current_position == 'BUY'
+            else (self.current_entry_price - price) / pip
+        )
+
+        # Loss side: only check if reverse-on-loss is enabled
+        if pnl_pips < 0:
+            return self.tick_loss_check_interval if self.tick_reverse_on_loss else float('inf')
+
+        interval = float('inf')  # no check if no level matches profit thresholds
+        for lvl in self._tick_exit_levels:
+            if pnl_pips >= lvl['min_profit_pips']:
+                interval = float(lvl['check_interval_sec'])
+        return interval
+
+    async def on_price_tick(self, price: float, timestamp=None) -> None:
+        """
+        Called on every live bid/ask tick.  Exits the open position if the
+        current price crosses the Supertrend trailing stop (trend reversed).
+
+        Check frequency is profit-dependent (configured via tick_exit.levels):
+          - Small/no profit  → check every 3 min (breathing room)
+          - Growing profit   → tighten to 2 min, 1 min
+          - Target profit    → check every tick (lock in gains)
+
+        Fires at most once per M5 bar (reset on candle close).
+        """
+        import time as _time
+
+        if not self.current_position or self.current_st_trail is None:
+            return
+        if self._tick_exit_fired:
+            return
+
+        # --- Profit-based throttle -------------------------------------------
+        interval = self._tick_check_interval_sec(price)
+        if interval == float('inf'):
+            return  # tick exit disabled or not applicable
+
+        now = _time.monotonic()
+        if interval > 0 and self._last_tick_check_ts is not None:
+            if (now - self._last_tick_check_ts) < interval:
+                return  # too soon
+
+        self._last_tick_check_ts = now
+
+        # --- Supertrend trail check ------------------------------------------
+        crossed = (
+            (self.current_position == 'BUY'  and price < self.current_st_trail) or
+            (self.current_position == 'SELL' and price > self.current_st_trail)
+        )
+        if not crossed:
+            return
+
+        self._tick_exit_fired = True  # suppress further ticks this bar
+
+        # --- Determine whether to reverse (close + open opposite) -----------
+        pip = self._pip_size or 1.0
+        pnl_pips = (
+            (price - self.current_entry_price) / pip if self.current_position == 'BUY'
+            else (self.current_entry_price - price) / pip
+        )
+        in_loss = pnl_pips < 0
+
+        reverse_signal = None
+        if in_loss and self.tick_reverse_on_loss and self.current_sma_bias is not None:
+            reverse_to = 'SELL' if self.current_position == 'BUY' else 'BUY'
+            # Only reverse if MA100 bias agrees with the new direction
+            bias_agrees = (
+                (reverse_to == 'SELL' and price < self.current_sma_bias) or
+                (reverse_to == 'BUY'  and price > self.current_sma_bias)
+            )
+            if bias_agrees:
+                reverse_signal = reverse_to
+
+        if not self.event_bus:
+            return
+
+        from core.event_bus import Event as _Evt, EventType as _ET
+        from core.event_bus import create_signal_generated_event
+
+        # Always exit the current position first
+        await self.event_bus.publish(_Evt(
+            event_type=_ET.EXIT_SIGNAL,
+            source='analysis_tick',
+            payload={
+                'reason': 'ST_TICK_REVERSE' if reverse_signal else 'ST_TICK_EXIT',
+                'exit_price': price,
+                'timestamp': timestamp,
+            }
+        ))
+
+        # If bias agrees, immediately open the reverse position
+        if reverse_signal:
+            sl_pips = self.sl_tp_config.get('stop_loss_pips', 20)
+            tp_pips = self.sl_tp_config.get('take_profit_pips', 40)
+            if reverse_signal == 'BUY':
+                sl = price - sl_pips * pip
+                tp = price + tp_pips * pip
+            else:
+                sl = price + sl_pips * pip
+                tp = price - tp_pips * pip
+
+            await self.event_bus.publish(
+                create_signal_generated_event(
+                    signal=reverse_signal,
+                    entry_price=price,
+                    sl=sl,
+                    tp=tp,
+                    instrument=None,
+                    timestamp=timestamp,
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # M1 candle handler — exit signal generation
+    # ------------------------------------------------------------------
+
+    async def on_m1_candle_closed(self, event: 'Event') -> None:
+        """
+        Handle M1_CANDLE_CLOSED.
+        Maintains a rolling M1 buffer, computes M1 Supertrend, and publishes
+        EXIT_SIGNAL when:
+          - SL is breached (bar low/high crosses stop level), OR
+          - TP is reached, OR
+          - M1 ST direction flips against the current position.
+        Does nothing if m1_exit_enabled is False or no position is open.
+        """
+        candle = event.payload.get('candle', {})
+
+        # Always maintain the buffer (needed for ST warmup even before first trade)
+        self._m1_buffer.append(candle)
+        max_buf = self.m1_st_period * 6
+        if len(self._m1_buffer) > max_buf:
+            self._m1_buffer = self._m1_buffer[-max_buf:]
+
+        if not self.m1_exit_enabled:
+            return
+
+        # Need minimum bars for ST to produce valid output
+        if len(self._m1_buffer) < self.m1_st_period + 2:
+            return
+
+        # Compute M1 Supertrend on rolling buffer
+        from core.indicators import calculate_supertrend as _st
+        df_m1 = _to_dataframe(self._m1_buffer)
+        _, m1_dir_series, _, _ = _st(df_m1, self.m1_st_period, self.m1_st_multiplier)
+        curr_dir = int(m1_dir_series.iloc[-1])
+
+        prev_dir = self._m1_prev_dir
+        self._m1_prev_dir = curr_dir
+
+        # Nothing to check if no open position
+        if not self.current_position:
+            return
+
+        exit_reason: Optional[str] = None
+        exit_price = float(candle.get('close', 0))
+        high = float(candle.get('high', 0))
+        low  = float(candle.get('low',  0))
+
+        # 1. SL check (hard stop — takes priority)
+        if self.current_sl is not None:
+            if self.current_position == 'BUY'  and low  <= self.current_sl:
+                exit_reason = 'SL_HIT'
+                exit_price  = self.current_sl
+            elif self.current_position == 'SELL' and high >= self.current_sl:
+                exit_reason = 'SL_HIT'
+                exit_price  = self.current_sl
+
+        # 2. TP check
+        if exit_reason is None and self.current_tp is not None:
+            if self.current_position == 'BUY'  and high >= self.current_tp:
+                exit_reason = 'TP_HIT'
+                exit_price  = self.current_tp
+            elif self.current_position == 'SELL' and low  <= self.current_tp:
+                exit_reason = 'TP_HIT'
+                exit_price  = self.current_tp
+
+        # 3. M1 ST reversal — only on a genuine direction flip (skip first bar after entry)
+        if exit_reason is None and prev_dir is not None and curr_dir != prev_dir:
+            if (self.current_position == 'BUY'  and curr_dir == -1) or \
+               (self.current_position == 'SELL' and curr_dir ==  1):
+                exit_reason = 'M1_ST_REVERSAL'
+                exit_price  = float(candle.get('close', 0))
+
+        if exit_reason and self.event_bus:
+            from core.event_bus import Event as _Evt, EventType as _ET
+            await self.event_bus.publish(_Evt(
+                event_type=_ET.EXIT_SIGNAL,
+                instrument=event.instrument,
+                source='analysis_m1',
+                payload={
+                    'reason':     exit_reason,
+                    'exit_price': exit_price,
+                    'candle':     candle,
+                    'timestamp':  candle.get('timestamp'),
+                }
+            ))
+
+    # ------------------------------------------------------------------
     # Indicator computation
     # ------------------------------------------------------------------
 
@@ -307,6 +644,7 @@ class AnalysisSkill(Skill):
             calculate_rsi,
             calculate_bollinger_bands,
             calculate_stochastic,
+            calculate_adx,
         )
 
         # ATR — always needed (SL/TP + Supertrend). Pass full df.
@@ -322,6 +660,11 @@ class AnalysisSkill(Skill):
         if self.sma_enabled:
             df['sma_fast'] = calculate_sma(df['close'], self.sma_fast_period)
             df['sma_slow'] = calculate_sma(df['close'], self.sma_slow_period)
+
+        if self.sma_bias_enabled:
+            df['sma_bias'] = calculate_sma(df['close'], self.sma_bias_period)
+            if self.sma_bias_slope_bars > 0:
+                df['sma_bias_prev'] = df['sma_bias'].shift(self.sma_bias_slope_bars)
 
         if self.vwap_enabled:
             df['vwap'] = calculate_vwap_daily(df)
@@ -340,6 +683,9 @@ class AnalysisSkill(Skill):
         if self.stoch_enabled:
             df['stoch_k'], df['stoch_d'] = calculate_stochastic(
                 df, self.stoch_k_period, self.stoch_d_period)
+
+        if self.adx_enabled:
+            df['adx'], df['di_plus'], df['di_minus'] = calculate_adx(df, self.adx_period)
 
         if self.vol_enabled and 'volume' in df.columns:
             vol_sma = df['volume'].rolling(self.vol_sma_period, min_periods=self.vol_sma_period).mean()
@@ -365,6 +711,8 @@ class AnalysisSkill(Skill):
                 return None
             ind['supertrend']           = float(latest['supertrend'])
             ind['supertrend_direction'] = int(latest['supertrend_direction'])
+            ind['st_lower']             = float(latest['st_lower']) if not pd.isna(latest.get('st_lower')) else None
+            ind['st_upper']             = float(latest['st_upper']) if not pd.isna(latest.get('st_upper')) else None
 
         if self.ema_enabled:
             if pd.isna(latest.get('ema')):
@@ -378,6 +726,14 @@ class AnalysisSkill(Skill):
             ind['sma_slow']      = float(latest['sma_slow'])
             ind['sma_fast_prev'] = float(prev['sma_fast']) if not pd.isna(prev.get('sma_fast')) else ind['sma_fast']
             ind['sma_slow_prev'] = float(prev['sma_slow']) if not pd.isna(prev.get('sma_slow')) else ind['sma_slow']
+
+        if self.sma_bias_enabled and 'sma_bias' in df.columns:
+            if pd.isna(latest.get('sma_bias')):
+                return None  # wait for bias MA to warm up
+            ind['sma_bias'] = float(latest['sma_bias'])
+            if self.sma_bias_slope_bars > 0 and 'sma_bias_prev' in df.columns:
+                prev_val = latest.get('sma_bias_prev')
+                ind['sma_bias_prev'] = float(prev_val) if not pd.isna(prev_val) else ind['sma_bias']
 
         if self.vwap_enabled and 'vwap' in df.columns:
             ind['vwap'] = float(latest['vwap']) if not pd.isna(latest['vwap']) else None
@@ -410,6 +766,13 @@ class AnalysisSkill(Skill):
 
         if self.vol_enabled and 'vol_ratio' in df.columns:
             ind['vol_ratio'] = float(latest['vol_ratio']) if not pd.isna(latest.get('vol_ratio')) else 0.0
+
+        if self.adx_enabled and 'adx' in df.columns:
+            if pd.isna(latest.get('adx')):
+                return None
+            ind['adx']      = float(latest['adx'])
+            ind['di_plus']  = float(latest['di_plus'])  if not pd.isna(latest.get('di_plus'))  else 0.0
+            ind['di_minus'] = float(latest['di_minus']) if not pd.isna(latest.get('di_minus')) else 0.0
 
         # Swing high/low for Fibonacci SL/TP (last N bars)
         lookback = self.sl_tp_config.get('swing_lookback', 20)
@@ -500,6 +863,30 @@ class AnalysisSkill(Skill):
             ratio = ind.get('vol_ratio', 1.0)
             buy_votes.append(ratio >= self.vol_min_ratio)
             sell_votes.append(ratio >= self.vol_min_ratio)
+
+        # --- ADX (trend strength gate — blocks both BUY and SELL in ranging markets) ---
+        if self.rules.get('require_adx', False) and self.adx_enabled:
+            adx_val  = ind.get('adx', 0) or 0
+            trending = adx_val >= self.adx_threshold
+            buy_votes.append(trending)
+            sell_votes.append(trending)
+            if self.adx_di_filter:
+                di_plus  = ind.get('di_plus',  0) or 0
+                di_minus = ind.get('di_minus', 0) or 0
+                buy_votes.append(di_plus > di_minus)
+                sell_votes.append(di_minus > di_plus)
+
+        # --- MA directional bias: close > MA100 → BUY only; close < MA100 → SELL only ---
+        if self.rules.get('require_sma_bias', False) and self.sma_bias_enabled:
+            sma_bias = ind.get('sma_bias', close)
+            buy_votes.append(close > sma_bias)    # only BUY when price above MA100
+            sell_votes.append(close < sma_bias)   # only SELL when price below MA100
+            # Slope gate: MA must also be moving in the signal direction
+            if self.sma_bias_slope_bars > 0 and 'sma_bias_prev' in ind:
+                ma_rising  = sma_bias >= ind['sma_bias_prev']
+                ma_falling = sma_bias <= ind['sma_bias_prev']
+                buy_votes.append(ma_rising)
+                sell_votes.append(ma_falling)
 
         if not buy_votes:   # no rules configured at all
             return None

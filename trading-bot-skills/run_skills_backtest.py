@@ -306,7 +306,7 @@ def _write_native_chart_data(full_df: pd.DataFrame, results: dict, out_dir: str,
         print(f'⚠️ Native chart data generation skipped: {exc}')
 
 
-async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: bool = False, run_id: str = None, buy_only: bool = False):
+async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: bool = False, run_id: str = None, buy_only: bool = False, warmup_bars_override: int = None):
     """
     Run backtest using actual skills (not shortcuts!)
     
@@ -367,59 +367,34 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
     # Context falls back to datetime.now() and all entry_times would be today.
     _current_candle_timestamp = [None]
 
+    # Pending signal: deferred entry executed at the OPEN of the next bar.
+    # This mirrors live behaviour — the bot receives a signal on candle close,
+    # then the order fills at the next available price (next bar's open).
+    # Structure: {'signal': str, 'candle': dict, 'timestamp': ts}
+    _pending_signal = [None]
+
     if shuffle_signals:
         import random
         print("\n🔀 SHUFFLE MODE — signal directions are randomised")
         print("   Real edge should collapse P&L to ~$0. High P&L = R:R artefact.")
 
-    # Handler for risk-approved signals -> execute in backtest
+    # Handler for risk-approved signals -> queue entry for next bar open
     async def on_risk_approved(event):
-        """When risk approves signal, execute simulated trade"""
+        """Queue both the reverse-exit and the new entry for execution at the OPEN of
+        the next bar.  Live bot detects the signal at candle close, then sends the
+        close + open orders to Capital; both fills land at the next bar's open time."""
         signal    = event.payload.get('signal')
         if shuffle_signals and signal in ('BUY', 'SELL'):
             signal = random.choice(['BUY', 'SELL'])
-            # Null out SL/TP so backtesting_skill recomputes them for the shuffled direction.
-            # Keeping the original SL/TP would invert them (e.g. a SELL with a BUY's SL
-            # below entry causes an instant win on the very next candle — not a real result).
-            trade_sl = None
-            trade_tp = None
-        else:
-            trade_sl = event.payload.get('stop_loss')
-            trade_tp = event.payload.get('take_profit')
-        price     = event.payload.get('entry_price')
-        # Prefer payload timestamp; fall back to current-candle cell (set each iteration)
         timestamp = event.payload.get('timestamp') or _current_candle_timestamp[0]
-        # Close opposite-direction positions at candle['open'] — mirrors cloud-function
-        # which calls: self.close_position(trade, timestamp, candle['open'], 'Reverse Signal')
-        if signal and price:
-            reverse_price = _current_candle_open[0] if _current_candle_open[0] else price
-            closed = backtesting.close_reverse_positions(signal, reverse_price, timestamp)
-            # Notify risk of closed trades so cooldown tracking uses candle timestamps
-            for t in closed:
-                risk.has_open_position = False
-                risk.on_position_closed(
-                    direction=t.side.value,
-                    close_reason='Reverse Signal',
-                    entry_price=t.entry_price,
-                    close_price=t.exit_price,
-                    close_time=timestamp
-                )
-        context = Context(
-            timestamp=timestamp,
-            current_candle=event.payload.get('candle', {}),
-            signal=signal,
-            entry_price=price,
-            stop_loss=trade_sl,
-            take_profit=trade_tp
-        )
-        # buy_only: allow reverse-exits but block new SELL entries
-        if buy_only and signal == 'SELL':
-            entered = False
-        else:
-            entered = backtesting.execute(context)
-        if entered:
-            risk.has_open_position = True
-    
+
+        # Queue new entry — reverse close + open will BOTH execute at next bar's open
+        _pending_signal[0] = {
+            'signal':    signal,
+            'candle':    event.payload.get('candle', {}),
+            'timestamp': timestamp,
+        }
+
     event_bus.subscribe(EventType.RISK_APPROVED, on_risk_approved)
 
     # ----------------------------------------------------------------
@@ -476,91 +451,196 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
             analysis.df_daily = df_daily
             print(f"   ✅ Daily: {len(df_daily):,} bars | BB({analysis.mtf_daily_bb_period},{analysis.mtf_daily_bb_std})")
 
+    # ----------------------------------------------------------------
+    # Load M1 bars if M1 exit is enabled
+    # ----------------------------------------------------------------
+    m1_df = None
+    instrument = config.get('market_data', {}).get('instrument', 'GOLD')
+    if analysis.m1_exit_enabled:
+        try:
+            from clients.sqlite_api import SQLiteAPIClient
+            db = SQLiteAPIClient()
+            m1_rows = db.query_candles(instrument, 'M1', limit=None)
+            if m1_rows:
+                m1_df = pd.DataFrame(m1_rows)
+                m1_df['timestamp'] = pd.to_datetime(m1_df['timestamp'])
+                m1_df = m1_df.sort_values('timestamp').reset_index(drop=True)
+                print(f"   📊 M1 bars loaded: {len(m1_df):,}  ({m1_df['timestamp'].iloc[0]} → {m1_df['timestamp'].iloc[-1]})")
+            else:
+                print("   ⚠️  M1 exit enabled but no M1 bars in DB — M1 exits disabled for this run")
+        except Exception as e:
+            print(f"   ⚠️  M1 bar load failed: {e} — M1 exits disabled for this run")
+
+    # ----------------------------------------------------------------
+    # Subscribe M1 and EXIT_SIGNAL handlers
+    # ----------------------------------------------------------------
+    from core.event_bus import Event, EventType as ET
+
+    async def on_exit_signal(event):
+        """Handle EXIT_SIGNAL from AnalysisSkill (M1 ST reversal / SL / TP)."""
+        reason     = event.payload.get('reason', 'EXIT_SIGNAL')
+        exit_price = event.payload.get('exit_price', 0)
+        ts         = event.payload.get('timestamp') or _current_candle_timestamp[0]
+
+        for trade in backtesting.open_positions[:]:
+            backtesting._close_position(trade, exit_price, reason, ts)
+            backtesting.open_positions.remove(trade)
+            risk.has_open_position = False
+            risk.on_position_closed(
+                direction=trade.side.value,
+                close_reason=reason,
+                entry_price=trade.entry_price,
+                close_price=exit_price,
+                close_time=ts,
+            )
+        analysis.clear_position()
+
+    event_bus.subscribe(ET.EXIT_SIGNAL, on_exit_signal)
+    if m1_df is not None:
+        event_bus.subscribe(ET.M1_CANDLE_CLOSED, analysis.on_m1_candle_closed)
+
     print("\n" + "=" * 60)
     print("🎯 Processing candles through skills pipeline...")
     print("=" * 60)
 
-    # Track progress
-    total_candles = len(df)
     # Derive warmup from the slowest indicator period + a safety buffer.
-    # This ensures all indicators have a full rolling window before signals fire.
-    warmup_bars = max(
+    _auto_warmup = max(
         analysis.sma_slow_period,
         analysis.bb_period,
         analysis.st_period,
         getattr(analysis, 'macd_slow', 26) + getattr(analysis, 'macd_signal_period', 9),
         getattr(analysis, 'rsi_period', 14),
-    ) + 10  # +10 bar buffer for indicator stabilisation
+        getattr(analysis, 'sma_bias_period', 0) if getattr(analysis, 'sma_bias_enabled', False) else 0,
+        getattr(analysis, 'adx_period', 0) if getattr(analysis, 'adx_enabled', False) else 0,
+    ) + 10
+    warmup_bars = warmup_bars_override if warmup_bars_override is not None else _auto_warmup
+    print(f"   Warmup: {warmup_bars} bars ({'override' if warmup_bars_override else 'auto'})")
 
-    # Feed candles through skills pipeline
-    for idx in range(total_candles):
+    # Build chronological event stream: M5 bars (post-warmup) + all M1 bars
+    total_candles = len(df)
+    events = []
+    for idx in range(warmup_bars, total_candles):
         candle = df.iloc[idx].to_dict()
-        timestamp = candle['timestamp']
+        events.append({'tf': 'M5', 'ts': pd.Timestamp(candle['timestamp']), 'candle': candle, 'idx': idx})
 
-        # Skip warmup period
-        if idx < warmup_bars:
-            continue
+    if m1_df is not None:
+        for _, row in m1_df.iterrows():
+            candle = row.to_dict()
+            events.append({'tf': 'M1', 'ts': pd.Timestamp(candle['timestamp']), 'candle': candle})
 
-        # Track open price and timestamp so on_risk_approved can reference the candle
-        _current_candle_open[0] = candle['open']
-        _current_candle_timestamp[0] = timestamp
+    events.sort(key=lambda x: x['ts'])
+    total_events = len(events)
 
-        # 1. Check SL/TP hits using intracandle HIGH/LOW — must run BEFORE signal
-        #    processing so that SL/TP takes priority over reverse-signal exits on
-        #    candles where both conditions are triggered.  This matches cloud-function
-        #    behaviour (SL/TP checked first against high/low, then signal at close).
-        context = Context(timestamp=timestamp, current_candle=candle)
-        sl_tp_closed = backtesting.check_exits(context)
-        # Notify risk of SL/TP closures so cooldown tracking uses candle timestamps
-        for t in sl_tp_closed:
-            risk.has_open_position = False
-            risk.on_position_closed(
-                direction=t.side.value,
-                close_reason=t.exit_reason,  # 'SL_HIT' or 'TP_HIT'
-                entry_price=t.entry_price,
-                close_price=t.exit_price,
-                close_time=timestamp
-            )
+    # Process merged event stream
+    for ev_idx, ev in enumerate(events):
+        timestamp = ev['ts']
+        candle    = ev['candle']
 
-        # 2. Publish CANDLE_CLOSED — triggers analysis → signal → reverse exit + new trade
-        from core.event_bus import Event, EventType as ET
-        await event_bus.publish(Event(
-            event_type=ET.CANDLE_CLOSED,
-            instrument=config.get('market_data', {}).get('instrument', 'GOLD'),
-            source='backtest',
-            payload={'candle': candle, 'timeframe': 'M5'}
-        ))
-        
+        if ev['tf'] == 'M5':
+            _current_candle_open[0]      = candle['open']
+            _current_candle_timestamp[0] = timestamp
+
+            # Execute pending entry signal at THIS bar's open (deferred from previous bar)
+            if _pending_signal[0] is not None:
+                pending = _pending_signal[0]
+                _pending_signal[0] = None
+                sig        = pending['signal']
+                prev_ts    = pending['timestamp']
+                fill_price = candle['open']
+
+                # Close any opposite-direction positions (only when reverse_signal_exit enabled)
+                reverse_exit_enabled = config.get('risk', {}).get('reverse_signal_exit', True)
+                if sig and reverse_exit_enabled:
+                    rev_closed = backtesting.close_reverse_positions(sig, fill_price, timestamp)
+                    for t in rev_closed:
+                        risk.has_open_position = False
+                        risk.on_position_closed(
+                            direction=t.side.value,
+                            close_reason='Reverse Signal',
+                            entry_price=t.entry_price,
+                            close_price=fill_price,
+                            close_time=timestamp,
+                        )
+                    if rev_closed:
+                        analysis.clear_position()
+
+                if sig and fill_price and not (buy_only and sig == 'SELL'):
+                    from core.sl_tp_engine import compute_sl_tp
+                    sl_tp_ind = {}
+                    try:
+                        prev_ts_key = pd.Timestamp(prev_ts)
+                        if analysis.precomputed_df is not None and prev_ts_key in analysis.precomputed_df.index:
+                            row = analysis.precomputed_df.loc[prev_ts_key]
+                            sl_tp_ind = {
+                                'atr':        row.get('atr')        if hasattr(row, 'get') else getattr(row, 'atr', None),
+                                'supertrend': row.get('supertrend') if hasattr(row, 'get') else getattr(row, 'supertrend', None),
+                                'swing_high': row.get('swing_high') if hasattr(row, 'get') else getattr(row, 'swing_high', None),
+                                'swing_low':  row.get('swing_low')  if hasattr(row, 'get') else getattr(row, 'swing_low', None),
+                            }
+                    except Exception:
+                        pass
+
+                    trade_sl, trade_tp = compute_sl_tp(
+                        signal=sig,
+                        entry_price=fill_price,
+                        sl_tp_config=analysis.sl_tp_config,
+                        atr=sl_tp_ind.get('atr'),
+                        supertrend_value=sl_tp_ind.get('supertrend'),
+                        swing_high=sl_tp_ind.get('swing_high'),
+                        swing_low=sl_tp_ind.get('swing_low'),
+                    )
+
+                    context = Context(
+                        timestamp=timestamp,
+                        current_candle=candle,
+                        signal=sig,
+                        entry_price=fill_price,
+                        stop_loss=trade_sl,
+                        take_profit=trade_tp,
+                    )
+                    entered = backtesting.execute(context)
+                    if entered:
+                        risk.has_open_position = True
+                        # Tell skill about the open position for M1 exit tracking
+                        analysis.register_open_position(sig, fill_price, trade_sl, trade_tp)
+
+            # Publish CANDLE_CLOSED → analysis generates entry signals
+            await event_bus.publish(Event(
+                event_type=ET.CANDLE_CLOSED,
+                instrument=instrument,
+                source='backtest',
+                payload={'candle': candle, 'timeframe': 'M5'}
+            ))
+
+        elif ev['tf'] == 'M1':
+            # Feed M1 bar to skill for exit signal generation
+            await event_bus.publish(Event(
+                event_type=ET.M1_CANDLE_CLOSED,
+                instrument=instrument,
+                source='backtest',
+                payload={'candle': candle, 'timeframe': 'M1'}
+            ))
+
         # Progress indicator
-        if (idx + 1) % 10000 == 0:
-            pct = (idx + 1) / total_candles * 100
-            print(f"   Progress: {idx + 1:,}/{total_candles:,} ({pct:.1f}%) - Capital: ${backtesting.capital:,.2f}")
-    
-    # Close any remaining positions at end of data.
-    # First check SL/TP on the final candle (they may have been hit),
-    # then force-close survivors at close price.
-    if backtesting.open_positions:
-        last_candle = df.iloc[-1].to_dict()
-        last_ts = last_candle['timestamp']
-        context = Context(timestamp=last_ts, current_candle=last_candle)
-        sl_tp_closed = backtesting.check_exits(context)
-        for t in sl_tp_closed:
-            risk.on_position_closed(
-                direction=t.side.value,
-                close_reason=t.exit_reason,
-                entry_price=t.entry_price,
-                close_price=t.exit_price,
-                close_time=last_ts,
-            )
-        # Force-close anything still open
-        for trade in backtesting.open_positions[:]:
-            backtesting._close_position(
-                trade,
-                exit_price=last_candle['close'],
-                exit_reason='End of Data',
-                exit_time=last_ts,
-            )
-            backtesting.open_positions.remove(trade)
+        if (ev_idx + 1) % 10000 == 0:
+            pct = (ev_idx + 1) / total_events * 100
+            print(f"   Progress: {ev_idx + 1:,}/{total_events:,} ({pct:.1f}%) - Capital: ${backtesting.capital:,.2f}")
+
+    # Force-close anything still open at last bar
+    last_candle = df.iloc[-1].to_dict()
+    last_ts     = last_candle['timestamp']
+
+    for trade in backtesting.open_positions[:]:
+        backtesting._close_position(
+            trade,
+            exit_price=last_candle['close'],
+            exit_reason='End of Data',
+            exit_time=last_ts,
+        )
+        backtesting.open_positions.remove(trade)
+    analysis.clear_position()
+
+    _pending_signal[0] = None
     
     print("\n" + "=" * 60)
     print("✅ Backtest complete!")
@@ -745,6 +825,9 @@ def main():
     parser.add_argument('--set', dest='set_values', action='append', default=[],
                         help='Generic config override: --set key.path=value. '
                              'Can be repeated for multiple overrides.')
+    parser.add_argument('--warmup-bars', type=int, default=None,
+                        help='Override warmup period in bars (default: auto from indicator periods). '
+                             'E.g. --warmup-bars 600 to use 600 bars for indicator warmup.')
     args = parser.parse_args()
 
     print("🧪 SKILLS-BASED BACKTEST")
@@ -865,7 +948,7 @@ def main():
         run_id = '_'.join([ts] + flags) if flags else ts
 
     # Run backtest using skills
-    results = asyncio.run(run_skills_backtest(df, config, shuffle_signals=args.shuffle_signals, run_id=run_id, buy_only=args.buy_only))
+    results = asyncio.run(run_skills_backtest(df, config, shuffle_signals=args.shuffle_signals, run_id=run_id, buy_only=args.buy_only, warmup_bars_override=args.warmup_bars))
     
     # Print results
     print_results(results)

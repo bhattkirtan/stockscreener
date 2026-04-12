@@ -52,6 +52,9 @@ risk:
   pip_size: 1.0                 # 1 pip = $1.00 price move  (same convention as GOLD)
   stop_loss_pips: 1             # 1 pip × $1.00 = $1.00 SL distance per oz
   take_profit_pips: 3           # 3 pips × $1.00 = $3.00 TP distance  (1:3 R:R)
+  reverse_signal_exit: false    # SL/TP exits only
 
 execution:
   instrument: SILVER
+  epic: SILVER
+  environment: demo

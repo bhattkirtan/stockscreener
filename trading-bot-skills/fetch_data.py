@@ -116,34 +116,35 @@ def derive_output_name(epic: str, timeframe: str, bars: int) -> Path:
 
 
 def parse_candle(price: dict) -> dict | None:
-    """Extract a flat OHLCV row from Capital.com price dict."""
+    """Extract a flat OHLCV row from Capital.com price dict.
+
+    Timestamp: always use snapshotTimeUTC (UTC) — snapshotTime is local/exchange time
+    and varies with DST.  Falling back to snapshotTime only when UTC field is absent.
+
+    Prices: Capital returns separate bid/ask per OHLC field; no 'mid' field is provided.
+    We store bid prices (what the live bot executes sells at) as the candle price so that
+    Supertrend and signal logic see the same prices the live bot sees.
+    """
     try:
-        snap = price.get('snapshotTime', '')
-        # Capital.com snapshotTime formats:
-        #   '2026/03/29 10:00:00:000'  → normalise to '2026-03-29 10:00:00'
-        #   '2026-03-29T10:00:00'      → already clean
-        ts = snap.replace('/', '-')           # fix date separators
-        ts = ts.replace('T', ' ')             # use space between date and time
-        # Drop milliseconds: 'YYYY-MM-DD HH:MM:SS:mmm' → 'YYYY-MM-DD HH:MM:SS'
+        # Prefer UTC timestamp; fall back to local snapshotTime
+        snap = price.get('snapshotTimeUTC') or price.get('snapshotTime', '')
+        # Normalise: '2026/03/29 10:00:00:000' or '2026-03-29T10:00:00' → 'YYYY-MM-DD HH:MM:SS'
+        ts = snap.replace('/', '-').replace('T', ' ')
         if ts.count(':') > 2:
             ts = ts.rsplit(':', 1)[0]
         ts = ts[:19]
 
-        bid = price.get('openPrice', {})
-        ask = price.get('closePrice', {})  # Capital uses openPrice/closePrice as candle OHLC
-        # In Capital's prices API: openPrice, highPrice, lowPrice, closePrice are dicts with bid/ask
-        o = price.get('openPrice', {}).get('mid') or (
-            (price['openPrice'].get('bid', 0) + price['openPrice'].get('ask', 0)) / 2
-        )
-        h = price.get('highPrice', {}).get('mid') or (
-            (price['highPrice'].get('bid', 0) + price['highPrice'].get('ask', 0)) / 2
-        )
-        l = price.get('lowPrice', {}).get('mid') or (
-            (price['lowPrice'].get('bid', 0) + price['lowPrice'].get('ask', 0)) / 2
-        )
-        c = price.get('closePrice', {}).get('mid') or (
-            (price['closePrice'].get('bid', 0) + price['closePrice'].get('ask', 0)) / 2
-        )
+        # Use bid prices — the live bot's Supertrend runs on bid-based candles
+        # (Capital's WebSocket streams bid OHLC).  Using mid would shift all prices
+        # by +spread/2 and corrupt the Supertrend direction state.
+        def _bid(field: str) -> float:
+            d = price.get(field, {})
+            return float(d.get('bid') or d.get('ask') or 0)
+
+        o = _bid('openPrice')
+        h = _bid('highPrice')
+        l = _bid('lowPrice')
+        c = _bid('closePrice')
         v = price.get('lastTradedVolume', 0)
 
         if not o or not h or not l or not c:
@@ -151,10 +152,10 @@ def parse_candle(price: dict) -> dict | None:
 
         return {
             'timestamp': ts,
-            'open':      round(float(o), 6),
-            'high':      round(float(h), 6),
-            'low':       round(float(l), 6),
-            'close':     round(float(c), 6),
+            'open':      round(o, 6),
+            'high':      round(h, 6),
+            'low':       round(l, 6),
+            'close':     round(c, 6),
             'volume':    int(v) if v else 0,
         }
     except (KeyError, TypeError, ValueError):

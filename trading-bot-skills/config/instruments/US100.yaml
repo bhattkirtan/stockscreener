@@ -58,8 +58,9 @@ analysis:
 
 risk:
   pip_size: 1.0                 # 1 pip = 1 index point  (index trading convention)
-  stop_loss_pips: 50            # 50 pips × 1.0 = 50 pts SL  →  $50/contract  → $100 total
-  take_profit_pips: 150         # 150 pips × 1.0 = 150 pts TP →  $150/contract → $300 total  (1:3 R:R)
+  stop_loss_pips: 35            # 35 pips × 1.0 = 35 pts SL  →  $35/contract  → $175 total
+  take_profit_pips: 105         # 105 pips × 1.0 = 105 pts TP →  $105/contract → $525 total  (1:3 R:R)
+  reverse_signal_exit: false    # SL/TP exits only
   trading_hours:
     enabled: false               # US100: US session only
     start_hour: 13              # 13:30 UTC = NYSE open
@@ -72,3 +73,5 @@ backtesting_filters:
 
 execution:
   instrument: US100
+  epic: US100
+  environment: demo
