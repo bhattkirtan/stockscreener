@@ -416,6 +416,31 @@ ssh -i ~/.ssh/stockscreener_server root@204.168.191.150 \
 
 ---
 
+## Git Repositories — Two Separate Repos
+
+The project has **two independent git repositories**:
+
+| Repo | Root | What's in it |
+|------|------|-------------|
+| Main repo | `/opt/stockscreener/` | Bot engine, configs, deploy scripts, cloud-function, CLAUDE.md |
+| UI repo | `/opt/stockscreener/capital-connect/` | React frontend (TypeScript + Vite) |
+
+**Gotcha:** `git status` at `/opt/stockscreener/` will NOT show changes inside `capital-connect/` — it's a nested repo, not a subdirectory tracked by the parent. Always `cd capital-connect` and run git commands separately for UI changes.
+
+```bash
+# Commit UI changes
+cd /opt/stockscreener/capital-connect
+git add src/...
+git commit -m "..."
+
+# Commit bot/config changes
+cd /opt/stockscreener
+git add trading-bot-skills/...
+git commit -m "..."
+```
+
+---
+
 ## Testing
 
 ```bash
