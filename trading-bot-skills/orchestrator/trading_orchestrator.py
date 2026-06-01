@@ -126,7 +126,9 @@ class TradingOrchestrator:
                     logger.info(f"📊 Signal: {context.signal} at {candle['close']}")
 
             # 3a. Reverse-signal close: if an opposite position is open, close it first
-            if context.signal and 'risk' in self.skills:
+            # Only fires when risk.reverse_signal_exit is true (defaults to false).
+            _reverse_exit_enabled = self.config.get('risk', {}).get('reverse_signal_exit', False)
+            if context.signal and 'risk' in self.skills and _reverse_exit_enabled:
                 risk_skill = self.skills['risk']
                 if (
                     risk_skill.has_open_position
