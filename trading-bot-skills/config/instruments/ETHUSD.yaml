@@ -48,6 +48,9 @@ analysis:
     sma:
       fast_period: 25
       slow_period: 30
+      bias_period: 100
+      bias_enabled: true
+      bias_slope_bars: 20
     mtf:
       h1_bb_period: 20
       h1_bb_std: 2.0
@@ -61,6 +64,7 @@ analysis:
     require_mtf_bb: false
     require_ema: false
     require_sma: false
+    require_sma_bias: true        # MA100 directional bias: above = BUY only, below = SELL only
     mtf_min_votes: 2
   sl_tp:
     method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
