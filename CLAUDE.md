@@ -216,6 +216,7 @@ docker compose --profile build run --rm react-builder
 - **SL/TP:** Edit `risk.sl_pips` / `risk.tp_pips` (not analysis.sl_tp — it gets overwritten)
 - **Cooldowns:** `risk.sl_cooldown_minutes` / `risk.tp_cooldown_minutes`
 - **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:141`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
+- **Consecutive-loss circuit breaker (opt-in, default OFF):** `risk.max_consecutive_losses: N` blocks all new entries after N losing trades in a row for `risk.consecutive_loss_cooldown_minutes` (default 120), then resets; a win resets the counter immediately. `0` = disabled. Backtest with `--set risk.max_consecutive_losses=4 --set risk.consecutive_loss_cooldown_minutes=720`. **Note:** on trend-followers this is a safety rail, not a profit lever — the GOLD/ETH sweep was non-monotonic/path-dependent (pausing can lock you out of the recovery leg), so it's left disabled on both.
 - **EOD close:** `time_based_exits.eod_hour` (UTC)
 - **Position size:** `risk.position_size_pct` and `risk.max_position_size`
 - **Bot mode:** `bot.mode: AUTO` (trades) or `SIGNAL_ONLY` (logs only, no orders)

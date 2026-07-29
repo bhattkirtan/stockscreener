@@ -85,6 +85,16 @@ class RiskSkill(Skill):
 
         # Hour filter — list of UTC hours where new entries are blocked
         self.skip_hours = config.get('skip_hours', [])
+
+        # Consecutive-loss circuit breaker.
+        # After `max_consecutive_losses` losing trades in a row, block ALL new
+        # entries for `consecutive_loss_cooldown_minutes`, then reset and resume.
+        # A winning trade resets the counter immediately. 0 = disabled (default),
+        # so existing instruments are unaffected until they opt in.
+        self.max_consecutive_losses = config.get('max_consecutive_losses', 0)
+        self.consecutive_loss_cooldown_minutes = config.get('consecutive_loss_cooldown_minutes', 120)
+        self.consecutive_losses = 0
+        self.loss_circuit_until = None  # tz-naive datetime; entries blocked until this time
         
         # Position sizing
         self.position_size_pct = config.get('position_size_pct', 2.0)
@@ -145,6 +155,13 @@ class RiskSkill(Skill):
                 context.risk_reason = f"🚫 Skip hour: {ts_hour:02d}h UTC"
                 return context
 
+        # 1b. Consecutive-loss circuit breaker
+        is_ok, reason = self._check_loss_circuit(timestamp=candle_ts)
+        if not is_ok:
+            context.is_allowed  = False
+            context.risk_reason = reason
+            return context
+
         # 2. Trading hours
         if self.trading_hours_enabled:
             is_ok, reason = self._check_trading_hours(timestamp=candle_ts)
@@ -193,12 +210,18 @@ class RiskSkill(Skill):
                 await self._publish_risk_rejected(event, f"Skip hour: {ts_hour:02d}h UTC filtered out")
                 return
 
+        # 0b. Consecutive-loss circuit breaker
+        is_allowed, reason = self._check_loss_circuit(timestamp=candle_ts)
+        if not is_allowed:
+            await self._publish_risk_rejected(event, reason)
+            return
+
         if self.trading_hours_enabled:
             is_allowed, reason = self._check_trading_hours(timestamp=candle_ts)
             if not is_allowed:
                 await self._publish_risk_rejected(event, f"Trading hours: {reason}")
                 return
-        
+
         # 1. Circuit breaker check
         if self.circuit_breaker:
             from core.circuit_breakers import CircuitBreakerStatus
@@ -411,6 +434,63 @@ class RiskSkill(Skill):
         # No specific cooldown (SIGNAL or manual close)
         return True, "No cooldown required"
     
+    def _check_loss_circuit(self, timestamp=None) -> Tuple[bool, str]:
+        """
+        Consecutive-loss circuit breaker gate.
+
+        Blocks all new entries once `max_consecutive_losses` is hit, for
+        `consecutive_loss_cooldown_minutes`. When the cooldown elapses the
+        counter and trip are cleared and trading resumes.
+
+        Args:
+            timestamp: candle timestamp (backtest) or None (live → wall clock)
+        Returns:
+            (is_allowed, reason) tuple
+        """
+        if self.loss_circuit_until is None:
+            return True, ""
+
+        import pandas as pd
+        if timestamp is not None:
+            now = pd.Timestamp(timestamp).to_pydatetime().replace(tzinfo=None)
+        else:
+            now = datetime.now()
+
+        if now >= self.loss_circuit_until:
+            # Cooldown elapsed — reset and resume
+            logger.info(
+                f"✅ Loss circuit breaker reset after cooldown "
+                f"({self.consecutive_losses} consecutive losses cleared)"
+            )
+            self.loss_circuit_until = None
+            self.consecutive_losses = 0
+            return True, ""
+
+        remaining = (self.loss_circuit_until - now).total_seconds() / 60
+        return False, (
+            f"🚫 Loss circuit breaker: {self.consecutive_losses} consecutive "
+            f"losses — paused {remaining:.0f}m more"
+        )
+
+    def _register_trade_outcome(self, is_loss: bool, when) -> None:
+        """Update the consecutive-loss counter and trip the breaker if needed."""
+        if self.max_consecutive_losses <= 0:
+            return  # feature disabled
+        if is_loss:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                self.loss_circuit_until = when + timedelta(minutes=self.consecutive_loss_cooldown_minutes)
+                logger.warning(
+                    f"🛑 Loss circuit breaker TRIPPED: {self.consecutive_losses} "
+                    f"consecutive losses — blocking new entries until "
+                    f"{self.loss_circuit_until:%Y-%m-%d %H:%M} "
+                    f"({self.consecutive_loss_cooldown_minutes}m cooldown)"
+                )
+        else:
+            if self.consecutive_losses:
+                logger.info(f"↩️  Win — consecutive-loss counter reset (was {self.consecutive_losses})")
+            self.consecutive_losses = 0
+
     def _calculate_position_size(self) -> float:
         return self.position_size
     
@@ -446,7 +526,21 @@ class RiskSkill(Skill):
             'entry_price': entry_price,
             'close_price': close_price
         }
-        
+
+        # Feed the consecutive-loss circuit breaker. Prefer realised P&L sign
+        # (captures tick/SIGNAL/EOD exits, not just SL/TP); fall back to the
+        # close reason when prices are unavailable.
+        is_loss = None
+        if entry_price is not None and close_price is not None and direction:
+            pnl = (close_price - entry_price) if direction == 'BUY' else (entry_price - close_price)
+            is_loss = pnl < 0
+        elif close_reason == 'SL_HIT':
+            is_loss = True
+        elif close_reason == 'TP_HIT':
+            is_loss = False
+        if is_loss is not None:
+            self._register_trade_outcome(is_loss, ts)
+
         # print only in debug mode — expected to be very noisy during live trading
         # print(f"📝 Updated last closed position: {direction} closed at {close_reason}")
     
