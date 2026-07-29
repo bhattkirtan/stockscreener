@@ -515,12 +515,20 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
     logger.info("🟢 Warm-up done — live signal generation enabled")
 
     # ── 3. WebSocket loop with auto-reconnect ─────────────────────────────────
-    max_retries = 10
+    # Large cap so the bot never silently dies — exponential backoff already
+    # limits reconnect rate (caps at 60 s per attempt).
+    max_retries = 1000
     retry = 0
+    # Shared mutable timestamp — updated by on_candle, read by watchdog.
+    last_candle_at: list = [datetime.utcnow()]
 
     while orchestrator.running and retry < max_retries:
         try:
             logger.info(f"🌐 Connecting to Capital.com WebSocket (attempt {retry + 1})...")
+
+            # Reset watchdog clock on each connect so it doesn't fire immediately
+            # after reconnect before the first candle arrives.
+            last_candle_at[0] = datetime.utcnow()
 
             # Refresh tokens before each connect attempt
             tokens = capital.get_tokens()
@@ -531,6 +539,7 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
 
             # M5 candle callback → main trading pipeline
             async def on_candle(candle_data: dict) -> None:
+                last_candle_at[0] = datetime.utcnow()
                 candle = {
                     'timestamp': candle_data['time'].isoformat() if candle_data.get('time') else '',
                     'open':  candle_data.get('open', 0),
@@ -572,16 +581,46 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                 await ws.subscribe_ohlc([epic], resolution='HOUR')
             logger.info(f"✅ Streaming {resolution} candles + live quotes for {epic}")
 
+            async def _candle_watchdog() -> None:
+                """
+                Force a WS reconnect if no M5 candle arrives for 15 min on a weekday.
+                Capital.com silently drops OHLC subscriptions without closing the
+                connection; the keepalive ping keeps the socket alive but candles
+                stop flowing.  Closing the socket here triggers the existing
+                reconnect + re-subscribe path.
+                """
+                await asyncio.sleep(120)  # grace period after connect
+                while True:
+                    await asyncio.sleep(60)
+                    now = datetime.utcnow()
+                    if now.weekday() >= 5:  # Sat/Sun — no GOLD data expected
+                        continue
+                    elapsed = (now - last_candle_at[0]).total_seconds()
+                    if elapsed > 900:  # 15 min = 3 missed M5 bars
+                        logger.warning(
+                            f"⚠️ Candle watchdog: no M5 candle in {elapsed / 60:.0f} min "
+                            f"— closing WS to force reconnect"
+                        )
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        return
+
             # Start position tracker: activity poll (10 s) + REST reconciliation (60 s)
             poll_task = asyncio.create_task(
                 _poll_positions(capital, orchestrator, epic, interval=10)
             )
+            watchdog_task = asyncio.create_task(_candle_watchdog())
 
             retry = 0  # Reset backoff on successful connect
             try:
-                await ws.run()  # Blocks until disconnect
+                await ws.run()  # Blocks until disconnect or watchdog fires
             finally:
+                watchdog_task.cancel()
                 poll_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watchdog_task
                 with suppress(asyncio.CancelledError):
                     await poll_task
 

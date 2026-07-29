@@ -19,7 +19,7 @@ import signal
 import subprocess
 import threading
 import time
-from datetime import datetime, time as dtime
+from datetime import datetime, date as ddate, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -51,6 +51,8 @@ app.add_middleware(
 
 _bots:      Dict[str, Dict[str, Any]] = {}
 _bots_lock  = threading.Lock()
+
+_last_daily_restart_date: Optional[ddate] = None
 
 
 def _is_running(bot_id: str) -> bool:
@@ -102,6 +104,7 @@ def _default_schedule() -> Dict[str, Any]:
             "timezone": "UTC",
             "days":     ["Mon", "Tue", "Wed", "Thu", "Fri"],
         },
+        "daily_restart_utc": "21:00",
     }
 
 
@@ -319,9 +322,55 @@ def _in_trading_hours(schedule: Dict[str, Any]) -> bool:
 
 
 def _scheduler_loop() -> None:
+    global _last_daily_restart_date
     while True:
         try:
             schedule = _load_schedule()
+            now = datetime.utcnow()
+
+            # ── Daily restart ──────────────────────────────────────────────────
+            # Restarts all running bots once per day at daily_restart_utc (UTC).
+            # This clears accumulated WebSocket state, deal-ID drift, and session
+            # age.  The restart window is 5 minutes wide so a 60-s loop tick is
+            # guaranteed to land inside it.
+            restart_str = schedule.get("daily_restart_utc", "21:00")
+            try:
+                rh, rm = map(int, restart_str.split(":"))
+                window_start = now.replace(hour=rh, minute=rm, second=0, microsecond=0)
+                window_end   = window_start + timedelta(minutes=5)
+                in_window    = window_start <= now < window_end
+                if in_window and _last_daily_restart_date != now.date():
+                    _last_daily_restart_date = now.date()
+                    with _bots_lock:
+                        to_restart = [
+                            (bid, dict(entry.get("config", {})))
+                            for bid, entry in _bots.items()
+                        ]
+                    if to_restart:
+                        logger.info(
+                            f"🔄 Daily restart at {restart_str} UTC — "
+                            f"restarting {len(to_restart)} bot(s): "
+                            f"{[b for b, _ in to_restart]}"
+                        )
+                        for bot_id, _ in to_restart:
+                            _stop_bot(bot_id)
+                        time.sleep(5)
+                        for i, (_, cfg) in enumerate(to_restart):
+                            if i > 0:
+                                time.sleep(5)  # stagger: Capital.com rate-limits /session to 1 req/s
+                            try:
+                                _start_bot(
+                                    mode=       cfg.get("mode", "demo"),
+                                    instrument= cfg.get("instrument", "GOLD"),
+                                    timeframe=  cfg.get("timeframe", "M5"),
+                                    quantity=   cfg.get("quantity"),
+                                )
+                            except Exception as e:
+                                logger.error(f"❌ Daily restart failed for {cfg.get('instrument')}: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Daily restart check failed: {e}")
+
+            # ── Schedule-based start/stop ──────────────────────────────────────
             if schedule.get("enabled"):
                 instrument = schedule.get("instrument", "GOLD")
                 timeframe  = schedule.get("timeframe",  "M5")
