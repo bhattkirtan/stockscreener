@@ -215,6 +215,7 @@ docker compose --profile build run --rm react-builder
 - **Signal logic:** Set `require_*: true/false` under `analysis.signal_rules`
 - **SL/TP:** Edit `risk.sl_pips` / `risk.tp_pips` (not analysis.sl_tp — it gets overwritten)
 - **Cooldowns:** `risk.sl_cooldown_minutes` / `risk.tp_cooldown_minutes`
+- **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:141`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
 - **EOD close:** `time_based_exits.eod_hour` (UTC)
 - **Position size:** `risk.position_size_pct` and `risk.max_position_size`
 - **Bot mode:** `bot.mode: AUTO` (trades) or `SIGNAL_ONLY` (logs only, no orders)
