@@ -239,7 +239,8 @@ class TradingOrchestrator:
                 direction=direction,
                 close_reason=close_reason,
                 entry_price=entry_price,
-                close_price=close_price
+                close_price=close_price,
+                pnl=pnl
             )
         
         # Update storage (close position in Firestore) - ALWAYS in finally block

@@ -76,6 +76,13 @@ risk:
                                 # SL/TP sweep (49k bars, session-only): TP125 optimum
                                 # (-4.6%/Sharpe -0.28) vs TP75 (-10.7%). Curve rolls over past 125.
   reverse_signal_exit: false    # SL/TP exits only
+  # Daily-loss circuit breaker: halt new entries once the day's realised P&L
+  # breaches -$150 (~3 SLs / 1.5% of $10k), auto-clears at UTC rollover.
+  # Backtest (49k bars, session-only): off -4.26%/DD$1226 → $150 -3.71%/DD$1171
+  # ($100 tested better at -1.53% but is left off as likely curve-fit). ETH's
+  # losses cluster intraday and don't recover, so cutting bad days helps here —
+  # NOT applied to GOLD, where the same cap worsens results (trend lock-out).
+  max_daily_loss_usd: 150
   # Session-only trading. ETH has no profit-trail tick exit, so it must avoid the
   # low-liquidity Asian (00–07) AND late (19–23) sessions. Backtest (49k bars):
   # baseline −35.5% / WR 18.4% / DD −$3.7k  →  session-only −10.8% / WR 23.4% / DD −$1.4k.

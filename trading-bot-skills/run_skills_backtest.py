@@ -492,6 +492,7 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
                 entry_price=trade.entry_price,
                 close_price=exit_price,
                 close_time=ts,
+                pnl=trade.pnl,
             )
         analysis.clear_position()
 
@@ -560,6 +561,7 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
                             entry_price=t.entry_price,
                             close_price=fill_price,
                             close_time=timestamp,
+                            pnl=t.pnl,
                         )
                     if rev_closed:
                         analysis.clear_position()

@@ -95,6 +95,15 @@ class RiskSkill(Skill):
         self.consecutive_loss_cooldown_minutes = config.get('consecutive_loss_cooldown_minutes', 120)
         self.consecutive_losses = 0
         self.loss_circuit_until = None  # tz-naive datetime; entries blocked until this time
+
+        # Daily-loss limit. Once realised P&L for the current UTC day reaches
+        # -max_daily_loss_usd, block ALL new entries for the rest of that day;
+        # the halt clears automatically at the next UTC date. 0 = disabled.
+        # Needs real $ P&L at close (passed via on_position_closed(pnl=...)).
+        self.max_daily_loss_usd = config.get('max_daily_loss_usd', 0)
+        self._daily_realized_pnl = 0.0
+        self._daily_pnl_date = None    # UTC date the accumulator belongs to
+        self._daily_halt_date = None   # UTC date we are halted for (None = not halted)
         
         # Position sizing
         self.position_size_pct = config.get('position_size_pct', 2.0)
@@ -162,6 +171,13 @@ class RiskSkill(Skill):
             context.risk_reason = reason
             return context
 
+        # 1c. Daily-loss limit
+        is_ok, reason = self._check_daily_loss(timestamp=candle_ts)
+        if not is_ok:
+            context.is_allowed  = False
+            context.risk_reason = reason
+            return context
+
         # 2. Trading hours
         if self.trading_hours_enabled:
             is_ok, reason = self._check_trading_hours(timestamp=candle_ts)
@@ -212,6 +228,12 @@ class RiskSkill(Skill):
 
         # 0b. Consecutive-loss circuit breaker
         is_allowed, reason = self._check_loss_circuit(timestamp=candle_ts)
+        if not is_allowed:
+            await self._publish_risk_rejected(event, reason)
+            return
+
+        # 0c. Daily-loss limit
+        is_allowed, reason = self._check_daily_loss(timestamp=candle_ts)
         if not is_allowed:
             await self._publish_risk_rejected(event, reason)
             return
@@ -472,6 +494,46 @@ class RiskSkill(Skill):
             f"losses — paused {remaining:.0f}m more"
         )
 
+    def _to_naive(self, timestamp):
+        """Coerce a candle timestamp (backtest) or None (live → UTC wall clock) to tz-naive datetime."""
+        import pandas as pd
+        if timestamp is not None:
+            return pd.Timestamp(timestamp).to_pydatetime().replace(tzinfo=None)
+        return datetime.utcnow()
+
+    def _check_daily_loss(self, timestamp=None) -> Tuple[bool, str]:
+        """
+        Daily-loss limit gate. Blocks new entries for the rest of the UTC day
+        once the day's realised P&L has breached -max_daily_loss_usd. Clears
+        automatically once the clock rolls into a new UTC date.
+        """
+        if not self.max_daily_loss_usd or self.max_daily_loss_usd <= 0:
+            return True, ""
+        if self._daily_halt_date is None:
+            return True, ""
+        if self._to_naive(timestamp).date() == self._daily_halt_date:
+            return False, (
+                f"🚫 Daily loss limit: {self._daily_realized_pnl:+.2f} today "
+                f"(cap -{self.max_daily_loss_usd:g}) — halted until UTC rollover"
+            )
+        return True, ""  # new UTC day — halt no longer applies
+
+    def _register_daily_pnl(self, pnl: float, when) -> None:
+        """Accumulate realised P&L per UTC day and trip the daily-loss halt."""
+        if not self.max_daily_loss_usd or self.max_daily_loss_usd <= 0 or pnl is None:
+            return
+        d = when.date()
+        if self._daily_pnl_date != d:
+            self._daily_pnl_date = d
+            self._daily_realized_pnl = 0.0
+        self._daily_realized_pnl += pnl
+        if self._daily_realized_pnl <= -abs(self.max_daily_loss_usd) and self._daily_halt_date != d:
+            self._daily_halt_date = d
+            logger.warning(
+                f"🛑 Daily loss limit hit: {self._daily_realized_pnl:+.2f} <= "
+                f"-{self.max_daily_loss_usd:g} — halting new entries for {d} (UTC)"
+            )
+
     def _register_trade_outcome(self, is_loss: bool, when) -> None:
         """Update the consecutive-loss counter and trip the breaker if needed."""
         if self.max_consecutive_losses <= 0:
@@ -495,24 +557,28 @@ class RiskSkill(Skill):
         return self.position_size
     
     def on_position_closed(
-        self, 
-        direction: str, 
-        close_reason: str, 
+        self,
+        direction: str,
+        close_reason: str,
         entry_price: float = None,
         close_price: float = None,
-        close_time=None
+        close_time=None,
+        pnl: float = None
     ):
         """
         Update last closed position for cooldown tracking.
-        
+
         Call this method when a position is closed.
-        
+
         Args:
             direction:   'BUY' or 'SELL'
             close_reason: 'SL_HIT', 'TP_HIT', or 'SIGNAL'
             entry_price: Entry price (optional)
             close_price: Close price (optional)
             close_time:  Candle timestamp (backtest) or None (live → wall clock)
+            pnl:         Realised $ P&L for the trade (optional). Required for the
+                         daily-loss limit; also used for the consecutive-loss
+                         win/loss call when provided (falls back to prices/reason).
         """
         import pandas as pd
         if close_time is not None:
@@ -527,19 +593,24 @@ class RiskSkill(Skill):
             'close_price': close_price
         }
 
-        # Feed the consecutive-loss circuit breaker. Prefer realised P&L sign
-        # (captures tick/SIGNAL/EOD exits, not just SL/TP); fall back to the
-        # close reason when prices are unavailable.
+        # Feed the risk breakers. Prefer realised $ P&L sign (captures
+        # tick/SIGNAL/EOD exits, not just SL/TP); fall back to price distance,
+        # then to the close reason.
         is_loss = None
-        if entry_price is not None and close_price is not None and direction:
-            pnl = (close_price - entry_price) if direction == 'BUY' else (entry_price - close_price)
+        if pnl is not None:
             is_loss = pnl < 0
+        elif entry_price is not None and close_price is not None and direction:
+            diff = (close_price - entry_price) if direction == 'BUY' else (entry_price - close_price)
+            is_loss = diff < 0
         elif close_reason == 'SL_HIT':
             is_loss = True
         elif close_reason == 'TP_HIT':
             is_loss = False
         if is_loss is not None:
             self._register_trade_outcome(is_loss, ts)
+
+        # Daily-loss limit needs the real $ P&L (price distance is not $-accurate)
+        self._register_daily_pnl(pnl, ts)
 
         # print only in debug mode — expected to be very noisy during live trading
         # print(f"📝 Updated last closed position: {direction} closed at {close_reason}")
