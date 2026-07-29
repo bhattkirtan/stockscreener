@@ -58,13 +58,19 @@ analysis:
 
 risk:
   pip_size: 1.0                 # 1 pip = 1 index point  (index trading convention)
-  stop_loss_pips: 35            # 35 pips × 1.0 = 35 pts SL  →  $35/contract  → $175 total
-  take_profit_pips: 105         # 105 pips × 1.0 = 105 pts TP →  $105/contract → $525 total  (1:3 R:R)
+  position_size: 1              # 1 contract → ~$27k notional / 20x = ~$1.35k margin; SL risk ~$50
+  stop_loss_pips: 50            # 50 pts SL — sized to Nasdaq M5 noise (35 was whippy-tight;
+                                # matches this file's own risk-math header). $50/contract.
+  take_profit_pips: 150         # 150 pts TP (1:3 R:R, breakeven WR 25%). $150/contract.
   reverse_signal_exit: false    # SL/TP exits only
+  # Session filter — the core edge. Trade the US cash session only (13:00–20:59 UTC,
+  # NYSE 09:30–16:00 ET); block the thin overnight/Asian/EU-morning hours where the
+  # index chops. This is the US100 analogue of GOLD/ETH skip_hours.
+  skip_hours: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21, 22, 23]
   trading_hours:
-    enabled: false               # US100: US session only
-    start_hour: 13              # 13:30 UTC = NYSE open
-    end_hour: 21                # 21:00 UTC = NYSE close
+    enabled: false               # session enforced via skip_hours above (proven mechanism)
+    start_hour: 13
+    end_hour: 21
     friday_close_hour: 20
 
 backtesting_filters:
