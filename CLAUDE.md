@@ -495,11 +495,18 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
    - `loss_check_interval_sec` is effectively unused while `reverse_on_loss: false`
    - Backtest exits are always clean SL/TP — tick exit gap still exists, but profit-trail exits are minor and acceptable
 
-10. **`deploy_skills_bot.sh` cannot be run inside Claude Code's container — SSH key unavailable:**
-    - `~/.ssh/stockscreener_server` does not exist in the Claude Code environment
-    - Always run `bash deploy_skills_bot.sh demo GOLD` from your **local machine terminal**
-    - The script stops the service, rsyncs all local files, reinstalls the systemd unit, and restarts — no separate restart step needed
-    - To pick up a config-only change without full redeploy: `ssh -i ~/.ssh/stockscreener_server root@204.168.191.150 "systemctl restart trading-bot-skills"`
+10. **Deployment is Docker, not systemd — and Claude may be running ON the server:**
+    - The live bot runs in the **`stockscreener-trading-bot-1` Docker container** (compose service `trading-bot`, launched as `uvicorn bot_control_api:app` on :8020). There is NO active `trading-bot-skills` / `trading-bot` systemd unit — those are `not-found/failed`.
+    - **Config is baked into the image at build time** (`Dockerfile COPY` → `/app/config`). The container mounts only `trading_data:/data` and `./secrets:/secrets:ro` — it does **not** mount `config/` from the host. So editing host YAML alone does nothing until you rebuild or copy the file in.
+    - The two live bots (`gold_m5_bot`, `ethusd_m5_bot`) are child processes spawned by `bot_control_api`. `on_startup` (`bot_control_api.py:394`) **auto-restores whichever bots were running** from `kv_store(collection='bot_state')` in `/data/trading.db` (survives container restart/recreate). Each restored bot re-reads its YAML fresh from `/app/config`.
+    - **Config-only hotfix (no image rebuild), works when running on the server:**
+      ```bash
+      docker cp trading-bot-skills/config/instruments/ETHUSD.yaml stockscreener-trading-bot-1:/app/config/instruments/ETHUSD.yaml
+      docker restart stockscreener-trading-bot-1   # on_startup restores bots, re-reads config
+      ```
+      Persists across `docker restart` but is **lost on image rebuild / `docker compose up` recreate** — the durable fix is committing the YAML and rebuilding.
+    - **Durable deploy:** `docker compose build trading-bot && docker compose up -d trading-bot`. ⚠️ Build context is `./trading-bot-skills`, so a rebuild bakes in **all uncommitted changes** in that tree (e.g. WIP edits to `bot_control_api.py` / `main.py`) — check `git status` first.
+    - The old rsync/SSH path (`deploy_skills_bot.sh` from a laptop) still exists but the SSH key isn't present in every environment; verify where you are with `docker ps` first.
 
 11. **All instrument YAMLs have `execution.environment: demo` as a no-live-trading guard:**
     - Added to GOLD, SILVER, EURUSD, BTCUSD, ETHUSD, US100
