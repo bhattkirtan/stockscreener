@@ -214,11 +214,12 @@ class TradingOrchestrator:
         close_reason: str,
         pnl: float,
         entry_price: float = 0.0,
-        close_price: float = 0.0
+        close_price: float = 0.0,
+        size: float = 0.0
     ):
         """
         Handle position closed event.
-        
+
         Args:
             deal_id: Position deal ID
             direction: 'BUY' or 'SELL'
@@ -226,6 +227,7 @@ class TradingOrchestrator:
             pnl: Profit/loss for the trade
             entry_price: Entry price
             close_price: Close price
+            size: Position size in contracts (used for the trade history record)
         """
         print(f"🔴 Position closed: {deal_id}, {close_reason}, P&L: ${pnl:.2f}")
         
@@ -247,7 +249,13 @@ class TradingOrchestrator:
         if 'storage' in self.skills:
             try:
                 storage_skill = self.skills['storage']
-                await storage_skill.close_position(deal_id, close_price, close_reason)
+                await storage_skill.close_position(
+                    deal_id, close_price, close_reason,
+                    pnl=pnl,
+                    direction=direction,
+                    entry_price=entry_price,
+                    size=size,
+                )
             except Exception as e:
                 print(f"⚠️ Storage close failed: {e}")
         

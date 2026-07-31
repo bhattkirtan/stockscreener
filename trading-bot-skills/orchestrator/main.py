@@ -106,6 +106,14 @@ def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str, 
     # Inject bot_id into monitoring config so heartbeats are keyed by the correct bot
     if bot_id:
         config.setdefault('monitoring', {})['bot_id'] = bot_id
+        # Storage stamps bot_id onto every trade_history record so the live
+        # performance report can be filtered per bot.
+        config.setdefault('storage', {})['bot_id'] = bot_id
+
+    _market = config.get('market_data', {})
+    _epic = config.get('execution', {}).get('epic') or _market.get('epic') or _market.get('instrument')
+    if _epic:
+        config.setdefault('storage', {})['epic'] = _epic
 
     # Single source of truth: propagate risk pip/SL/TP into analysis.sl_tp
     # so AnalysisSkill reads the same values without duplication in YAML.
@@ -154,6 +162,7 @@ async def _poll_positions(
     orchestrator: TradingOrchestrator,
     epic: str,
     interval: int = 10,
+    stop_manager=None,
 ) -> None:
     """
     Track position lifecycle via REST activity polling.
@@ -200,6 +209,11 @@ async def _poll_positions(
                 size=float(pos.get('size') or 0.0),
                 stop_level=pos.get('stopLevel') or pos.get('stop_loss'),
                 profit_level=pos.get('profitLevel') or pos.get('limitLevel') or pos.get('take_profit'),
+                # Broker's own open timestamp — authoritative. Without it this
+                # falls back to "now", and since this runs on every reconcile
+                # the recorded hold time collapses to seconds.
+                opened_at=(pos.get('createdDateUTC') or pos.get('createdDate')
+                           or pos.get('opened_at')),
                 upl=upl,
             )
         except Exception as e:
@@ -229,6 +243,9 @@ async def _poll_positions(
             else:
                 pnl = 0.0
 
+        if stop_manager is not None:
+            stop_manager.forget(deal_id)
+
         logger.info(f"🎯 Position closed via activity: {deal_id} reason={close_reason} @ {close_level} pnl={pnl:.2f}")
         await orchestrator.on_position_closed(
             deal_id=deal_id,
@@ -237,6 +254,7 @@ async def _poll_positions(
             pnl=pnl,
             entry_price=entry,
             close_price=close_level,
+            size=size,
         )
 
     # ── Startup seed: pull existing open positions from REST ──────────────────
@@ -249,6 +267,9 @@ async def _poll_positions(
         logger.info(f"📋 Tracking {len(known)} open position(s) for {epic}")
     except Exception as e:
         logger.warning(f"⚠️ Initial positions fetch failed: {e}")
+
+    if stop_manager is not None:
+        stop_manager.sync_positions(known)
 
     # ── Poll loop ─────────────────────────────────────────────────────────────
     reconcile_counter = 0
@@ -348,6 +369,11 @@ async def _poll_positions(
                 except Exception as e:
                     logger.warning(f"⚠️ REST reconciliation error: {e}")
 
+            # Keep the stop manager's view in sync with the broker (entry,
+            # direction, and the authoritative current stop level).
+            if stop_manager is not None:
+                stop_manager.sync_positions(known)
+
     except asyncio.CancelledError:
         raise
 
@@ -394,6 +420,17 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
             skill.mock_mode = False
             logger.info("✅ Wired Capital.com client into ExecutionSkill")
         skill.epic = epic  # ensure skill uses the same epic resolved above
+
+    # ── Broker-side stop management (breakeven / trailing) ────────────────────
+    # Lives outside the reconnect loop so tracked stop state survives a WS drop.
+    from core.stop_manager import StopManager
+    risk_cfg = config.get('risk', {})
+    stop_manager = StopManager(
+        capital_client=capital,
+        config=risk_cfg,
+        pip_size=risk_cfg.get('pip_size')
+            or config.get('analysis', {}).get('sl_tp', {}).get('pip_size', 1.0),
+    )
 
     # ── Restore state: check for positions left open from a previous session ────
     try:
@@ -563,12 +600,16 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
                     orchestrator.skills['analysis'].update_h1_candle(candle)
                     logger.debug(f"📊 H1 BB updated: close={candle['close']}")
 
-            # Live tick quote callback → Supertrend tick exit
+            # Live tick quote callback → Supertrend tick exit + broker stop trail
             async def on_quote(quote_data: dict) -> None:
                 mid = quote_data.get('mid')
-                if mid and 'analysis' in orchestrator.skills:
+                if not mid:
+                    return
+                if 'analysis' in orchestrator.skills:
                     ts = quote_data.get('time')
                     await orchestrator.skills['analysis'].on_price_tick(mid, ts)
+                # Ratchet the broker-side stop (no-op unless enabled in config)
+                await stop_manager.on_price(mid)
 
             ws.on_candle = on_candle
             ws.on_h1_candle = on_h1_candle
@@ -609,7 +650,8 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
 
             # Start position tracker: activity poll (10 s) + REST reconciliation (60 s)
             poll_task = asyncio.create_task(
-                _poll_positions(capital, orchestrator, epic, interval=10)
+                _poll_positions(capital, orchestrator, epic, interval=10,
+                                stop_manager=stop_manager)
             )
             watchdog_task = asyncio.create_task(_candle_watchdog())
 

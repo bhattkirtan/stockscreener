@@ -521,6 +521,39 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - `/history/transactions`: supports `from/to` date strings (e.g. `'2026-04-07T00:00:00'`) for multi-day P&L. Use this for historical comparisons.
     - Activity filter syntax: `type==POSITION;status==ACCEPTED` (semicolon-separated). Filter by epic client-side — adding `epic==GOLD` in the filter param causes 400.
 
+13. **`trade_history` — was never written; FIXED 2026-07-31. Read this before touching live P&L:**
+    - Path: UI Performance → Live tab → `GET /live/report` → `live_report.py:214` → `db.kv_get_all("trade_history")` (reads **`kv_store`**, not `append_log`).
+    - **The original bug (two independent causes):**
+      1. Config key mismatch — `trading_config.yaml` declares `trades: "trade_history"` under `storage.firestore.collections`, but `StorageSkill.__init__` looked up `'trade_history'` and silently fell back to `'test_trades'`.
+      2. No writer existed at all — `self.trades_collection` was assigned and never referenced. `close_position()` only patched the `active_positions` row to `status: CLOSED`.
+    - **Fix:** `StorageSkill._record_trade()` writes a full trade record on every close; `close_position()` / `on_position_closed()` both call it. `sqlite_api.save_trade()` writes to `kv_store` keyed by `deal_id`, so a duplicate close event (activity poll *and* REST reconcile can both fire) is an idempotent overwrite, not double-counted P&L.
+    - **P&L precedence:** the `pnl` threaded from `_handle_close` comes from Capital.com activity `details.profit` and is authoritative (net of spread/fees). `_record_trade` only falls back to `(exit-entry)*size` arithmetic when the broker gave nothing, and flags it with `pnl_estimated: true`.
+    - **Never use `active_positions` closed rows as a P&L source:** `close_price` is `0.0` on all of them and there is no `realized_pnl`; `pnl` is a stale unrealized snapshot.
+    - **`opened_at` clobbering (fixed at the same time):** `_save_position` re-runs on every ~60s REST reconcile. Its `datetime.now()` fallback used to overwrite `opened_at` each pass, so every trade's recorded hold time collapsed to seconds. It now preserves an existing `opened_at`, and `_persist_open_position` passes the broker's `createdDateUTC`.
+    - Regression cover: `tests/unit/test_trade_history.py`.
+
+14. **Backfilling historical trades — `backfill_trade_history.py`:**
+    - Joins `/history/transactions` (realised P&L + `dealId`) against `kv_store/active_positions` (entry price, direction, size, SL/TP, `opened_at`) on `dealId`. Rows with no matching position are still written, P&L-only, flagged `partial: true`.
+    - `python backfill_trade_history.py --days 120 [--dry-run] [--instrument GOLD] [--db PATH]`
+    - Run against the live DB from the host at `/var/lib/docker/volumes/stockscreener_trading_data/_data/trading.db`, or inside a container at `/data/trading.db`.
+    - **2026-07-31 run:** 2573 trades over 120 days, 2556 (99.3%) joined to a position row.
+
+15. **Capital.com `/history/transactions` quirks (confirmed 2026-07-31 — corrects gotcha 12):**
+    - **`size` is the realised P&L, not the position size.** There is no `profitAndLoss` field. A TRADE row is: `date`, `dateUtc`, `instrumentName`, `transactionType`, `note`, `reference`, `size` (=P&L string), `currency`, `status`, `dealId`.
+    - **`lastPeriod` is capped at 86400s here too** — `lastPeriod=604800` returns 400. Gotcha 12 previously implied transactions had no such cap; it does.
+    - **A `to` in the future returns 400 `error.invalid.daterange`.** Clamp `to` to now.
+    - **Responses are hard-capped at 100 rows and `pageSize`/`pageNumber` are ignored.** The only way to get full coverage is date-window chunking (`backfill_trade_history.py` uses 12h windows and warns when a window hits the cap).
+    - `dealId` in transactions matches the `deal_id` / doc_id in `kv_store/active_positions` — this is the join key for full trade reconstruction.
+    - Creating sessions in a tight loop gets you 400s on `/session`. Reuse one client.
+
+16. **Stop management: broker-side vs tick exit — two different mechanisms:**
+    - **Broker-side (`core/stop_manager.py`, added 2026-07-31, DEFAULT OFF):** amends the stop order held at Capital.com via `PUT /positions/{dealId}`. Survives a dropped WebSocket, a bot crash, or a container restart. Config under `risk.stop_management` — `breakeven` (move stop to entry±offset once N pips in profit) and `trailing` (stop follows the best price at a fixed distance). Driven from the live quote stream, wired in `main.py`'s `on_quote`; position state synced by `_poll_positions`.
+      - Invariants (covered by `tests/unit/test_stop_manager.py`): stops only ever tighten, never widen; trailing measures from the *best price since entry* so a pullback can't loosen it; a candidate stop through the current price is rejected; a failed amend leaves tracked state untouched so it retries; the broker's stop wins on resync.
+      - **Not simulated by `run_skills_backtest.py`** — backtest exits remain clean SL/TP. Enabling it makes live diverge from backtest.
+    - **Tick exit (`analysis_skill.py:448`):** does NOT touch the broker stop. Publishes `EXIT_SIGNAL` and closes the position at market when price crosses the M5 Supertrend band. Live-only (WebSocket ticks), at most once per M5 bar.
+    - `execution.trailing_stop: false` in `trading_config.yaml` is a **dead flag** — no code reads it. Don't confuse it with `risk.stop_management`.
+    - Before the stop manager, the only broker-side protection was the fixed entry SL, and `capital_api.update_position()` was called nowhere outside tests.
+
 ---
 
 ## Conventions

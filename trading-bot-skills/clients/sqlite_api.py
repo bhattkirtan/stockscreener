@@ -243,6 +243,24 @@ class SQLiteAPIClient:
             logger.error(f"Failed to log trade: {e}")
             return False
 
+    def save_trade(self, collection: str, deal_id: str, trade_data: Dict) -> bool:
+        """
+        Persist a completed trade to kv_store, keyed by deal_id.
+
+        Deliberately kv_store and not append_log: the API's `kv_get_all()`
+        (cloud-function/api/database.py) reads kv_store, and keying by deal_id
+        makes the write idempotent — a duplicate close event overwrites rather
+        than double-counting P&L in the live report.
+        """
+        try:
+            trade_data["logged_at"] = datetime.utcnow().isoformat()
+            self._kv_set(collection, deal_id, trade_data, merge=True)
+            logger.info(f"Trade saved: {collection}/{deal_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save trade {deal_id}: {e}")
+            return False
+
     # ── Bot Status ────────────────────────────────────────────────────────────
 
     def update_bot_status(self, collection: str, bot_id: str, status_data: Dict) -> bool:

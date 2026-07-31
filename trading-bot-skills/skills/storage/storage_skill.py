@@ -42,8 +42,20 @@ class StorageSkill(Skill):
         # Collection shortcuts
         self.positions_collection = self.collections.get('positions', 'test_positions')
         self.signals_collection = self.collections.get('signals', 'test_signals')
-        self.trades_collection = self.collections.get('trade_history', 'test_trades')
-        
+        # YAML declares this under the key `trades:`; older code looked up
+        # `trade_history` and silently fell back to `test_trades`, which is why
+        # no closed trade was ever persisted. Accept both spellings.
+        self.trades_collection = (
+            self.collections.get('trades')
+            or self.collections.get('trade_history')
+            or 'trade_history'
+        )
+
+        # Stamped onto every trade so the live report can filter per bot
+        # (gold_m5_bot, ethusd_m5_bot, ...). Injected by register_skills().
+        self.bot_id = config.get('bot_id')
+        self.epic = config.get('epic')
+
         self.mock_mode = config.get('mock_mode', False)
         
         # Initialize Firestore client
@@ -168,7 +180,20 @@ class StorageSkill(Skill):
             'realized_pnl': event.payload.get('realized_pnl', 0),
             'status': 'CLOSED'
         }
-        
+
+        # Also append to trade history. Keyed by deal_id, so if the orchestrator
+        # already recorded this close the write is an idempotent overwrite
+        # rather than a second trade.
+        self._record_trade(
+            deal_id=deal_id,
+            close_price=float(close_price or 0.0),
+            close_reason=close_reason,
+            pnl=float(event.payload.get('realized_pnl') or 0.0),
+            direction=event.payload.get('direction'),
+            entry_price=float(event.payload.get('entry_price') or 0.0),
+            size=float(event.payload.get('size') or 0.0),
+        )
+
         logger.info(f"💾 Closing position in Firestore: {collection}/{deal_id} ({close_reason})")
         
         try:
@@ -222,6 +247,19 @@ class StorageSkill(Skill):
         size = position.get('size', 0)
         upl = position.get('upl', 0.0) or 0.0
         pnl_pct = (upl / (entry_price * size) * 100) if entry_price and size else 0.0
+
+        # This method is re-run on every REST reconcile (~60 s) to refresh live
+        # P&L. Callers rarely know the true open time, so without this the
+        # fallback `datetime.now()` would overwrite opened_at on every pass and
+        # every trade would look like it was held for seconds.
+        existing_opened_at = None
+        try:
+            existing_row = self.firestore_client.get_position(collection, deal_id)
+            if existing_row:
+                existing_opened_at = existing_row.get('opened_at')
+        except Exception:
+            pass
+
         document = {
             # UI-facing names (BotPosition schema)
             'position_id': deal_id,
@@ -235,7 +273,11 @@ class StorageSkill(Skill):
             'pnl_pct': round(pnl_pct, 2),
             'stop_loss': position.get('stop_loss'),
             'take_profit': position.get('take_profit'),
-            'opened_at': position.get('opened_at') or position.get('entry_time', datetime.now()).isoformat(),
+            'opened_at': (
+                existing_opened_at
+                or position.get('opened_at')
+                or position.get('entry_time', datetime.now()).isoformat()
+            ),
             'status': 'OPEN',
         }
         
@@ -282,25 +324,120 @@ class StorageSkill(Skill):
             'upl':           upl,
         })
 
-    async def close_position(self, deal_id: str, close_price: float, close_reason: str):
+    def _record_trade(
+        self,
+        deal_id: str,
+        close_price: float,
+        close_reason: str,
+        pnl: float = 0.0,
+        direction: str = None,
+        entry_price: float = 0.0,
+        size: float = 0.0,
+    ) -> None:
+        """
+        Write a completed trade to the trade_history collection.
+
+        This is what the live performance report reads
+        (cloud-function/api/live_report.py). Any field the caller could not
+        supply is backfilled from the open position row, which was written by
+        `_save_position` when the position was opened.
+
+        Never raises — a persistence failure must not break the close path.
+        """
+        try:
+            open_row = self.firestore_client.get_position(
+                self.positions_collection, deal_id
+            ) or {}
+        except Exception as e:
+            logger.warning(f"⚠️ Could not read open position {deal_id} for trade record: {e}")
+            open_row = {}
+
+        entry = float(entry_price or open_row.get('open_level') or 0.0)
+        qty   = float(size or open_row.get('size') or 0.0)
+        side  = (direction or open_row.get('direction') or 'BUY').upper()
+
+        # pnl arrives from Capital.com activity (`details.profit`) and is the
+        # authoritative realised figure — it already includes spread/fees.
+        # Only fall back to an arithmetic estimate when the broker gave nothing.
+        realized = float(pnl or 0.0)
+        estimated = False
+        if not realized and entry and close_price and qty:
+            realized = (close_price - entry) * (1.0 if side == 'BUY' else -1.0) * qty
+            estimated = True
+
+        margin = entry * qty
+        trade = {
+            'deal_id':      deal_id,
+            'bot_id':       self.bot_id,
+            'epic':         open_row.get('epic') or self.epic or '',
+            'direction':    side,
+            'size':         qty,
+            'entry_price':  entry,
+            'exit_price':   float(close_price or 0.0),
+            'entry_time':   open_row.get('opened_at', ''),
+            'exit_time':    datetime.now().isoformat(),
+            'pnl':          round(realized, 2),
+            'pnl_pct':      round(realized / margin * 100, 4) if margin else 0.0,
+            'exit_reason':  close_reason or 'UNKNOWN',
+            'stop_loss':    open_row.get('stop_loss'),
+            'take_profit':  open_row.get('take_profit'),
+            'pnl_estimated': estimated,
+        }
+
+        try:
+            self.firestore_client.save_trade(self.trades_collection, deal_id, trade)
+            logger.info(
+                f"📒 Trade recorded: {deal_id} {side} {qty} @ {entry} → {close_price} "
+                f"= ${realized:.2f} ({close_reason})"
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to record trade {deal_id}: {e}")
+
+    async def close_position(
+        self,
+        deal_id: str,
+        close_price: float,
+        close_reason: str,
+        pnl: float = 0.0,
+        direction: str = None,
+        entry_price: float = 0.0,
+        size: float = 0.0,
+    ):
         """
         Close position in Firestore (ALWAYS called in finally block)
-        
+
         Args:
             deal_id: Position deal ID
             close_price: Close price
             close_reason: 'SL_HIT', 'TP_HIT', or 'SIGNAL'
+            pnl: Realised P&L from the broker (authoritative when non-zero)
+            direction: 'BUY' or 'SELL'
+            entry_price: Entry price
+            size: Position size in contracts
         """
         collection = self.collections.get('positions', 'active_positions')
-        
+
         close_data = {
             'close_price': close_price,
             'close_reason': close_reason,
-            'close_time': datetime.now().isoformat()
+            'close_time': datetime.now().isoformat(),
+            'realized_pnl': pnl,
         }
-        
+
+        # Append to trade history BEFORE mutating the open row, so the entry
+        # fields are still readable if the position update partially fails.
+        self._record_trade(
+            deal_id=deal_id,
+            close_price=close_price,
+            close_reason=close_reason,
+            pnl=pnl,
+            direction=direction,
+            entry_price=entry_price,
+            size=size,
+        )
+
         logger.info(f"💾 Closing position in Firestore: {collection}/{deal_id} ({close_reason})")
-        
+
         try:
             # CRITICAL: Always close in Firestore (even if API fails)
             success = self.firestore_client.close_position(

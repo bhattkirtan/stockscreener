@@ -181,6 +181,32 @@ risk:
   # Exposure limits
   max_exposure_per_symbol: 50.0  # Max 50% of capital in one symbol
 
+  # ── Broker-side stop management (breakeven + trailing) ──────────────────────
+  # Amends the stop order held AT THE BROKER (PUT /positions/{dealId}), so the
+  # protection survives a dropped WebSocket, a bot crash, or a container restart.
+  # This is NOT the same as analysis.tick_exit, which closes the whole position
+  # at market and only works while the live quote stream is up.
+  #
+  # Implemented in core/stop_manager.py, driven from the live quote stream.
+  # Stops only ever move in the protective direction — never widened.
+  #
+  # DEFAULT OFF: enabling this changes live trading behaviour and is not
+  # simulated by run_skills_backtest.py (backtest exits remain clean SL/TP).
+  stop_management:
+    enabled: false
+    check_interval_sec: 5     # min seconds between amends for one position
+    min_step_pips: 1.0        # skip amends smaller than this (avoids REST spam)
+
+    breakeven:
+      enabled: false
+      trigger_pips: 20        # profit needed to arm breakeven
+      offset_pips: 2          # stop = entry ± offset (positive locks in a small gain)
+
+    trailing:
+      enabled: false
+      start_pips: 25          # profit needed before trailing begins
+      distance_pips: 15       # stop stays this far behind the best price seen
+
 # Backtesting filters
 backtesting_filters:
   # Set to true to disable reverse-signal exits (SL/TP only)
