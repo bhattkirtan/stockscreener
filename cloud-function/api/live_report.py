@@ -26,6 +26,10 @@ def _normalize(t: Dict) -> Dict:
         "pnl_pct":      float(t.get("pnl_pct") or 0),
         "exit_reason":  t.get("exit_reason", "UNKNOWN"),
         "epic":         t.get("epic", ""),
+        # Backfilled rows carry an unreliable entry_time (see
+        # backfill_trade_history.py) — pass the flag through so the UI can
+        # show "—" for hold time instead of a made-up duration.
+        "entry_time_estimated": bool(t.get("entry_time_estimated", False)),
     }
 
 

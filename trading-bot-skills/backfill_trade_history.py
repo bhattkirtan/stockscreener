@@ -181,6 +181,11 @@ def build_trade(txn: dict, position: dict, bot_id_override: str = None) -> dict:
         'currency':      txn.get('currency'),
         'pnl_estimated':  False,          # broker figure — authoritative
         'exit_price_estimated': exit_estimated,
+        # opened_at on these rows was rewritten on every ~60s REST reconcile by
+        # the pre-fix _save_position, so it is really "last reconcile before
+        # close", not the open. Hold time computed from it would read as
+        # seconds. Flag it so the UI shows "—" rather than a confident lie.
+        'entry_time_estimated': True,
         'backfilled':    True,
         'partial':       not bool(position),
     }
