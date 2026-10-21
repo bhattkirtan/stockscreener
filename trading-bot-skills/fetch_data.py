@@ -115,6 +115,21 @@ def derive_output_name(epic: str, timeframe: str, bars: int) -> Path:
     return output_dir / filename
 
 
+def _norm_ts(value) -> str | None:
+    """
+    Normalise a timestamp to 'YYYY-MM-DD HH:MM:SS' — the exact form parse_candle()
+    produces — so string comparisons against candle timestamps are valid.
+
+    Accepts ISO with 'T', slash dates, trailing milliseconds, or None.
+    """
+    if not value:
+        return None
+    ts = str(value).replace('/', '-').replace('T', ' ')
+    if ts.count(':') > 2:
+        ts = ts.rsplit(':', 1)[0]
+    return ts[:19]
+
+
 def parse_candle(price: dict) -> dict | None:
     """Extract a flat OHLCV row from Capital.com price dict.
 
@@ -183,6 +198,21 @@ def fetch_all_bars(
     Returns list of candle dicts sorted oldest → newest, deduplicated.
     """
     all_candles = {}   # keyed by timestamp for dedup
+    # Window bounds are compared as strings against parse_candle()'s output, which
+    # uses a SPACE separator ('YYYY-MM-DD HH:MM:SS').  Callers pass ISO-with-'T'
+    # (bar_updater uses strftime('%Y-%m-%dT%H:%M:%S')).  ord(' ')=32 < ord('T')=84,
+    # so an unnormalised bound made every same-day candle compare as older than
+    # from_date and get skipped — the fetch returned 0 rows and logged
+    # "reached end of available history".  Normalise both bounds to one form.
+    from_date = _norm_ts(from_date)
+    to_date   = _norm_ts(to_date)
+    # A date-only bound ('2026-09-01') must be widened to a full timestamp: the API
+    # rejects a date-only 'to' with 400, and as a filter bound it would otherwise
+    # exclude the whole day.  from -> start of day, to -> end of day.
+    if from_date and len(from_date) == 10:
+        from_date += ' 00:00:00'
+    if to_date and len(to_date) == 10:
+        to_date += ' 23:59:59'
     to_timestamp = to_date  # None = start from most recent
     batch_num = 0
     date_range_mode = from_date is not None
@@ -237,8 +267,12 @@ def fetch_all_bars(
                     continue
                 if ts not in all_candles:
                     all_candles[ts] = candle
-            snap = price.get('snapshotTime', '')
-            if oldest_snapshot is None or snap < oldest_snapshot:
+            # Paginate on the UTC field.  'snapshotTime' is exchange-local (UTC+2 here)
+            # while the API's 'to' parameter is interpreted as UTC, so feeding the local
+            # value back shifted each window forward by the offset and re-fetched
+            # overlapping ranges.
+            snap = _norm_ts(price.get('snapshotTimeUTC') or price.get('snapshotTime', ''))
+            if snap and (oldest_snapshot is None or snap < oldest_snapshot):
                 oldest_snapshot = snap
 
         new_candles = len(all_candles) - old_count
@@ -249,7 +283,7 @@ def fetch_all_bars(
             break
 
         # In date-range mode, stop once we've paginated past from_date
-        if date_range_mode and oldest_snapshot and oldest_snapshot[:19].replace('/', '-') < from_date:
+        if date_range_mode and oldest_snapshot and oldest_snapshot < from_date:
             logger.info(f"  ✅ Reached from_date boundary ({from_date}) — stopping.")
             break
 

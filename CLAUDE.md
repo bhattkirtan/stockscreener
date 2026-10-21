@@ -554,6 +554,187 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - `execution.trailing_stop: false` in `trading_config.yaml` is a **dead flag** — no code reads it. Don't confuse it with `risk.stop_management`.
     - Before the stop manager, the only broker-side protection was the fixed entry SL, and `capital_api.update_position()` was called nowhere outside tests.
 
+17. **UI deploys go through the `react_dist` volume, not the host `dist/`:**
+    - `docker compose --profile build run --rm react-builder` runs `npm ci && npm run build` in a node:20-alpine container that mounts `./capital-connect` at `/app` and the **`react_dist` volume** at `/app/dist`. nginx mounts that same volume read-only at `/usr/share/nginx/html`. Editing `capital-connect/src` and rebuilding locally (`npm run build` on the host) writes to the host `dist/` and changes **nothing** that nginx serves.
+    - `npm run build` is `vite build` only — no `tsc`. Typecheck separately with `npx tsc --noEmit -p tsconfig.app.json`. There is a **pre-existing** error in `MonthlyPnlChart.tsx:85` (recharts `number[]` domain prop); it does not block the build.
+    - To confirm what is actually being served: `docker exec stockscreener-nginx-1 ls -la /usr/share/nginx/html/assets` and compare the hash against `curl -s http://localhost:3000/ | grep -o 'index-[A-Za-z0-9_-]*\.js'`.
+
+18. **Diagnosing "the dashboard doesn't work" — read the nginx access log first:**
+    - `docker logs stockscreener-nginx-1 --tail 2000 | grep -E "live/report|auth/login"` shows exactly what the browser requested, the status code, and the response size per request. Browser rows are gzipped (~4.5:1) so they look much smaller than the same request made with `curl` — size differences between bots, not against curl, are what tell you the payload actually varied.
+    - The bot filter chips on Performance → Live (`Performance.tsx`, `LIVE_BOT_IDS`) are verified working end to end: each chip issues `GET /live/report?bot_id=…` and the backend filters on the trade's `bot_id` field. Trade counts as of 2026-07-31: gold 403, ethusd 981, us100 8, btcusd 998, eurusd 183, all 2573.
+    - The trade-history **table** now has its own row filters (side / result / exit reason / instrument) and sortable columns, added in `TradeHistory` in `Performance.tsx`. The instrument filter and column only appear when the rows span more than one epic (i.e. the ALL view).
+    - **`_SESSIONS` in `cloud-function/api/app.py:77` is in-memory with a 12h TTL.** Restarting the api container invalidates every token; the next UI request 401s and `apiFetch` (`capital-connect/src/lib/auth.ts`) responds by clearing the token and calling `window.location.reload()` — which looks to the user like a click that silently did nothing and reset the view.
+    - To exercise an endpoint by hand: `PW=$(grep -E '^UI_PASSWORD=' .env | cut -d= -f2-)`, POST it to `/api/auth/login`, then send `Authorization: Bearer <token>`. Calling the api container directly on :8000 does **not** bypass auth.
+
+19. **`time_based_exits` (EOD close / max hold) is DEAD in the live bot.** `eod_hour` / `eod_enabled` are read **only** by `orchestrator/production_orchestrator.py:143`. The live bot is `bot_control_api.py` → `python orchestrator/main.py` → `TradingOrchestrator` (`main.py:767`), which never instantiates `EndOfDayClose` or `IntraDayTimeExit`. **Nothing force-closes a live position** — exits are SL / TP / tick-exit only.
+    - Consequence: positions are carried across the weekend. Confirmed loss — US100 `dealId 00384627-…-000083765fd6`, SELL 1 @ 28288.7 opened Fri 2026-07-31 20:00:07 UTC, stop at 28320.1, closed Sun 2026-08-02 22:00:10 UTC at **28441.7** on the reopen gap = 121.6 pts *past* the stop, realised -$153 (-€132.37) vs the intended -$50.
+    - `guaranteedStop: false` on every position, so a gap is uncapped.
+    - `risk.skip_hours` only blocks **new entries**; it does not flatten. For US100 the whole allowed session (13:00–20:59 UTC) sits *after* `eod_hour: 16`, so even a working EOD close would be useless without a per-instrument close hour.
+
+20. **Live SL/TP are anchored to the signal-bar close, not the actual fill.** `AnalysisSkill._calculate_sl_tp` (`analysis_skill.py:527`) computes levels off the candle close and ships them with the order; the broker fills at market some seconds later. The distances the broker records are therefore *not* the configured pips.
+    - Worked example (US100, config SL=50 / TP=150): levels SL 28320.1 / TP 28120.1 imply a reference price of 28270.1, but the fill was 28288.7 → **effective SL 31.4 pts, TP 168.6 pts**. Other same-day US100 fills drifted to 60.2 / 63.5 / 55 pts.
+    - So real risk-per-trade varies ±40% from the YAML, and backtests (which fill at the close) systematically disagree with live. To diagnose, compare `details.openPrice` vs `stopLevel`/`profitLevel` in `/history/activity` — do **not** trust the YAML pips.
+
+21. **Reading trades out of the live DB — exact shapes:** `kv_store` columns are `(collection, doc_id, data, updated_at)` — there is no `key`/`value` column. `trade_history` rows carry `bot_id` (e.g. `us100_m5_bot`); `active_positions` rows do **not** (`bot_id: None`) but do carry `opened_at` and `status`. `active_positions` has `entry_price: None` on many rows while `trade_history` has it — join on `deal_id` across both to reconstruct a trade.
+
+22. **`get_activity()` WAS broken — it always returned `[]`, silently disabling three risk mechanisms. FIXED 2026-10-21 (not yet deployed to the container).**
+    - `capital_api.py:308` sends `filter=type==POSITION;status==EXECUTED`. **`status==EXECUTED` matches nothing** — verified against the live demo API: `EXECUTED` → `200 n=0`, `ACCEPTED` → `200 n=11`. The correct value is `ACCEPTED`.
+    - Second, independent bug: `main.py:303` iterates `details['actions']` to find `POSITION_OPENED`/`POSITION_CLOSED`. **There is no `actions` array in the response.** Even with the filter fixed, nothing would parse.
+    - **Real close-event shape** (`detailed=true`, `status==ACCEPTED`): top-level `date`/`dateUTC`/`epic`/`dealId`/`source`/`type`/`status`, and `details` = `dealReference`, `workingOrderId`, `marketName`, `currency`, `size`, `direction`, `level`, `stopLevel`, `guaranteedStop`, `profitLevel`, and — **only on closes** — `openPrice`.
+      - A close is identified by **`details.openPrice` being present**; open events lack it.
+      - **`source` is the exit reason**: `SL` | `TP` | `USER`. Use it instead of string-matching `description` (which the REST fallback passes as `''`).
+      - **`details.direction` on a close is the CLOSING direction — the opposite of the position.** A position opened BUY shows `direction: SELL` on its close row. Don't use it as the position direction.
+      - **There is no `details.profit`.** `_handle_close` reads `details.get('profit')` and so always gets `None`. Realised P&L must be joined from `/history/transactions` on `dealId` (where `size` *is* the P&L — see gotcha 15).
+    - **Consequence chain:** activity poll returns `[]` → every close is detected only by the 60 s REST reconcile at `main.py:353`, which calls `_handle_close(deal_id, 0.0, '')`. Then:
+      1. `close_level=0.0` is falsy, so the `if entry and close_level and size` guard fails → **`pnl = 0.0`** and `exit_price = 0.0` on every `trade_history` row written since the writer landed (2026-08-01). 365 rows, all zeros.
+      2. `description=''` → `close_reason = 'SIGNAL'` → `_check_cooldown` falls through to "No cooldown required". **`sl_cooldown_minutes` / `tp_cooldown_minutes` never apply in live.** GOLD's 30 m SL cooldown has never once fired.
+      3. `is_loss = pnl < 0` with `pnl == 0.0` → **every trade is scored as a win.** The consecutive-loss breaker can never trip.
+      4. `_register_daily_pnl(0.0)` → **`risk.max_daily_loss_usd` can never trip.** ETHUSD's $150 cap is inert.
+    - The dashboard therefore shows real P&L only through 2026-07-31 (from `backfill_trade_history.py`, which uses `/transactions` and is correct) and **0.00 for everything after**. US100 shows 223 of 231 trades at zero.
+    - Until this is fixed, **`/history/transactions` is the only trustworthy live P&L source.** Re-running `backfill_trade_history.py` repairs history but not the live path.
+
+23. **`epic==` in the activity filter DOES work — corrects gotcha 12.** `filter=type==POSITION;status==ACCEPTED;epic==US100` returns `200 n=8`. The 400 previously attributed to `epic==` was almost certainly the `from/to` params, not the epic clause.
+
+24. **Three different `/data/trading.db` files exist. Know which one you are reading.**
+    | Where | Path | Contents (2026-10-21) |
+    |---|---|---|
+    | Live volume (truth) | `/var/lib/docker/volumes/stockscreener_trading_data/_data/trading.db` (1.2 GB) | 6 epics × ~165–220k M5 bars through today; `trade_history` 2945 rows |
+    | **Host stray** | `/opt/stockscreener` → `/data/trading.db` (35 MB) | GOLD 154k bars, **US100 only 1,500**, ETHUSD stale at 2026-07-29 |
+    | In-container | `/data/trading.db` inside any compose service | the live volume |
+    - `sqlite_api.py:30` defaults `DB_PATH` to `/data/trading.db` and `:49` **creates the parent dir** — so running any script on the host silently creates/uses the stray 35 MB DB. `.env` sets no `DB_PATH`.
+    - **A host-run `run_skills_backtest.py --instrument US100 --years 2` therefore backtests 1,500 bars (~5 days) and reports 18 trades without warning.** Always either run backtests inside `stockscreener-backtest-runner-1` or set `DB_PATH` to the volume path.
+    - `sqlite3` CLI is **not installed** on the host — use `python3 -c "import sqlite3..."`.
+
+25. **`stockscreener-backtest-runner-1` has months-stale baked configs — UI-triggered backtests do NOT test the deployed strategy.** Config is `COPY`d at build time and the service has not been rebuilt since the strategy changed. Diff vs the live bot on 2026-10-21:
+    | Instrument | Live bot | backtest-runner (stale) |
+    |---|---|---|
+    | GOLD | `require_sma_bias: true` (MA100), `tick_exit` block | **both absent** |
+    | US100 | ST(14, 1.5), `require_h1_bb: false`, `reverse_signal_exit: false`, `skip_hours` | **ST(7, 2.0), `require_h1_bb: true`, no reverse-exit guard, no skip_hours** |
+    | ETHUSD | SL 25 / TP 125, MA100 bias, `reverse_signal_exit: false` | **SL 45 / TP 170, no bias, no reverse-exit guard** |
+    - Effect: a 2-year ETHUSD run in that container produced **16,802 of 16,999 exits as `Reverse Signal`** (avg hold 1.3 bars) and `+$733,912` on $10k — a reverse-signal scalper compounding through `dynamic_sizing`, not the live strategy. Treat any such number as an artefact.
+    - **The container's *code* is stale too, and that is worse than the configs.** `/app/run_skills_backtest.py` is 866 lines vs the host's 984, contains **zero occurrences of `reverse_signal_exit`**, and at its line 363 calls `backtesting.close_reverse_positions(...)` **unconditionally**. The host version guards it at `run_skills_backtest.py:553`. So `docker cp`-ing the correct YAML in is **not sufficient** — a run with `reverse_signal_exit: false` correctly loaded still produced 6,973 `Reverse Signal` exits and `+$185,306`.
+    - Note the default is also inconsistent in the current code: `run_skills_backtest.py:553` defaults `reverse_signal_exit` to **True**, while `trading_orchestrator.py:130` defaults it to **False**. An instrument YAML that omits the key gets reverse-exit ON in backtest and OFF in live.
+    - To backtest the real strategy: rebuild the service (`docker compose build backtest-runner`) — copying YAML alone will not fix it.
+
+26. **`execution.position_size` defaults to `0.5` (`execution_skill.py:51`) — GOLD and ETHUSD have been trading at a fraction of intended size.** The deployed YAMLs define `position_size` only under `backtesting:`, not under `risk:`/`execution:`, so the 0.5 default wins.
+    | Instrument | Actually traded | Host YAML intends | Risk/trade actual → intended |
+    |---|---|---|---|
+    | GOLD | **0.5** | 10 | $7.50 → **$150 (20×)** |
+    | ETHUSD | **0.5** | 1 | $12.50 → $25 (2×) |
+    | US100 | 1.0 | 1 | $50 (correct — it sets `risk.position_size`) |
+    - The uncommitted `position_size` additions to `GOLD.yaml`/`ETHUSD.yaml` + the `main.py` root-propagation block are the fix — but deploying them **multiplies GOLD risk 20×on a strategy with no measured edge.** Aug–Oct would have been **−€5,386 instead of −€1,820**. Fix the edge before the size.
+
+27. **SL/TP anchoring drift is small in the median — gotcha 20's "±40%" is a tail, not the typical case.** Measured over 362 live positions (Aug–Oct), broker distance vs configured pips: GOLD SL median +1.6% / TP −0.4%; ETHUSD +2.7% / −0.5%; US100 +1.8% / −0.6%. Realised R:R medians 3.92 / 4.84 / 2.93 against configured 4.0 / 5.0 / 3.0. Tails do drift (US100 SL ranged 31.3–79.1 pts), so per-trade risk varies, but **execution is not the reason the system loses money** — win rate is.
+
+28. **Measured strategy verdict (2026-10-21) — the Supertrend entry has no edge; on GOLD it is worse than random.**
+    - Live Aug 1 → Oct 21 (EUR, demo), actual WR vs the WR each R:R needs to break even:
+      | | n | WR | breakeven WR | gap | PF | P&L |
+      |---|---|---|---|---|---|---|
+      | US100 | 221 | 21.72% | 26.02% | **−4.30pp** | 0.79 | −€1,664 |
+      | GOLD | 93 | 13.98% | 20.11% | **−6.13pp** | 0.65 | −€190 |
+      | ETHUSD | 55 | 18.18% | 17.24% | +0.94pp | 1.07 | +€34 |
+      Plus **−€184 of SWAP** (overnight financing; US100 −€164 of it) → **−€2,004 total.** Max cumulative drawdown −€2,588.
+    - GOLD 2-year backtest (host DB, size 10, SL/TP exits only), `--shuffle-signals` randomises entry direction:
+      | run | n | WR | beWR | gap | PF | P&L | maxDD% |
+      |---|---|---|---|---|---|---|---|
+      | base SL15/TP60 | 359 | 20.3% | 20.8% | −0.4 | **0.973** | −$1,181 | 42.2 |
+      | **shuffle seed A** | 337 | 22.3% | 21.0% | +1.3 | **1.080** | +$3,259 | 26.6 |
+      | **shuffle seed B** | 349 | 22.1% | 20.9% | +1.1 | **1.068** | +$2,905 | 36.8 |
+      | TP30 (1:2) | 446 | 33.0% | 34.6% | −1.7 | 0.928 | −$3,353 | 44.5 |
+      | TP45 (1:3) | 383 | 24.5% | 26.0% | −1.4 | 0.927 | −$3,275 | 47.9 |
+      | BUY-only | 217 | 31.8% | 21.0% | +10.8 | 1.750 | +$17,312 | 5.6 |
+    - **Two independent random-direction seeds both beat the real signal.** Retuning R:R (TP 30/45/60) does not help — every variant sits at or below breakeven WR. The problem is signal direction, not SL/TP geometry.
+    - **BUY-only's +$17k is beta, not alpha:** GOLD went 2032 → 4123 (**+103%**) across the window, so "long-only in a bull market" is tautological. SELLs account for −$10,127 of the base run's loss. Note GOLD was **flat-to-down in Q3–Q4 2026** (4699 → ~4100), which is exactly the live losing window — so BUY-only would *not* have rescued Aug–Oct. Do not deploy it as a fix without an out-of-sample test on a non-trending regime.
+    - **US100 2-year backtest (host code, reverse-exit guard active, SL50/TP150, size 1) — ruinous, and it matches live:**
+      | | n | WR | beWR | gap | PF | P&L | maxDD% |
+      |---|---|---|---|---|---|---|---|
+      | US100 backtest | 2481 | 25.47% | 30.90% | **−5.43pp** | **0.764** | **−$134,629** | **1346%** |
+      | US100 live (Aug–Oct) | 221 | 21.72% | 26.02% | −4.30pp | 0.79 | −€1,664 | — |
+      Exits 1849 SL / 632 TP. **Every allowed hour is negative** (13:−21.0k, 14:−23.8k, 15:−16.9k, 16:−17.1k, 17:−16.8k, 18:−9.1k, 19:−12.4k, 20:−18.7k); only hour 21 (n=24, +1.6k) is positive, and `skip_hours` blocks it. Both directions lose (BUY −73.5k / SELL −61.1k), so there is no long/short asymmetry to exploit as on GOLD. maxDD 1346% = the account is wiped ~13× over.
+      **The close live/backtest agreement (PF 0.79 vs 0.764, gap −4.3 vs −5.4pp) is the important part: the host backtester is trustworthy, and it predicted this loss.** The fantasy numbers only come from the stale `backtest-runner` (gotcha 25). Re-tuning US100 session hours cannot fix a strategy whose every session hour is negative.
+    - Observed live exit mix is nearly all stops: in a 24 h activity sample, **6 of 6 closes were `source: SL`, zero TP.**
+
+29. **Bar data for GOLD / ETHUSD / EURUSD / SILVER WAS starved — `bar_updater` silently no-op'd from ~Q2 2026. ROOT-CAUSED AND FIXED 2026-10-21.** M5 coverage before the repair:
+    | | 2025Q4 | 2026Q1 | 2026Q2 | 2026Q3 | 2026Q4 |
+    |---|---|---|---|---|---|
+    | GOLD | 99% | 96% | **22%** | **6%** | **6%** |
+    | ETHUSD | 98% | 96% | **68%** | **12%** | **5%** |
+    | US100 | 102% | 99% | 102% | 104% | healthy |
+    - Every 15-min cycle logs `[GOLD/M5] Fetching <from> → <now>` then `No new candles — reached end of available history` → `No new candles returned (market closed or no data)`. **It is logged as INFO/WARNING, never as an error**, so the failure is invisible.
+    - **The data is NOT missing broker-side.** Direct calls return GOLD bars for September and for today. Only the updater's incremental path fails; `fetch_data.py --epic GOLD --timeframe M5 --bars N` (bar-count mode) works and is the repair.
+    - **Consequence:** a GOLD or ETHUSD backtest over the live window produces **6 and 3 trades against 93 and 55 actual live trades**. Any GOLD/ETH backtest conclusion is effectively measured on data ending ~2026Q1. US100 is the only instrument whose backtest can currently be trusted.
+
+30. **`/api/v1/prices/{epic}` — `to` is UTC, `snapshotTime` comes back in account-local time (UTC+2).** This is why the window looks shifted.
+    - `max` + `to` returns `max` bars **ending at** `to` (e.g. `max=1000&to=2026-10-20T12:00:00` → `2026-10-14T22:45` .. `2026-10-20T14:00` local). Backward pagination on `to` is correct.
+    - **`to` must be full ISO with `T`** — a date-only `to=2026-09-08` returns **400**.
+    - **`from` + `to` together returns 400.** There is no date-range mode; walk backwards with `to` + `max` only. `fetch_data.py --from/--to` is therefore broken (it passes date-only strings); use `--bars N`.
+
+31. **`US100.yaml:35` had `slippage_cost_usd: 10` while its own comment said `$0.20/contract` — a 50× typo that invalidated every US100 backtest. FIXED 2026-10-21 (now 0.20).** Costs scale by size (`backtesting_skill.py:345-346`: `spread_cost_usd * current_size`), so US100 was charged `(1.80 + 10) × 5 = $59/trade` instead of `$10`.
+    - Effect on the 2-year run: **−$134,629 / PF 0.764 / maxDD 1346% → −$2,560 (size 1) / PF 0.973 / gap −0.52pp** once corrected. The "ruinous" verdict was almost entirely this one character.
+    - It is in the `backtesting:` block only, so **live trading was never affected** — but every backtest-vs-live comparison was.
+    - **Live trades independently confirm the correct value:** live implied R:R is 2.84 vs configured 3.00; that ~5% shortfall is 1.8pts on a 50pt stop, matching `spread_cost_usd: 1.80` with slippage ≈0.20.
+
+32. **Cost drag, not signal quality, is what makes this system lose.** From `trades.csv` (`spread_cost` + `slippage_cost` columns):
+    | | n | net | costs | gross (pre-cost) | gross PF |
+    |---|---|---|---|---|---|
+    | GOLD | 359 | −$1,181 | $2,154 | **+$973** | **1.023** |
+    | US100 | 2481 | −$134,629 | $146,379 | **+$11,750** | **1.025** |
+    | ETHUSD | 576 | −$1,868 | $1,296 | −$572 | 0.953 |
+    - GOLD and US100 both have a **mildly positive gross edge (~PF 1.02)** that costs consume entirely. US100's gross edge is **$4.74/trade** against a true cost of ~$10/trade.
+    - This also defuses the `--shuffle-signals` result (gotcha 28): shuffle pays the same costs, so "random beats real" was never evidence the signal is anti-predictive. The correct statement is **the edge is too thin to clear its cost hurdle**.
+    - Implication: the lever is **R size relative to spread**, or **fewer trades**, not better entry tuning. Spread is 3.6% of R at SL 50; at SL 100 it is 1.8%.
+
+33. **Backtest-vs-live agreement (the measurement rig actually works).** Cost-corrected US100 restricted to 2026-08-01 .. 2026-10-21 vs live:
+    | | n | WR | avgW | avgL | PF |
+    |---|---|---|---|---|---|
+    | backtest | 241 | 24.48% | $148.0 | −$52.0 | 0.923 |
+    | live | 221 | 21.72% | $150.0 | −$52.7 | 0.789 |
+    WR differs by 3.8pp ≈ 1.4 standard errors on n=221 — within sampling noise. **Trust the host backtester for US100**; distrust it for GOLD/ETH until gotcha 29 is repaired.
+
+34. **Parameter tuning did not produce a transferable improvement (~20 configs, 3 instruments, 2026-10-21).** Scored with `/opt/stockscreener/sweep_eval.py`, which splits each run's trades at the midpoint and requires **both halves PF > 1.0**.
+    - On GOLD, *every* single-parameter variant came out IS_PF > 1 / OOS_PF < 1 (multiplier 2.0–3.5, ATR period 10/20, ADX 20/25/30, no-bias, M15, M30, MTF-BB). Only `multiplier=2.0 + ADX(25)` passed: PF 1.078, IS 1.157 / OOS 1.013, gap +1.27pp.
+    - **It does not transfer:** US100 0.973 → **0.948**, ETHUSD 0.858 → **0.829**. Both *worse* than baseline. Treat the GOLD win as fitted — and note it was measured on data that is 94% absent after 2026Q1 (gotcha 29).
+    - Other traps the split caught: `tfM15_adx25` PF 1.322 but n=73 with IS 0.997 / OOS 2.457 (a few lucky trades); `--shuffle-signals` PF 1.08 but OOS 0.960.
+    - M30 on GOLD yields **25 trades in 2 years** — frequency reduction starves the signal faster than it saves cost.
+    - **Use the IS/OOS + cross-instrument transfer bar before believing any future sweep result.** Single-period PF on one instrument has been wrong every time here.
+
+35. **GOLD's baseline REVERSES once the bars are repaired (gotcha 29). Re-run before trusting any pre-2026-10-21 GOLD result.** On repaired data (188,197 bars, 2y, size 10, SL/TP exits only):
+    | run | n | WR | gap | PF | IS_PF | OOS_PF | stable |
+    |---|---|---|---|---|---|---|---|
+    | baseline SL15/TP60 | 491 | 21.59% | **+0.82** | **1.050** | 1.092 | 1.031 | ✅ |
+    | SL30/TP120 | 265 | 21.51% | +0.85 | 1.052 | 1.064 | 1.048 | ✅ |
+    | SL45/TP135 | 185 | 24.86% | −0.85 | 0.956 | 1.340 | 0.837 | ✗ |
+    - The earlier "GOLD PF 0.973, no edge" was measured on data **94% absent after 2026Q1**. Quarterly PF on repaired data: 2026Q2 **1.38**, Q3 0.97, Q4 **2.04** (vs 1.38/0.97 previously unmeasurable).
+    - `m20_adx25` is no longer needed to make GOLD stable — the plain baseline is. Prefer the baseline (fewer fitted knobs, 491 vs 290 trades).
+
+36. **GOLD live takes ~50% more trades than the backtest and wins less — cause still UNKNOWN. Three plausible explanations were tested and all REJECTED (2026-10-21).** Live window 2026-08-01..10-21:
+    | | n | WR | PF |
+    |---|---|---|---|
+    | backtest (repaired data) | 61 | 21.31% | 1.046 |
+    | **live actual** | **93** | **13.98%** | **0.646** |
+    - **Rejected — broken SL/TP cooldowns (gotcha 22).** `sl_cooldown_minutes=0` / `60` / `30` all produce **exactly 61 trades** with identical PF. The cooldown gate only blocks *same-direction* re-entry, and `edge_detection` means the next signal is usually the opposite direction, so it almost never binds. The cooldown bug is real but costs nothing here.
+    - **Rejected — daily 21:00 restart resetting `last_signal_state`.** The 31 excess live trades are spread across hours 8–20 (hour 12 is +11); **hour 21 has 0 live entries**. No restart signature.
+    - **Rejected — Supertrend path-dependence on the live rolling buffer.** Live computes ST on a `max_indicator_period × 3 = 300`-bar buffer; the backtest precomputes over the full series. Measured over 1,100 GOLD M5 bars: **100.00% direction agreement, 85 vs 85 flips.** ST band memory resets at every flip (~1 per 13 bars), so 300 bars is ample. Not a divergence source — and this also retires the general worry about truncated-buffer indicators.
+    - **Still open:** the live bot builds candles from the WebSocket tick stream while the DB bars come from the REST price endpoint — bar boundaries/incomplete bars may differ; and the live MA100 bias is computed over whatever the live buffer actually contains (which was itself starved while gotcha 29 was active). Check live candle timestamps against DB bars before trusting GOLD live/backtest parity.
+    - **Consequence:** US100 backtest↔live parity is good (gotcha 33) but **GOLD parity is not established.** Do not size up GOLD on backtest evidence alone.
+
+37. **Where this strategy family sits in the published literature (researched 2026-10-21) — the measured numbers match known structural limits.**
+    - [Structural Limits of OHLCV-Based Intraday Momentum in MNQ Futures](https://arxiv.org/abs/2605.04004) tested **14 signal families on 947 days of 5-minute Micro-Nasdaq data** (same instrument and bar size as US100). None passed; **11 of 14 had gross edge 0.07–1.50 points against a 2.0-point friction floor.** Our measured US100 gross edge is **0.95 points/contract** against ~2.0 points of cost — inside that published range. Its *positive* controls did clear friction (RTH confluence T=3.11 net +11.82 pts; London session T=4.30 net +4.09 pts), i.e. edge exists in session/confluence structure, not generic OHLCV momentum.
+    - [Is Trend Still Your Friend?](https://arxiv.org/html/2607.01550v1) — Sharpe by signal horizon, pre→post 2009: 5-day 0.84→**0.12**, 10-day 0.83→0.22, 20-day 0.79→0.27, 50-day 0.70→**0.40**. Discriminant is **volatility-normalised tick size**; small-tick contracts collapsed, large-tick held. Called structural, not cyclical. Our median holds: **US100 35 min**, GOLD 191 min, ETHUSD 505 min — i.e. ~200× faster than the fastest horizon that study found already dead.
+    - [Deflated Sharpe Ratio](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf) — when N variants are tried and the best kept, the max is inflated even if all are noise. Directly explains `m20_adx25` (gotcha 34): best of ~20 trials in-sample, failed to transfer. **Count trials and deflate before believing a sweep.**
+    - Grinold's Fundamental Law: `IR ≈ IC × √breadth`. This system runs **one signal family, 3 instruments, one position at a time → breadth ≈ 1**, while trying to harvest a PF-1.02 edge. Breadth, not a better indicator, is the multiplier.
+    - Practical implication for future work here: **slower horizons (daily/H4), many more markets, several uncorrelated signal types, volatility-targeted sizing, trial-count-corrected validation.** Faster + more tuning is the one direction the evidence rules out.
+
+38. **The 2026-10-21 fixes — what changed, and what is still NOT deployed.** All verified against the live demo API; `tests/unit/` went 271 → 288 passing with the same 20 pre-existing `test_pip_config` failures.
+    - **`bar_updater` root cause was a string-comparison format mismatch, not a timezone bug.** `parse_candle()` emits `'YYYY-MM-DD HH:MM:SS'` (space) while `bar_updater` passed `strftime('%Y-%m-%dT%H:%M:%S')` ('T'). In `fetch_all_bars`'s date-range filter `if ts < from_date: continue`, `ord(' ')=32 < ord('T')=84`, so **every same-day candle compared as older than `from_date` and was skipped** → 0 rows → `"reached end of available history"`. Bar-count mode (`--bars N`) was unaffected because it does no date filtering, which is why only US100 (already up-to-date, never entering the fetch) escaped.
+      - Fix: new `_norm_ts()` normalises every bound to the `parse_candle` form before comparison; date-only bounds are widened (`from`→`00:00:00`, `to`→`23:59:59`) so `--from/--to` no longer 400s; pagination now anchors on `snapshotTimeUTC` instead of local `snapshotTime` (the API's `to` is UTC, so feeding the local value back shifted each window by the offset and re-fetched overlaps).
+      - Verified: `--from 2026-09-01 --to 2026-09-03` on SILVER → **828 bars (was 0)**; `bar_updater.py --epic GOLD` → **61 candles inserted (was 0)**.
+    - **`get_activity` + close detection:** filter now `status==ACCEPTED`; the non-existent `details['actions']` loop is replaced by `'openPrice' in details` for close detection and `source` → `{SL: SL_HIT, TP: TP_HIT, else SIGNAL}` for the reason. Verified live: `epic=US100` over 24h returns **14 events (was 0)**, parsed as 7 opens + 7 closes, all correctly `SL_HIT`.
+    - **New `CapitalAPIClient.get_realised_pnl(deal_id)`** joins `/history/transactions` on `dealId` (where `size` IS the P&L). Activity and transaction dealIds **are the same ID space** (11/21 overlap in 24h — opens have no TRADE row). Verified: 11/11 closes resolved, magnitudes correct (US100 ≈ −45 EUR on a 50 USD stop, GOLD ≈ −6.7 on 7.5). Default look-back is 3600s; pass more for historical lookups or it returns None.
+    - **`pnl is None` now means "unknown" everywhere and is never coerced to `0.0`.** `_handle_close` only estimates from prices when it has entry+close+size; `trading_orchestrator` log-formats None safely; `_record_trade` distinguishes a real broker `0.0` (kept) from unknown (recorded with the new **`pnl_unknown: true`** flag + a warning). The old `float(pnl or 0.0)` also discarded a genuine break-even figure in favour of an estimate — also fixed.
+    - **Regression cover:** new `tests/unit/test_activity_parsing.py` (filter must say ACCEPTED, `openPrice` discriminates, source→reason mapping, no `actions`/`profit` fields, transactions `size`-as-P&L, `lastPeriod` cap) and 2 new cases in `test_trade_history.py` for the unknown-vs-break-even distinction.
+    - ⚠️ **NOT deployed.** The live bot runs baked-in code in `stockscreener-trading-bot-1`; these edits are host-side only. Deploying needs `docker compose build trading-bot && docker compose up -d trading-bot` — which per gotcha 10 also bakes in every other uncommitted change in that tree. Check `git status` first.
+
 ---
 
 ## Conventions

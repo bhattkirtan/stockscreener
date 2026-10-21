@@ -293,9 +293,22 @@ class CapitalAPIClient:
         """
         Fetch recent account activity for position close detection.
 
-        Uses GET /api/v1/history/activity with type==POSITION;status==EXECUTED
-        to find recently closed positions including close reason (SL/TP/USER)
-        and close level.
+        Uses GET /api/v1/history/activity with type==POSITION;status==ACCEPTED
+        to find recently closed positions including close reason and close level.
+
+        Response shape (detailed=true) — there is NO 'details.actions' array:
+            {date, dateUTC, epic, dealId, source, type, status,
+             details: {dealReference, workingOrderId, marketName, currency,
+                       size, direction, level, stopLevel, guaranteedStop,
+                       profitLevel, openPrice*}}
+        where:
+          - 'openPrice' is present ONLY on close events (use it to tell open
+            from close),
+          - 'source' is the exit reason: 'SL' | 'TP' | 'USER',
+          - 'details.direction' on a close is the CLOSING direction, i.e. the
+            OPPOSITE of the position's own direction,
+          - there is no 'details.profit' — realised P&L must come from
+            /history/transactions joined on dealId.
 
         Args:
             last_period_seconds: Look-back window in seconds (default 120)
@@ -305,7 +318,13 @@ class CapitalAPIClient:
             List of activity dicts from Capital.com
         """
         try:
-            filter_parts = ['type==POSITION', 'status==EXECUTED']
+            # status==ACCEPTED, NOT EXECUTED.  Verified against the live API:
+            # 'EXECUTED' matches nothing (200 with an empty list) while 'ACCEPTED'
+            # returns the real position events.  With EXECUTED every close fell
+            # through to the 60s REST reconcile, which reported a 0.0 close level
+            # and no reason — silently zeroing P&L and disabling the SL/TP
+            # cooldowns, the daily-loss limit and the consecutive-loss breaker.
+            filter_parts = ['type==POSITION', 'status==ACCEPTED']
             if epic:
                 filter_parts.append(f'epic=={epic}')
 
@@ -322,6 +341,47 @@ class CapitalAPIClient:
         except Exception as e:
             logger.error(f"❌ Failed to get activity: {e}")
             return []
+
+    def get_realised_pnl(
+        self,
+        deal_id: str,
+        last_period_seconds: int = 3600,
+    ) -> Optional[float]:
+        """
+        Look up the broker's realised P&L for a closed deal.
+
+        /history/activity carries no profit field, so this is the only
+        authoritative source.  In /history/transactions the **`size` field is the
+        realised P&L** (there is no profitAndLoss field) — see the transactions
+        quirks note in CLAUDE.md.
+
+        Args:
+            deal_id: The dealId of the closed position
+            last_period_seconds: Look-back window; capped at 86400 by the API
+
+        Returns:
+            Realised P&L in account currency, or None if no matching row was
+            found.  None means "unknown" — never treat it as break-even.
+        """
+        try:
+            params = {'lastPeriod': min(int(last_period_seconds), 86400)}
+            response = self._request('GET', '/api/v1/history/transactions', params=params)
+            for txn in response.json().get('transactions', []):
+                if txn.get('dealId') != deal_id:
+                    continue
+                if txn.get('transactionType') != 'TRADE':
+                    continue
+                try:
+                    return float(txn.get('size'))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"⚠️ Non-numeric P&L for {deal_id}: {txn.get('size')!r}"
+                    )
+                    return None
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch realised P&L for {deal_id}: {e}")
+            return None
 
     def close_position(self, deal_id: str) -> Dict:
         """

@@ -188,7 +188,10 @@ class StorageSkill(Skill):
             deal_id=deal_id,
             close_price=float(close_price or 0.0),
             close_reason=close_reason,
-            pnl=float(event.payload.get('realized_pnl') or 0.0),
+            # Preserve None ("unknown") rather than coercing to 0.0 — see
+            # _record_trade, which flags unknown separately from break-even.
+            pnl=(None if event.payload.get('realized_pnl') is None
+                 else float(event.payload['realized_pnl'])),
             direction=event.payload.get('direction'),
             entry_price=float(event.payload.get('entry_price') or 0.0),
             size=float(event.payload.get('size') or 0.0),
@@ -359,11 +362,24 @@ class StorageSkill(Skill):
         # pnl arrives from Capital.com activity (`details.profit`) and is the
         # authoritative realised figure — it already includes spread/fees.
         # Only fall back to an arithmetic estimate when the broker gave nothing.
-        realized = float(pnl or 0.0)
+        # Distinguish three cases: a real broker figure (including a genuine
+        # 0.0), an arithmetic estimate, and "unknown".  The previous
+        # `float(pnl or 0.0)` collapsed None into 0.0 and `if not realized`
+        # also discarded a true break-even figure in favour of an estimate.
+        realized = None if pnl is None else float(pnl)
         estimated = False
-        if not realized and entry and close_price and qty:
+        if realized is None and entry and close_price and qty:
             realized = (close_price - entry) * (1.0 if side == 'BUY' else -1.0) * qty
             estimated = True
+        unknown = realized is None
+        if unknown:
+            # Record it, but never as a break-even trade: flag it so the report
+            # can exclude it instead of silently averaging in a fake zero.
+            logger.warning(
+                f"⚠️ No realised P&L available for {deal_id} "
+                f"(entry={entry} close={close_price} size={qty}) — flagged pnl_unknown"
+            )
+            realized = 0.0
 
         margin = entry * qty
         trade = {
@@ -382,6 +398,7 @@ class StorageSkill(Skill):
             'stop_loss':    open_row.get('stop_loss'),
             'take_profit':  open_row.get('take_profit'),
             'pnl_estimated': estimated,
+            'pnl_unknown':   unknown,
         }
 
         try:

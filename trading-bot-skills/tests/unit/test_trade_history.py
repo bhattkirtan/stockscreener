@@ -109,13 +109,41 @@ class TestTradeRecording:
 
     @pytest.mark.asyncio
     async def test_estimates_pnl_when_broker_gives_none(self, skill, db_path):
+        """None means 'unknown' → fall back to arithmetic and flag it."""
         await skill.save_open_position(deal_id='D2', epic='GOLD', direction='SELL',
                                        level=4000.0, size=0.5)
         await skill.close_position('D2', close_price=4015.0, close_reason='SL_HIT',
-                                   pnl=0.0, direction='SELL', entry_price=4000.0, size=0.5)
+                                   pnl=None, direction='SELL', entry_price=4000.0, size=0.5)
         t = read_trades(db_path)['D2']
         assert t['pnl'] == -7.5           # (4000-4015) * 0.5
         assert t['pnl_estimated'] is True
+        assert t['pnl_unknown'] is False
+
+    @pytest.mark.asyncio
+    async def test_genuine_zero_broker_pnl_is_preserved(self, skill, db_path):
+        """A real break-even figure of 0.0 must NOT be replaced by an estimate."""
+        await skill.save_open_position(deal_id='D2b', epic='GOLD', direction='SELL',
+                                       level=4000.0, size=0.5)
+        await skill.close_position('D2b', close_price=4015.0, close_reason='SL_HIT',
+                                   pnl=0.0, direction='SELL', entry_price=4000.0, size=0.5)
+        t = read_trades(db_path)['D2b']
+        assert t['pnl'] == 0.0
+        assert t['pnl_estimated'] is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_pnl_is_flagged_not_recorded_as_breakeven(self, skill, db_path):
+        """
+        The regression that zeroed 365 live trades: the REST reconcile supplied
+        close_price=0.0 and no P&L, so nothing could be computed.  That must be
+        flagged, not silently written as a break-even trade.
+        """
+        await skill.save_open_position(deal_id='D2c', epic='GOLD', direction='BUY',
+                                       level=4000.0, size=0.5)
+        await skill.close_position('D2c', close_price=0.0, close_reason='SIGNAL',
+                                   pnl=None, direction='BUY', entry_price=4000.0, size=0.5)
+        t = read_trades(db_path)['D2c']
+        assert t['pnl_unknown'] is True
+        assert t['pnl_estimated'] is False
 
     @pytest.mark.asyncio
     async def test_backfills_fields_from_open_row(self, skill, db_path):

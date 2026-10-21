@@ -229,7 +229,11 @@ class TradingOrchestrator:
             close_price: Close price
             size: Position size in contracts (used for the trade history record)
         """
-        print(f"🔴 Position closed: {deal_id}, {close_reason}, P&L: ${pnl:.2f}")
+        # pnl may be None — "broker figure unavailable". Must not be coerced to
+        # 0.0 here: the risk breakers distinguish None (skip) from 0.0 (a flat
+        # trade, which scores as a win and keeps the daily-loss accumulator at 0).
+        _pnl_txt = f"${pnl:.2f}" if pnl is not None else "unknown"
+        print(f"🔴 Position closed: {deal_id}, {close_reason}, P&L: {_pnl_txt}")
         
         # Update risk skill: clear open-position flag, set cooldown
         if 'risk' in self.skills:

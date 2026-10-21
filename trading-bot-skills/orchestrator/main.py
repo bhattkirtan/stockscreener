@@ -123,6 +123,13 @@ def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str, 
         if _key in _risk:
             _sl_tp[_key] = _risk[_key]
 
+    # Propagate root-level position_size into live risk/execution configs so
+    # instrument YAMLs can define it once at the top level.
+    _root_position_size = config.get('position_size')
+    if _root_position_size is not None:
+        config.setdefault('risk', {}).setdefault('position_size', _root_position_size)
+        config.setdefault('execution', {}).setdefault('position_size', _root_position_size)
+
     market_data_skill = None
     if config.get('market_data', {}).get('enabled', True):
         market_data_skill = MarketDataSkill(config.get('market_data', config))
@@ -219,34 +226,47 @@ async def _poll_positions(
         except Exception as e:
             logger.warning(f"⚠️ Failed to persist position {deal_id} to storage: {e}")
 
-    async def _handle_close(deal_id: str, close_level: float, description: str, pnl: float = None) -> None:
+    async def _handle_close(
+        deal_id: str,
+        close_level: float,
+        description: str,
+        pnl: float = None,
+        close_reason: str = None,
+    ) -> None:
         """Fire on_position_closed for a deal that just closed."""
         pos = known.pop(deal_id, None)
         direction = (pos.get('direction', 'BUY') if pos else 'BUY')
         entry = float(pos.get('level', 0.0) if pos else 0.0)
         size  = float(pos.get('size',  0.0) if pos else 0.0)
 
-        # Derive close reason from activity description
-        desc_upper = description.upper()
-        if any(w in desc_upper for w in ('STOP', ' SL')):
-            close_reason = 'SL_HIT'
-        elif any(w in desc_upper for w in ('LIMIT', 'TAKE PROFIT', ' TP', 'PROFIT')):
-            close_reason = 'TP_HIT'
-        else:
-            close_reason = 'SIGNAL'
-
-        # Calculate P&L from entry/close if not supplied by caller
-        if pnl is None:
-            if entry and close_level and size:
-                direction_mult = 1.0 if direction == 'BUY' else -1.0
-                pnl = (close_level - entry) * direction_mult * size
+        if close_reason is None:
+            # Fallback for callers without an explicit reason (REST reconcile).
+            desc_upper = (description or '').upper()
+            if any(w in desc_upper for w in ('STOP', ' SL')):
+                close_reason = 'SL_HIT'
+            elif any(w in desc_upper for w in ('LIMIT', 'TAKE PROFIT', ' TP', 'PROFIT')):
+                close_reason = 'TP_HIT'
             else:
-                pnl = 0.0
+                close_reason = 'SIGNAL'
+
+        # Derive P&L from prices only when the broker figure is unavailable AND
+        # we have everything needed.  Otherwise leave it as None — "unknown".
+        # It must NEVER default to 0.0: downstream, `is_loss = pnl < 0` would
+        # score the trade as a win and `_register_daily_pnl(0.0)` would keep the
+        # daily-loss limit permanently at zero.
+        if pnl is None and entry and close_level and size:
+            direction_mult = 1.0 if direction == 'BUY' else -1.0
+            pnl = (close_level - entry) * direction_mult * size
+            logger.debug(f"   P&L for {deal_id} estimated from prices: {pnl:.2f}")
 
         if stop_manager is not None:
             stop_manager.forget(deal_id)
 
-        logger.info(f"🎯 Position closed via activity: {deal_id} reason={close_reason} @ {close_level} pnl={pnl:.2f}")
+        _pnl_txt = f"{pnl:.2f}" if pnl is not None else "unknown"
+        logger.info(
+            f"🎯 Position closed via activity: {deal_id} "
+            f"reason={close_reason} @ {close_level} pnl={_pnl_txt}"
+        )
         await orchestrator.on_position_closed(
             deal_id=deal_id,
             direction=direction,
@@ -290,37 +310,50 @@ async def _poll_positions(
                     if activity.get('epic', '').upper() != epic.upper():
                         continue
                     details = activity.get('details', {})
-                    description = activity.get('description', '')
+                    deal_id = activity.get('dealId', '')
+                    if not deal_id:
+                        continue
 
-                    for action in details.get('actions', []):
-                        action_type = action.get('actionType', '')
-                        deal_id = action.get('dealId') or activity.get('dealId', '')
-                        if not deal_id:
-                            continue
-                        key = f"{deal_id}:{action_type}"
-                        if key in processed:
-                            continue
-                        processed.add(key)
+                    # There is no 'details.actions' array in this API's response.
+                    # A close event is identified by the presence of 'openPrice'
+                    # (open events omit it); 'source' carries the exit reason.
+                    is_close = 'openPrice' in details
+                    action_type = 'POSITION_CLOSED' if is_close else 'POSITION_OPENED'
+                    key = f"{deal_id}:{action_type}"
+                    if key in processed:
+                        continue
+                    processed.add(key)
 
-                        if action_type == 'POSITION_OPENED':
-                            if deal_id not in known:
-                                pos = {
-                                    'dealId':      deal_id,
-                                    'direction':   details.get('direction', 'BUY'),
-                                    'level':       float(details.get('level') or 0.0),
-                                    'size':        float(details.get('size') or 0.0),
-                                    'stopLevel':   details.get('stopLevel'),
-                                    'profitLevel': details.get('limitLevel'),
-                                }
-                                known[deal_id] = pos
-                                await _persist_open_position(deal_id, pos)
-                                logger.info(f"📈 New position tracked via activity: {deal_id}")
+                    if not is_close:
+                        if deal_id not in known:
+                            pos = {
+                                'dealId':      deal_id,
+                                'direction':   details.get('direction', 'BUY'),
+                                'level':       float(details.get('level') or 0.0),
+                                'size':        float(details.get('size') or 0.0),
+                                'stopLevel':   details.get('stopLevel'),
+                                'profitLevel': details.get('profitLevel') or details.get('limitLevel'),
+                            }
+                            known[deal_id] = pos
+                            await _persist_open_position(deal_id, pos)
+                            logger.info(f"📈 New position tracked via activity: {deal_id}")
+                        continue
 
-                        elif action_type in ('POSITION_CLOSED', 'POSITION_PARTIALLY_CLOSED'):
-                            close_level = float(details.get('level') or 0.0)
-                            activity_pnl = details.get('profit')
-                            pnl = float(activity_pnl) if activity_pnl is not None else None
-                            await _handle_close(deal_id, close_level, description, pnl=pnl)
+                    # ── Close ────────────────────────────────────────────────
+                    close_level = float(details.get('level') or 0.0)
+                    # 'source' is authoritative for the exit reason. Map it
+                    # directly instead of string-matching a description.
+                    source = (activity.get('source') or '').upper()
+                    close_reason = {
+                        'SL': 'SL_HIT',
+                        'TP': 'TP_HIT',
+                    }.get(source, 'SIGNAL')
+                    # Activity has no profit field — ask transactions for the
+                    # realised figure. None stays None (unknown), never 0.0.
+                    pnl = capital.get_realised_pnl(deal_id)
+                    await _handle_close(
+                        deal_id, close_level, '', pnl=pnl, close_reason=close_reason,
+                    )
 
             except Exception as e:
                 logger.warning(f"⚠️ Activity poll error: {e}")

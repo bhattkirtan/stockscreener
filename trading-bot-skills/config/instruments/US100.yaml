@@ -32,7 +32,7 @@ backtest:
 backtesting:
   position_size: 5              # 5 contracts  →  $250 SL risk (2.5% of $10k), $5,750 margin
   spread_cost_usd: 1.80         # $1.80/contract → $9.00 total  (1.8 pt observed spread)
-  slippage_cost_usd: 10       # $0.20/contract → $1.00 total
+  slippage_cost_usd: 0.20     # $0.20/contract → $1.00 total
 
 analysis:
   indicators:
