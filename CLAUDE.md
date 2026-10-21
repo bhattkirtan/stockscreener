@@ -735,6 +735,8 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - **Regression cover:** new `tests/unit/test_activity_parsing.py` (filter must say ACCEPTED, `openPrice` discriminates, source→reason mapping, no `actions`/`profit` fields, transactions `size`-as-P&L, `lastPeriod` cap) and 2 new cases in `test_trade_history.py` for the unknown-vs-break-even distinction.
     - ⚠️ **NOT deployed.** The live bot runs baked-in code in `stockscreener-trading-bot-1`; these edits are host-side only. Deploying needs `docker compose build trading-bot && docker compose up -d trading-bot` — which per gotcha 10 also bakes in every other uncommitted change in that tree. Check `git status` first.
 
+39. **Open work is captured as ready-to-paste session prompts in [`NEXT_SESSIONS.md`](NEXT_SESSIONS.md).** Seven streams: coverage for `orchestrator/main.py` (13%), `analysis_skill` tick-exit/MTF (55%), `execution_skill`/`capital_websocket` + a CI coverage floor, the 20 pre-existing `test_pip_config` failures, the two unresolved live/backtest divergences from gotcha 36, breadth expansion for the weekly trend portfolio, and the deferred operational decisions (trade_history backfill, `backtest-runner` rebuild, `DB_PATH` pinning, the held-back `position_size` changes). Each prompt names the gotchas carrying its background so nothing has to be re-derived. **Check it before starting new work — three hypotheses for the GOLD divergence are already tested and rejected there.**
+
 ---
 
 ## Conventions
