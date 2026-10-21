@@ -164,6 +164,78 @@ def register_skills(orchestrator: TradingOrchestrator, config: dict, mode: str, 
     logger.info(f"✅ Registered {len(orchestrator.skills)} skills")
 
 
+def derive_close_reason(source: str = None, description: str = None) -> str:
+    """
+    Map a close event to an exit reason.
+
+    `source` from /history/activity is authoritative ('SL' | 'TP' | 'USER').
+    `description` is only a fallback for the REST reconcile path, which has no
+    source — and it passes an empty string, which is how every live exit came
+    to be labelled 'SIGNAL' and why the SL/TP cooldowns never applied.
+    """
+    src = (source or '').upper()
+    if src in ('SL', 'TP'):
+        return {'SL': 'SL_HIT', 'TP': 'TP_HIT'}[src]
+    desc = (description or '').upper()
+    if any(w in desc for w in ('STOP', ' SL')):
+        return 'SL_HIT'
+    if any(w in desc for w in ('LIMIT', 'TAKE PROFIT', ' TP', 'PROFIT')):
+        return 'TP_HIT'
+    return 'SIGNAL'
+
+
+def classify_activity(activity: dict) -> dict | None:
+    """
+    Parse one /history/activity record into a position open or close.
+
+    Extracted from the poll loop so it can be tested without a live bot: this
+    is the logic whose previous version walked a `details['actions']` array
+    that does not exist in the response, which disabled close detection,
+    zeroed P&L on 365 trades, and silently disabled three risk breakers.
+
+    Returns None when the record carries no usable dealId.
+    Otherwise a dict with:
+        is_close    — True when `details.openPrice` is present (opens omit it)
+        deal_id
+        close_reason / close_level  (closes only)
+        direction   — the POSITION's direction. On a close, `details.direction`
+                      is the CLOSING side, i.e. the opposite, so it is flipped.
+        size, stop_level, profit_level, entry_price
+    """
+    details = activity.get('details') or {}
+    deal_id = activity.get('dealId') or ''
+    if not deal_id:
+        return None
+
+    is_close = 'openPrice' in details
+    raw_direction = (details.get('direction') or 'BUY').upper()
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    out = {
+        'deal_id': deal_id,
+        'is_close': is_close,
+        'epic': activity.get('epic') or '',
+        'size': _f(details.get('size')),
+        'stop_level': details.get('stopLevel'),
+        'profit_level': details.get('profitLevel') or details.get('limitLevel'),
+    }
+    if is_close:
+        out['direction'] = 'SELL' if raw_direction == 'BUY' else 'BUY'
+        out['close_level'] = _f(details.get('level'))
+        out['entry_price'] = _f(details.get('openPrice'))
+        out['close_reason'] = derive_close_reason(
+            activity.get('source'), activity.get('description'))
+    else:
+        out['direction'] = raw_direction
+        out['level'] = _f(details.get('level'))
+    return out
+
+
 async def _poll_positions(
     capital,
     orchestrator: TradingOrchestrator,
@@ -309,30 +381,27 @@ async def _poll_positions(
                 for activity in activities:
                     if activity.get('epic', '').upper() != epic.upper():
                         continue
-                    details = activity.get('details', {})
-                    deal_id = activity.get('dealId', '')
-                    if not deal_id:
+                    parsed = classify_activity(activity)
+                    if parsed is None:
                         continue
+                    deal_id = parsed['deal_id']
 
-                    # There is no 'details.actions' array in this API's response.
-                    # A close event is identified by the presence of 'openPrice'
-                    # (open events omit it); 'source' carries the exit reason.
-                    is_close = 'openPrice' in details
-                    action_type = 'POSITION_CLOSED' if is_close else 'POSITION_OPENED'
+                    action_type = ('POSITION_CLOSED' if parsed['is_close']
+                                   else 'POSITION_OPENED')
                     key = f"{deal_id}:{action_type}"
                     if key in processed:
                         continue
                     processed.add(key)
 
-                    if not is_close:
+                    if not parsed['is_close']:
                         if deal_id not in known:
                             pos = {
                                 'dealId':      deal_id,
-                                'direction':   details.get('direction', 'BUY'),
-                                'level':       float(details.get('level') or 0.0),
-                                'size':        float(details.get('size') or 0.0),
-                                'stopLevel':   details.get('stopLevel'),
-                                'profitLevel': details.get('profitLevel') or details.get('limitLevel'),
+                                'direction':   parsed['direction'],
+                                'level':       parsed['level'],
+                                'size':        parsed['size'],
+                                'stopLevel':   parsed['stop_level'],
+                                'profitLevel': parsed['profit_level'],
                             }
                             known[deal_id] = pos
                             await _persist_open_position(deal_id, pos)
@@ -340,19 +409,12 @@ async def _poll_positions(
                         continue
 
                     # ── Close ────────────────────────────────────────────────
-                    close_level = float(details.get('level') or 0.0)
-                    # 'source' is authoritative for the exit reason. Map it
-                    # directly instead of string-matching a description.
-                    source = (activity.get('source') or '').upper()
-                    close_reason = {
-                        'SL': 'SL_HIT',
-                        'TP': 'TP_HIT',
-                    }.get(source, 'SIGNAL')
                     # Activity has no profit field — ask transactions for the
                     # realised figure. None stays None (unknown), never 0.0.
                     pnl = capital.get_realised_pnl(deal_id)
                     await _handle_close(
-                        deal_id, close_level, '', pnl=pnl, close_reason=close_reason,
+                        deal_id, parsed['close_level'], '', pnl=pnl,
+                        close_reason=parsed['close_reason'],
                     )
 
             except Exception as e:
