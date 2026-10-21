@@ -1,0 +1,17 @@
+{
+ "epics": [
+  "DE40",
+  "HEATINGOIL",
+  "NYFANG",
+  "USDMXN",
+  "HK50",
+  "AUDMXN",
+  "AUDJPY",
+  "COPPER",
+  "USCOCOA",
+  "ETHUSD",
+  "AUL"
+ ],
+ "avg_corr": 0.089,
+ "effective_breadth": 5.82
+}
