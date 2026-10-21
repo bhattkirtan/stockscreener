@@ -51,7 +51,7 @@ EWMAC_PAIRS = [(8, 32), (16, 64), (32, 128), (64, 256)]
 
 FORECAST_CAP = 20.0        # Carver convention
 FORECAST_TARGET = 10.0     # average absolute forecast, used to rescale
-ANNUAL_DAYS = 256
+ANNUAL_DAYS = 256   # overridden to 52 by --weekly
 
 
 def load_daily(epic: str) -> pd.DataFrame:
@@ -98,7 +98,7 @@ def load_universe(path='universe.json'):
 
 
 def build(epics, capital, target_vol, pairs, start=None,
-          price_df=None, spreads=None):
+          price_df=None, spreads=None, max_leverage=3.0):
     prices, fx_vol, forecasts = {}, {}, {}
     for e in epics:
         if price_df is not None:
@@ -119,13 +119,15 @@ def build(epics, capital, target_vol, pairs, start=None,
         ret = px.diff()
         # Daily price volatility (EWMA, 32-day span), floored to avoid blowups
         vol = ret.ewm(span=32, min_periods=32).std()
-        vol = vol.clip(lower=px.abs() * 1e-5)
+        # Floor vol at 0.1% of price: a near-zero vol estimate would otherwise
+        # translate into unbounded position size.
+        vol = vol.clip(lower=px.abs() * 0.001)
         prices[e] = px
         fx_vol[e] = vol
         fcs = [ewmac_forecast(px, f, s, vol) for f, s in pairs]
         # Equal-weight the speeds, then rescale to the forecast target
         combined = pd.concat(fcs, axis=1).mean(axis=1)
-        cnorm = combined.abs().expanding(min_periods=260).mean()
+        cnorm = combined.abs().expanding(min_periods=max(26, ANNUAL_DAYS)).mean()
         combined = (combined * (FORECAST_TARGET / cnorm.replace(0, np.nan))).clip(
             -FORECAST_CAP, FORECAST_CAP)
         forecasts[e] = combined
@@ -145,6 +147,13 @@ def build(epics, capital, target_vol, pairs, start=None,
     units = (fc / FORECAST_TARGET) * (per_instrument / vol)
     units = units.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+    # Gross-notional leverage cap. Volatility targeting alone is not a risk
+    # control: if a vol estimate collapses, implied size explodes. Scale the
+    # whole book down on any bar where gross notional exceeds the cap.
+    notional = (units.abs() * px).sum(axis=1)
+    scale = (capital * max_leverage / notional.replace(0, np.nan)).clip(upper=1.0).fillna(1.0)
+    units = units.mul(scale, axis=0)
+
     # Trade at next day's open-equivalent: shift positions by 1 day
     pos = units.shift(1).fillna(0.0)
     pnl_gross = (pos * px.diff()).fillna(0.0)
@@ -157,6 +166,44 @@ def build(epics, capital, target_vol, pairs, start=None,
         {e: turnover[e] * sp.get(e, 0.0) for e in pos.columns}, index=pos.index)
     pnl_net = pnl_gross - cost
     return dict(px=px, fc=fc, pos=pos, gross=pnl_gross, cost=cost, net=pnl_net)
+
+
+def load_weekly(max_n=20, max_corr=0.70, class_cap=4):
+    """
+    40-year weekly history, reduced to a diversified subset.
+
+    Selection mirrors universe.py: cheapest friction first, reject anything
+    correlated above max_corr with an already-chosen instrument, cap per asset
+    class. Done on weekly returns over the full 40y sample.
+    """
+    import json
+    px = pd.read_pickle('/tmp/weekly_hist.pkl')
+    screen = pd.read_json('/tmp/universe_screen.json').set_index('epic')
+    cand = [e for e in screen.sort_values('friction').index if e in px.columns]
+    rets = px.pct_change(fill_method=None)
+    corr = rets.corr()
+    chosen, counts = [], {}
+    for e in cand:
+        # require a long history, not just presence
+        if px[e].notna().sum() < 500:
+            continue
+        itype = screen.loc[e, 'itype']
+        if counts.get(itype, 0) >= class_cap:
+            continue
+        if any(abs(corr.loc[e, c]) > max_corr for c in chosen):
+            continue
+        chosen.append(e)
+        counts[itype] = counts.get(itype, 0) + 1
+        if len(chosen) >= max_n:
+            break
+    spreads = {e: float(screen.loc[e, 'spread']) for e in chosen}
+    sub = corr.loc[chosen, chosen]
+    ac = sub.values[np.triu_indices(len(chosen), 1)].mean()
+    eff = len(chosen) / (1 + (len(chosen) - 1) * max(ac, 0))
+    print(f"selected {len(chosen)} epics | avg corr {ac:.3f} | "
+          f"effective breadth {eff:.1f}")
+    print("  " + ", ".join(f"{e}({screen.loc[e,'itype'][:4]})" for e in chosen))
+    return px[chosen].ffill(), spreads
 
 
 def _norm_cdf(x: float) -> float:
@@ -209,18 +256,25 @@ def deflated_sharpe(observed_sr: float, n_trials: int, n_obs: int,
     """
     if n_trials < 1 or n_obs < 2:
         return float('nan')
-    # Expected maximum Sharpe of n_trials independent noise strategies
-    e = 0.5772156649  # Euler-Mascheroni
-    if n_trials > 1:
-        sr0 = ((1 - e) * _norm_ppf(1 - 1.0 / n_trials)
-               + e * _norm_ppf(1 - 1.0 / (n_trials * np.e)))
-    else:
-        sr0 = 0.0
-    # Standard error of the Sharpe estimate, adjusted for skew/kurtosis
-    se = np.sqrt((1 - skew * observed_sr
-                  + (kurt - 1) / 4.0 * observed_sr ** 2) / (n_obs - 1))
+    # Standard error of the Sharpe estimate, adjusted for skew/kurtosis.
+    # observed_sr must be PER-OBSERVATION (not annualised) for this to be
+    # dimensionally consistent.
+    var = (1 - skew * observed_sr + (kurt - 1) / 4.0 * observed_sr ** 2)
+    if var <= 0 or n_obs < 3:
+        return float('nan')
+    se = np.sqrt(var / (n_obs - 1))
     if se <= 0:
         return float('nan')
+    # Expected maximum Sharpe of n_trials independent noise strategies.
+    # This is E[max] = se * E[max of N standard normals]; omitting the `se`
+    # factor compares an un-annualised SR against a raw z-score and drives the
+    # result to 0 regardless of the data.
+    e = 0.5772156649  # Euler-Mascheroni
+    if n_trials > 1:
+        sr0 = se * ((1 - e) * _norm_ppf(1 - 1.0 / n_trials)
+                    + e * _norm_ppf(1 - 1.0 / (n_trials * np.e)))
+    else:
+        sr0 = 0.0
     return float(_norm_cdf((observed_sr - sr0) / se))
 
 
@@ -270,6 +324,13 @@ def main():
     ap.add_argument('--target-vol', type=float, default=0.20,
                     help='annualised portfolio volatility target (0.20 = 20%%)')
     ap.add_argument('--epics', default='GOLD,SILVER,EURUSD,US100,ETHUSD,BTCUSD')
+    ap.add_argument('--weekly', action='store_true',
+                    help='run on 40y weekly history (/tmp/weekly_hist.pkl), '
+                         'selecting a diversified low-correlation subset')
+    ap.add_argument('--max-leverage', type=float, default=3.0,
+                    help='cap on gross notional / capital')
+    ap.add_argument('--max-n', type=int, default=20,
+                    help='max instruments for --weekly selection')
     ap.add_argument('--universe', default=None,
                     help='path to universe.json from universe.py (uses its cached '
                          'daily history and MEASURED spreads instead of the local DB)')
@@ -281,13 +342,22 @@ def main():
     epics = [e.strip().upper() for e in args.epics.split(',') if e.strip()]
     pairs = [(8, 32)] if args.fast_only else EWMAC_PAIRS
 
+    global ANNUAL_DAYS
     price_df = spreads = None
-    if args.universe:
+    if args.weekly:
+        ANNUAL_DAYS = 52
+        pairs = [(2, 8), (4, 16), (8, 32), (16, 64)]   # weeks
+        price_df, spreads = load_weekly(args.max_n)
+        epics = list(price_df.columns)
+        print(f"weekly universe: {len(epics)} epics, {len(price_df)} bars, "
+              f"{price_df.index[0].date()} .. {price_df.index[-1].date()}")
+    elif args.universe:
         price_df, spreads = load_universe(args.universe)
         epics = list(price_df.columns)
         print(f"universe: {len(epics)} epics from {args.universe}")
     r = build(epics, args.capital, args.target_vol, pairs,
-              price_df=price_df, spreads=spreads)
+              price_df=price_df, spreads=spreads,
+              max_leverage=args.max_leverage)
     net, gross, cost = r['net'], r['gross'], r['cost']
     port = net.sum(axis=1)
     pd.set_option('display.width', 250)
@@ -310,15 +380,21 @@ def main():
     # ── Benchmark: always-long, same vol targeting, NO costs ────────────────
     # Without this the trend result is uninterpretable. If a timing overlay
     # cannot beat simply holding the same risk, the overlay is destroying value.
-    px_b, vol_b = r['px'], None
-    bh = None
+    px_b = r['px']
+    bunits = {}
     for e in net.columns:
-        ret = px_b[e].diff()
-        v = ret.ewm(span=32, min_periods=32).std().clip(lower=px_b[e].abs() * 1e-5)
+        v = px_b[e].diff().ewm(span=32, min_periods=32).std().clip(
+            lower=px_b[e].abs() * 0.001)
         per = args.capital * args.target_vol / np.sqrt(ANNUAL_DAYS) / len(net.columns)
-        s = (per / v).shift(1) * ret
-        bh = s if bh is None else bh.add(s, fill_value=0)
-    bh = bh.dropna()
+        bunits[e] = (per / v)
+    bu = pd.DataFrame(bunits).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # Same gross-notional cap as the strategy — otherwise the benchmark runs at
+    # uncapped leverage and its drawdown is meaningless.
+    bnot = (bu.abs() * px_b).sum(axis=1)
+    bscale = (args.capital * args.max_leverage / bnot.replace(0, np.nan)).clip(
+        upper=1.0).fillna(1.0)
+    bu = bu.mul(bscale, axis=0).shift(1)
+    bh = (bu * px_b.diff()).sum(axis=1).dropna()
     brows = [stats(bh, args.capital, 'BENCHMARK buy&hold (vol-targeted)')]
     bmid = bh.index[len(bh) // 2]
     brows.append(stats(bh[bh.index < bmid], args.capital, '  in-sample (1st half)'))
@@ -333,8 +409,9 @@ def main():
           f"(daily rebalance, no stops)")
 
     # ── Trial-corrected significance + Kelly sizing ─────────────────────────
-    sr = (port.mean() * ANNUAL_DAYS) / (port.std() * np.sqrt(ANNUAL_DAYS))
-    dsr = deflated_sharpe(sr, n_trials=args.trials, n_obs=len(port),
+    sr_bar = port.mean() / port.std()               # per-observation
+    sr = sr_bar * np.sqrt(ANNUAL_DAYS)              # annualised, for display
+    dsr = deflated_sharpe(sr_bar, n_trials=args.trials, n_obs=len(port),
                           skew=float(port.skew()), kurt=float(port.kurtosis() + 3.0))
     print(f"\nSharpe {sr:.2f} over {len(port)} days; "
           f"Deflated Sharpe (n_trials={args.trials}) = {dsr:.3f}")
