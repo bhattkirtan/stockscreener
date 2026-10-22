@@ -6,9 +6,11 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–54** from 2026-10-22.
-  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54. **Still open hazards: 19,
-  24, 25, 26, 36, 48.** 19 now has a built, tested fix (51) that is deliberately
+- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–55** from 2026-10-22.
+  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **and all of them are now
+  DEPLOYED (55).** **Still open hazards: 19, 24, 25, 26, 36.** (48 is resolved
+  for the live volume: `bar_updater` works in-container again and all six epics
+  are current — the host/volume split still matters for *backtests*.) 19 now has a built, tested fix (51) that is deliberately
   **switched off** — the backtest says flattening removes the only profitable
   cohort. Prompt 2 is now a decision backed by one more measurement, not a
   build task. Nothing from the last five sessions is deployed either way.
@@ -16,10 +18,14 @@ session. They assume the agent reads `CLAUDE.md` first.
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
   anything that reaches the broker is not.
-- **Nothing in the last five sessions is deployed.** The live bots run baked-in
-  image code. See prompt 1 — this is the biggest gap between what the repo says
-  and what is actually trading, and with prompts 4 and 5 now closed it is the
-  only remaining item that touches what is actually trading.
+- ✅ **DEPLOYED 2026-10-22 16:13 UTC — prompt 1 is CLOSED.** `trading-bot` and
+  `bar-updater` are both running the current tree (gotcha **55**).
+  **And read gotcha 55's lesson before trusting any deployment claim in these
+  docs, this bullet included:** the line that used to sit here said nothing was
+  deployed, and it was wrong — the `get_activity`/P&L fix had already been live
+  for a day, so the stated justification for prompt 1 ("every close records
+  pnl = 0.0") was false when it was acted on. **Measure instead:**
+  `docker exec stockscreener-trading-bot-1 grep -c '<symbol>' /app/<file>`.
 - **Git state: the branch IS PUSHED and in sync, and no PR has been opened.**
   **Do not trust a hash quoted here — measure it.** This bullet has gone stale
   twice, the second time because the commit that updated it moved `HEAD` past
@@ -163,49 +169,45 @@ bots that are actually trading.
 
 ---
 
-## 1. Deploy the fix stack — five sessions of fixes are not live
+## 1. ~~Deploy the fix stack~~ — **DONE 2026-10-22 16:13 UTC**
 
-> Read `CLAUDE.md` gotchas **10** (deploy topology), **38** and **49** (what is
-> undeployed), then **26** (what must NOT ride along).
+> **STATUS: CLOSED.** `docker compose build trading-bot bar-updater && docker
+> compose up -d trading-bot bar-updater`. Full record: `CLAUDE.md` gotcha **55**.
+> Kept as a closed marker — prompt numbers are cross-referenced by number.
 >
-> **The live bots are running known-broken code.** Everything below is fixed in
-> the repo and baked-stale in the running image:
-> - `get_activity()` returns `[]`, so every close is detected only by the 60s
->   REST reconcile → `pnl` recorded as **0.0** on every row, SL/TP cooldowns
->   **never fire**, the consecutive-loss breaker scores **every trade a win**,
->   and `max_daily_loss_usd` is **pinned at zero** (gotcha 22's consequence
->   chain).
-> - `bar_updater` silently no-ops (gotcha 29's string-comparison bug).
-> - The `RiskSkill` live gate chain ignores the circuit breaker, session filter
->   and news kill-switch (gotcha 41).
-> - Candle dedup is last-timestamp-only, so a reconnect replays bars into the
->   indicator buffer (gotcha 42).
-> - The four live-loop bugs in gotcha 49.
+> **The prompt's own premise turned out to be false, and that is the thing to
+> carry forward.** It claimed the live bots ran code where `get_activity()`
+> returns `[]`, so "every close records `pnl = 0.0`, cooldowns never fire, both
+> breakers are inert". The container already had that fix — `trade_history` rows
+> from the two hours before the deploy read `−51.41`, `−6.79`, `+130.98`,
+> `−11.16`, `−50.35` with real `SL_HIT`/`TP_HIT`. **Never infer deployment state
+> from these docs; measure it** with
+> `docker exec stockscreener-trading-bot-1 grep -c '<symbol>' /app/<file>`.
 >
-> **The hazard is the deploy itself.** Per gotcha 10 the build context is
-> `./trading-bot-skills`, so `docker compose build trading-bot` bakes in
-> **everything in that tree, committed or not**. Run `git status` first and say
-> out loud what is going in. The `position_size` change is currently reverted
-> (`6a26450`) so it will NOT ride along — verify that before building.
+> **What it did deliver:** gate unification (41), candle dedup (42), the four
+> orchestrator fixes (49), `core/time_exits.py` (51, still **off**), the
+> Supertrend stop guard (50), `capital_api`'s UTC warm-up timestamps (54), and
+> `bar_updater`'s `_norm_ts` (29) — the last of which was **visibly broken**:
+> all six epics were frozen at `02:10` and the first post-deploy cycle inserted
+> 1008 candles, bringing every epic to `16:10`.
 >
-> Suggested order, and stop for a decision at each step:
-> 1. `git status` + `git log --oneline origin/main..HEAD` — state exactly what
->    will be baked in.
-> 2. Confirm effective loaded config per instrument *before* the build
->    (`load_config('config/instruments/GOLD.yaml')` → `risk`/`execution`
->    `position_size` must be `None`).
-> 3. Record the pre-deploy baseline: open positions, `bot_state` in
->    `kv_store`, and the last 24h of activity.
-> 4. `docker compose build trading-bot && docker compose up -d trading-bot`.
-> 5. `on_startup` auto-restores whichever bots were running
->    (`bot_control_api.py:394`) — confirm the same two/three came back, and that
->    each re-read the intended SL/TP from `/app/config`.
-> 6. Watch one real close end-to-end and confirm `pnl` is a real number, not
->    `0.0` and not `None`, and that `close_reason` is `SL_HIT`/`TP_HIT` rather
->    than `SIGNAL`.
+> **Verified after:** three bots restored with quantities None/None/1.0, SL/TP
+> 15/60 · 25/125 · 50/150, ETHUSD's `$150` daily cap the only one armed,
+> consecutive-loss breaker off everywhere, flatten off everywhere, **zero
+> ERROR/Traceback lines in any bot log**. Pre-deploy baseline: **0 open
+> positions** (why that window was chosen), rollback image `sha256:6a54ba10a420`.
 >
-> **Do not** rebuild `backtest-runner` in the same step — that is prompt 6 and
-> has its own verification.
+> **`position_size` did not ride along** — verified in the deployed image, not
+> assumed: GOLD/ETHUSD have it only under `backtesting:`, so the broker still
+> gets 0.5. Gotcha 26 stands.
+>
+> **New finding worth its own follow-up:** US100's live size comes from
+> `bot_state`, not its YAML. `risk.position_size: 1` propagates to nothing; only
+> `--quantity` reaches `execution` (`main.py:909`). It survives restarts because
+> `on_startup` replays the stored quantity — but **a US100 bot started from the
+> UI without an explicit quantity silently trades 0.5.** Folded into prompt 9.
+>
+> **`backtest-runner` was deliberately NOT rebuilt** — that is prompt 6.
 
 ---
 
@@ -215,9 +217,10 @@ bots that are actually trading.
 > stopped it being switched on), then **19**, **10** and **27**.
 >
 > **Status 2026-10-22:** `core/time_exits.py` + gate + poll-loop close exist,
-> 72 tests, module at 100%. Shipped `enabled: false` on GOLD and US100, absent
-> on ETHUSD. So the live bots **still carry positions over the weekend** — by
-> choice now, not by oversight.
+> 72 tests, module at 100%, and the code is now **deployed** (gotcha 55) with
+> `enabled: false` on GOLD and US100, absent on ETHUSD. So the live bots **still
+> carry positions over the weekend** — by choice, and now the switch is actually
+> in the running image, so enabling it is a config change rather than a deploy.
 >
 > **Why it is off.** The trades open across a Friday 20:45 hold *all* the
 > backtested profit on both instruments:
@@ -241,9 +244,13 @@ bots that are actually trading.
 > with `--set risk.time_exits.enabled=true` and compare properly. That single
 > change turns this from a judgement call into a measurement.
 >
-> Only after that: flip the YAMLs, rebuild (prompt 1), and watch one Friday —
-> the close should land in `trade_history` with a real P&L from
-> `get_realised_pnl`, not 0.00, since the flatten books nothing itself.
+> Only after that: flip the YAMLs, **rebuild** (config is baked into the image —
+> gotcha 10; prompt 1 is closed but a config change still needs a build or a
+> `docker cp` + restart), and watch one Friday. The close should land in
+> `trade_history` with a real P&L from `get_realised_pnl`, not 0.00, since the
+> flatten books nothing itself — and that reporting path is now **deployed and
+> confirmed working** (gotcha 55), so the Friday check is a real measurement
+> rather than a test of the plumbing.
 >
 > **Separate and still open: `guaranteedStop` is false on every position.** An
 > intraweek gap (a Wednesday news spike) is uncapped and the Friday flatten
@@ -485,12 +492,14 @@ bots that are actually trading.
 > and its idempotency) and **14** (the backfill tool), plus **15** and **21**
 > for the exact row shapes.
 >
-> 365 `trade_history` rows carry `pnl=0.0` / `exit_reason=SIGNAL` because
+> **381 rows measured 2026-10-22** (this prompt said 365; re-count before you
+> start, it is a `select` away). They carry `pnl=0.0` / `exit_reason=SIGNAL` because
 > `_handle_close(deal_id, 0.0, '')` was the only close path while
 > `get_activity()` was broken. The dashboard therefore shows real P&L only
 > through 2026-07-31 and **0.00 for everything after** — US100 shows 223 of 231
-> trades at zero. The live path is fixed going forward, but **historical rows
-> will not self-heal**.
+> trades at zero. The live path is fixed **and deployed** (gotchas 22, 55) —
+> confirmed by post-deploy rows carrying real P&L and `SL_HIT`/`TP_HIT` — but
+> **historical rows will not self-heal**.
 >
 > `python backfill_trade_history.py --days 120 [--dry-run]` rewrites them from
 > `/history/transactions`, which is the authoritative source. `save_trade()`
@@ -552,6 +561,14 @@ bots that are actually trading.
 
 ## 9. Small open items — fine to fold into another session
 
+- **US100's live position size comes from `bot_state`, not its YAML** (gotcha
+  55). `US100.yaml`'s `risk.position_size: 1` propagates to nothing — only
+  `--quantity` reaches `execution` (`main.py:909`) — so US100 trades 1.0 only
+  because it was launched with `--quantity 1.0`, which `on_startup` replays from
+  `kv_store/bot_state`. **Start it from the UI without a quantity and it
+  silently trades 0.5, with no hint in the YAML.** Cheapest fix is to propagate
+  `risk.position_size` → `execution.position_size` the way the root key already
+  does, but note that touches live sizing — read gotcha 26 first.
 - **The live startup-flip gate re-arms on the daily 21:00 restart**, so it fires
   once per bot per day with no backtest equivalent (gotcha 41). Not the cause of
   prompt 3's divergence — suppression makes live take *fewer* trades.
