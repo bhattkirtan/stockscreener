@@ -456,15 +456,22 @@ bots that are actually trading.
 >    correctly loaded still produced 6,973 `Reverse Signal` exits and
 >    `+$185,306`. It needs `docker compose build backtest-runner`.
 > 2. **The GOLD bar repair landed in the host stray DB, not the live volume**
->    (188,435 vs 163,867 bars). So anything run inside a container still sees
->    starved GOLD data, and gotcha 24's usual advice *inverts* for GOLD right
->    now. Decide which DB is canonical, sync it, then **pin `DB_PATH`** so a
->    host-run script cannot silently create a third one
+>    (188,435 vs 163,867 bars at the time). So anything run inside a container
+>    still sees starved GOLD data, and gotcha 24's usual advice *inverts* for
+>    GOLD right now. Decide which DB is canonical, sync it, then **pin
+>    `DB_PATH`** so a host-run script cannot silently create a third one
 >    (`sqlite_api.py:30` defaults it and `:49` creates the parent dir).
+>    **Measure the counts, do not quote the ones above** — they drift every day
+>    the updater runs (host GOLD was 188,466 on the morning of 2026-10-22 and
+>    188,534 by the afternoon). Only the *direction* is stable: host > volume
+>    for GOLD. Read both with
+>    `python3 -c "import sqlite3; print([r for r in sqlite3.connect(P).execute(\"SELECT epic,COUNT(*),MAX(timestamp) FROM candles WHERE timeframe='M5' GROUP BY epic\")])"`.
 > 3. After the rebuild, **re-run the documented regressions** and compare:
->    GOLD 2y should land near **493 trades / WR 21.70% / PF 1.0501** and US100 2y
->    near **2485 / 25.47% / 0.973**. A large divergence means the container is
->    still not running what the host runs.
+>    GOLD 2y should land near **493 trades / WR 21.70% / PF 1.055** and US100 2y
+>    near **2488 / 25.48% / 0.973**. (Latest host-run figures, 2026-10-22 fifth
+>    session — gotcha 54. Trade counts creep up by a few as the DB gains tail
+>    bars; PF to three decimals is the stable comparison.) A large divergence
+>    means the container is still not running what the host runs.
 >
 > Treat any backtest number from that container as an artefact until this is
 > done. `sqlite3` CLI is **not installed** on the host — use
