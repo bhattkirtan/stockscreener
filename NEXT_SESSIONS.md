@@ -13,7 +13,8 @@ session. They assume the agent reads `CLAUDE.md` first.
   are current — the host/volume split still matters for *backtests*.) 19 now has a built, tested fix (51) that is deliberately
   **switched off** — the backtest says flattening removes the only profitable
   cohort. Prompt 2 is now a decision backed by one more measurement, not a
-  build task. Nothing from the last five sessions is deployed either way.
+  build task. Everything from those sessions is now deployed (gotcha 55); the
+  flatten shipped with it but stays switched off.
 - **Standing constraint:** the three live bots (GOLD, ETHUSD, US100) run on a
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
@@ -24,8 +25,9 @@ session. They assume the agent reads `CLAUDE.md` first.
   docs, this bullet included:** the line that used to sit here said nothing was
   deployed, and it was wrong — the `get_activity`/P&L fix had already been live
   for a day, so the stated justification for prompt 1 ("every close records
-  pnl = 0.0") was false when it was acted on. **Measure instead:**
-  `docker exec stockscreener-trading-bot-1 grep -c '<symbol>' /app/<file>`.
+  pnl = 0.0") was false when it was acted on. **Measure instead — one command:**
+  `python3 trading-bot-skills/check_deployed.py` (add `--quiet` for drift only;
+  exits 1 if any container is behind the host tree).
 - **Git state: the branch IS PUSHED and in sync, and no PR has been opened.**
   **Do not trust a hash quoted here — measure it.** This bullet has gone stale
   twice, the second time because the commit that updated it moved `HEAD` past
@@ -87,7 +89,8 @@ session. They assume the agent reads `CLAUDE.md` first.
 | `backtesting_skill.py` coverage (old prompt 4) | **done** — 59% → **100%**; 6 findings, 2 fixed (the PF divide-by-zero guard reporting 100x gross wins, and a docstring that understated dynamic sizing 10x) (gotcha 53) |
 | `capital_api.py` coverage (old prompt 5) | **done** — 19% → **100%**; `place_order` was at 0%. 2 live bugs fixed: `create_session`'s 429 branch was dead (`Response.__bool__` is `self.ok`), and `get_historical_prices` returned account-local timestamps, putting the live warm-up buffer 2h off the DB bars — which closes half of prompt 3's remaining lead (gotcha 54) |
 
-Four bugs the coverage work found in the live loop, all fixed, none deployed:
+Four bugs the coverage work found in the live loop, all fixed and now **deployed**
+(gotcha 55):
 unconditional position-flag clearing (the real accumulation hole — every reverse
 close is booked **twice**), invented `pnl=0.0`, booking a refused close before
 checking the broker result, and an error handler that raised inside its own

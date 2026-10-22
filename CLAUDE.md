@@ -66,6 +66,7 @@ An automated trading system that:
 │   ├── optimize_params.py       # Grid-search optimizer for SL/TP/indicator params
 │   ├── fetch_data.py            # Download historical OHLCV bars from Capital.com
 │   ├── bar_updater.py           # Incremental bar sync daemon (runs every 15 min)
+│   ├── check_deployed.py        # Reports what is ACTUALLY deployed (gotcha 55) — run before trusting any "deployed" claim
 │   ├── backtest_api.py          # FastAPI — :8010, triggered by frontend
 │   └── bot_control_api.py       # FastAPI — :8020, start/stop bot from UI
 │
@@ -222,7 +223,7 @@ docker compose --profile build run --rm react-builder
 - **SL/TP:** Edit `risk.stop_loss_pips` / `risk.take_profit_pips` (not `analysis.sl_tp` — it gets
   overwritten at load time). **Not `risk.sl_pips`/`tp_pips`** — those are read by nothing (gotcha 52).
 - **Cooldowns:** `risk.sl_cooldown_minutes` / `risk.tp_cooldown_minutes`
-- **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:141`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
+- **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:220`, config read at `:87`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
 - **Consecutive-loss circuit breaker (opt-in, default OFF):** `risk.max_consecutive_losses: N` blocks all new entries after N losing trades in a row for `risk.consecutive_loss_cooldown_minutes` (default 120), then resets; a win resets the counter immediately. `0` = disabled. Backtest with `--set risk.max_consecutive_losses=4 --set risk.consecutive_loss_cooldown_minutes=720`. **Note:** on trend-followers this is a safety rail, not a profit lever — the GOLD/ETH sweep was non-monotonic/path-dependent (pausing can lock you out of the recovery leg), so it's left disabled on both.
 - **Daily-loss limit (opt-in):** `risk.max_daily_loss_usd: X` halts new entries once the current UTC day's realised P&L breaches -X; auto-clears at UTC rollover. `0` = disabled. **Requires real $ P&L** at close — `on_position_closed(pnl=...)` now threads it from both live and backtest. Backtest with `--set risk.max_daily_loss_usd=150`. **Instrument-specific:** enabled on ETHUSD ($150 — improves return+DD+Sharpe there) but left OFF on GOLD, where it worsens results (trend lock-out). Same meta-pattern as the consecutive breaker: helps ETH, hurts GOLD.
 - **EOD close / flatten:** `time_based_exits.eod_hour` is **DEAD** — read only by
@@ -505,6 +506,24 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 
 ## Common Gotchas
 
+> **Two kinds of claim in this file rot silently. Both have now caused a wrong
+> decision, so check rather than trust:**
+>
+> 1. **Line numbers are indicative, not authoritative.** They drift whenever a
+>    file grows — several in this file were shifted by edits made in the very
+>    session that wrote them. **Grep the symbol instead:**
+>    `grep -n '<symbol>' trading-bot-skills/<file>`. A stale line number is
+>    harmless; a stale line number you *trusted* sends you to the wrong code.
+> 2. **Deployment state cannot be known from prose.** On 2026-10-22 a deploy was
+>    carried out on this file's claim that the live bots ran broken code; they
+>    had not for a day (gotcha 55). **Run `python3 trading-bot-skills/check_deployed.py`**
+>    — it measures the running containers, reports per-fix drift against the host
+>    tree, and exits non-zero when a container is behind.
+>
+> Config *values* (SL/TP, sizes, flags) also drift — prefer the YAML, or the
+> script above, over any table here. Gotchas 11, 50 and 52 are all the same
+> lesson.
+
 1. **SL/TP config source:** Always edit `risk.stop_loss_pips` / `risk.take_profit_pips` — not `analysis.sl_tp`, which the propagation function overwrites at load time. **The keys are NOT `risk.sl_pips`/`risk.tp_pips`** — this file said that in three places until 2026-10-22 and nothing reads them; see gotcha 52.
 
 2. **Warm-up bars:** `buffer_size` in config is overridden at runtime to `max_indicator_period × WARMUP_MULTIPLIER (3)`. Don't worry about it manually.
@@ -515,7 +534,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 
 5. **`bot.mode: AUTO` vs `SIGNAL_ONLY`:** In `SIGNAL_ONLY` mode, no orders are placed. Use this to verify signals before going live.
 
-6. **EOD close default — this entry was WRONG and is corrected here.** EOD close is **not** enabled anywhere that matters: `time_based_exits.eod_hour: 16` is read only by `production_orchestrator.py`, which the live bot does not run, and no backtest path reads it either. The backtester **does** implement one time exit — a max-hold from `time_based_exits.max_hours` (`backtesting_skill.py:398`) — but the base config sets `max_hours: 0`, so it is inert. So live and backtest currently "match" by both carrying positions indefinitely. See gotcha 19 for the confirmed −$153 weekend-gap cost and gotcha 51 for the opt-in replacement (`risk.time_exits`).
+6. **EOD close default — this entry was WRONG and is corrected here.** EOD close is **not** enabled anywhere that matters: `time_based_exits.eod_hour: 16` is read only by `production_orchestrator.py`, which the live bot does not run, and no backtest path reads it either. The backtester **does** implement one time exit — a max-hold from `time_based_exits.max_hours` (`backtesting_skill.py:408`) — but the base config sets `max_hours: 0`, so it is inert. So live and backtest currently "match" by both carrying positions indefinitely. See gotcha 19 for the confirmed −$153 weekend-gap cost and gotcha 51 for the opt-in replacement (`risk.time_exits`).
 
 7. **Docker volume:** The `trading_data` volume persists between restarts. If the DB is corrupt or you want a clean slate: `docker compose down -v` (destroys all data).
 
@@ -545,7 +564,16 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - Added to GOLD, SILVER, EURUSD, BTCUSD, ETHUSD, US100
     - All instruments now have `execution.epic:` set (ETHUSD was missing this entirely — would have failed to connect)
     - All instruments now have `risk.reverse_signal_exit: false`
-    - SL/TP standardised to 1:3 R:R across all instruments: GOLD 15/45, SILVER 1/3, EURUSD 20/60, BTCUSD 400/1200, ETHUSD 25/75, US100 35/105
+    - ⚠️ **This bullet's SL/TP list was a snapshot of the moment and is now wrong on HALF the instruments — three were retuned afterwards.** It said "standardised to 1:3 R:R across all instruments: GOLD 15/45, SILVER 1/3, EURUSD 20/60, BTCUSD 400/1200, ETHUSD 25/75, US100 35/105". Measured 2026-10-22:
+      | instrument | SL | TP | R:R | what changed |
+      |---|---|---|---|---|
+      | GOLD | 15 | **60** | **4.0** | TP widened (`1597d45`) — the 15/45 here is stale, as is gotcha 50's copy of it |
+      | ETHUSD | 25 | **125** | **5.0** | TP widened to the SL/TP-sweep optimum (`1b2b3c2`) |
+      | US100 | **50** | 150 | 3.0 | SL widened 35 → 50 (`70dd071`) |
+      | SILVER | 1 | 3 | 3.0 | unchanged |
+      | EURUSD | 20 | 60 | 3.0 | unchanged |
+      | BTCUSD | 400 | 1200 | 3.0 | unchanged |
+      So **"1:3 across all instruments" is no longer true of any of the three that trade** — GOLD is 1:4 and ETHUSD 1:5. The rest of this gotcha's claims were re-verified and all still hold: every instrument sets `execution.environment: demo`, every one sets `execution.epic`, and every one sets `risk.reverse_signal_exit: false`.
 
 12. **Capital.com API lookback limits (confirmed):**
     - `/history/activity`: `lastPeriod` only, **hard cap 86400s (24h)**. `from/to` params return 400. Use only for same-day trade reconstruction.
@@ -610,7 +638,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 21. **Reading trades out of the live DB — exact shapes:** `kv_store` columns are `(collection, doc_id, data, updated_at)` — there is no `key`/`value` column. `trade_history` rows carry `bot_id` (e.g. `us100_m5_bot`); `active_positions` rows do **not** (`bot_id: None`) but do carry `opened_at` and `status`. `active_positions` has `entry_price: None` on many rows while `trade_history` has it — join on `deal_id` across both to reconstruct a trade.
 
 22. **`get_activity()` WAS broken — it always returned `[]`, silently disabling three risk mechanisms. FIXED 2026-10-21; this entry said "not yet deployed to the container" and that became WRONG the same day — see gotcha 55.** It reached the container in the 2026-10-21 15:50 build and has been recording real P&L since; the whole consequence chain below is historical, not current.
-    - `capital_api.py:308` sends `filter=type==POSITION;status==EXECUTED`. **`status==EXECUTED` matches nothing** — verified against the live demo API: `EXECUTED` → `200 n=0`, `ACCEPTED` → `200 n=11`. The correct value is `ACCEPTED`.
+    - `capital_api.py:330` (was `:308` before this file grew) sent `filter=type==POSITION;status==EXECUTED`. **`status==EXECUTED` matches nothing** — verified against the live demo API: `EXECUTED` → `200 n=0`, `ACCEPTED` → `200 n=11`. The correct value is `ACCEPTED`.
     - Second, independent bug: `main.py:303` iterates `details['actions']` to find `POSITION_OPENED`/`POSITION_CLOSED`. **There is no `actions` array in the response.** Even with the filter fixed, nothing would parse.
     - **Real close-event shape** (`detailed=true`, `status==ACCEPTED`): top-level `date`/`dateUTC`/`epic`/`dealId`/`source`/`type`/`status`, and `details` = `dealReference`, `workingOrderId`, `marketName`, `currency`, `size`, `direction`, `level`, `stopLevel`, `guaranteedStop`, `profitLevel`, and — **only on closes** — `openPrice`.
       - A close is identified by **`details.openPrice` being present**; open events lack it.
@@ -653,8 +681,8 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     | Instrument | Actually traded | Host YAML intends | Risk/trade actual → intended |
     |---|---|---|---|
     | GOLD | **0.5** | 10 | $7.50 → **$150 (20×)** |
-    | ETHUSD | **0.5** | 1 | $12.50 → $25 (2×) |
-    | US100 | 1.0 | 1 | $50 (correct — it sets `risk.position_size`) |
+    | ETHUSD | **0.5** | 1 *(comment)* / **2** *(value)* | $12.50 → $25 (2×) |
+    | US100 | 1.0 | 1 | $50 — **correct, but NOT for the reason this row gave.** It credited `risk.position_size: 1`; that key reaches nothing. US100 gets 1.0 only because its bot was launched with `--quantity 1.0`, the sole writer of `execution.position_size` (`main.py:909`), replayed from `kv_store/bot_state` on every restart. **Start it without a quantity and it silently trades 0.5** — gotcha 55. |
     - The `position_size` additions to `GOLD.yaml`/`ETHUSD.yaml` are the fix — but deploying them **multiplies GOLD risk 20× on a strategy with no measured edge.** Aug–Oct would have been **−€5,386 instead of −€1,820**. Fix the edge before the size.
     - **Status 2026-10-22: committed as `c0fb630`, then REVERTED by `6a26450`.** The defect is therefore still live and deliberately so. To recover the change: `git show c0fb630`, or `git revert 6a26450`. Verified after the revert — effective loaded sizing is GOLD `risk`/`execution` = **None → 0.5 default**, ETHUSD **None → 0.5**, US100 `risk` = **1** (US100 was never part of the commit and is correct).
     - **The `main.py` root-propagation block (`main.py:126-131`) is committed but INERT**, and is not the mechanism gotcha 26 needs. It only fires on a **root-level** `position_size` key; no instrument YAML has one and neither does `trading_config.yaml`, so it propagates nothing. The other writer is `--quantity` (`main.py:840`), which sets `risk`/`execution` directly. So adding `position_size` under `risk:`/`execution:` in the YAML is what actually changes live size — not the root key.
@@ -847,7 +875,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - A band exactly **at** entry still yields a zero-width trade (SL == TP == entry). Left as-is — there is no non-arbitrary minimum distance to substitute, and it is unreachable under `method: fixed`.
     - Config traps the tests pin (all still present — these are documentation, not bugs):
       - **`method: atr` silently falls back to fixed 20/40 pips** whenever ATR is None, 0, negative, or NaN — i.e. during indicator warm-up after every restart. No warning. Same silent fallback for `fibonacci` with a missing swing, `supertrend` with no band, and any unrecognised `method` string.
-      - **The dispatcher's fixed defaults are 20/40 pips (R:R 2.0)**, matching no deployed instrument (GOLD is 15/45). A config that loses its `stop_loss_pips` key trades 20/40 rather than failing.
+      - **The dispatcher's fixed defaults are 20/40 pips (R:R 2.0)**, matching no deployed instrument (GOLD is 15/**60** — this said 15/45, the same stale TP gotcha 52 caught in three other places). A config that loses its `stop_loss_pips` key trades 20/40 rather than failing.
       - **`fibonacci_tp_level` is snapped to the nearest value in `FIBONACCI_LEVELS`**, so asking for a 2.0 extension silently executes 1.618. The config value and the executed value are not the same number.
       - `sl_pct: 0.5` means **50%**, not 0.5% — the field name reads the other way.
       - Fibonacci TP is projected from the swing (`swing_low + range * ratio`), independent of entry, so a late entry on the same swing gets a much worse R:R than an early one.
@@ -869,7 +897,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - ETHUSD deliberately has no `time_exits` block at all: it trades the weekend, so there is no gap to cap.
     - **Found while wiring it:** `US100.yaml` already had `trading_hours.friday_close_hour: 20` under `trading_hours.enabled: false` — the intent existed and nothing read it. And `production_orchestrator.EndOfDayClose` has two defects if anyone reaches for it: `datetime.now()` (**local time**, compared against a UTC config hour) and `hour >= close_hour`, true for every later hour of every day.
     - Cover: `tests/unit/test_time_exits.py` (72 tests — clock, tz/string parsing, the gate, and the poll loop closing/retrying/booking-nothing). Module at 100%; `main.py` and `risk_skill.py` hold at 95% / 82%. Suite **984 passing, 0 failing, 72.67%** (floor 69).
-    - ⚠️ **`max_hold_hours` now exists TWICE, on opposite sides — do not enable one alone.** `risk.time_exits.max_hold_hours` (new, this gotcha) is **live-only**; `time_based_exits.max_hours` (`backtesting_skill.py:194`, exit at `:398`) is **backtest-only** and was already there. Both default to `0`, so nothing diverges today, but setting either one by itself silently makes live and backtest disagree on hold time. The EOD/Friday *flatten* has no backtest counterpart at all — `max_hours` is the only time exit the backtester models.
+    - ⚠️ **`max_hold_hours` now exists TWICE, on opposite sides — do not enable one alone.** `risk.time_exits.max_hold_hours` (new, this gotcha) is **live-only**; `time_based_exits.max_hours` (`backtesting_skill.py:196`, exit at `:408`) is **backtest-only** and was already there. Both default to `0`, so nothing diverges today, but setting either one by itself silently makes live and backtest disagree on hold time. The EOD/Friday *flatten* has no backtest counterpart at all — `max_hours` is the only time exit the backtester models.
     - **`guaranteedStop` is still false on every position**, so an *intraweek* gap (a Wednesday news spike) remains uncapped. The Friday flatten never addressed that; it is a separate decision.
 
 
@@ -877,7 +905,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - **`risk.sl_pips` / `risk.tp_pips` are read by nothing.** The real keys are **`risk.stop_loss_pips` / `risk.take_profit_pips`** — those are the three keys (with `pip_size`) that both propagation copies move into `analysis.sl_tp`: `orchestrator/main.py:118-122` (live) and `run_skills_backtest.py:71` (backtest). All six deployed instrument YAMLs use `stop_loss_pips`; none has `sl_pips`. This file asserted the wrong name in **three** places — the "Config cascade (important)" block, the "Configuration Rules" list, and gotcha 1 — i.e. in both of the sections someone reads first, the same blast radius as the EOD errors.
       - Why the wrong name was plausible: **`execution_skill.py:49-50` genuinely reads `sl_pips`/`tp_pips`** — but off its own `execution:` section, not `risk:`. The name is real, the section was not. Following the old instruction (`risk.sl_pips: 20`) edits nothing, produces no warning, and leaves you concluding the propagation is broken.
     - **`risk.max_position_size` is a dead key.** `trading_config.yaml:173` sets `max_position_size: 10.0`; no production code reads it (only a test fixture does). `risk.position_size_pct` *is* read (`risk_skill.py:119`) and validated, but it does not set the order size either — the size the broker receives is `execution_skill.py:51`'s `position_size`, default **0.5**. That is gotcha 26, still live.
-    - **`RiskSkill._calculate_sl_tp` (`risk_skill.py:427`) is dead code hardcoding `pip_value = 0.01` with the comment "For GOLD, 1 pip = 0.01".** GOLD's actual `pip_size` is **1.0** (`GOLD.yaml:99`, gotcha 8) — a **100x** error. Zero callers today, in production *or* tests, so nothing is wrong live; but anyone wiring it up gets GOLD stops 100x too tight. Left in place rather than deleted (removing it is a code change, not a doc fix), flagged here. Same family as gotcha 31's 50x `slippage_cost_usd` typo and gotcha 50's wrong-side-stop guard: a magnitude error sitting in a path no test exercises.
+    - **`RiskSkill._calculate_sl_tp` (`risk_skill.py:426`) is dead code hardcoding `pip_value = 0.01` with the comment "For GOLD, 1 pip = 0.01".** GOLD's actual `pip_size` is **1.0** (`GOLD.yaml:99`, gotcha 8) — a **100x** error. Zero callers today, in production *or* tests, so nothing is wrong live; but anyone wiring it up gets GOLD stops 100x too tight. Left in place rather than deleted (removing it is a code change, not a doc fix), flagged here. Same family as gotcha 31's 50x `slippage_cost_usd` typo and gotcha 50's wrong-side-stop guard: a magnitude error sitting in a path no test exercises.
     - **GOLD's TP was recorded as two different wrong numbers.** "Instruments & Strategy" said 40, the deployed-parameters table said 45; the YAML says **60** (R:R 1:4). Gotcha 35's "baseline SL15/TP60" matches the YAML, so the measured backtests in this file were run on the live geometry and remain valid — only the prose was stale.
     - **The "Live GOLD Strategy Parameters (as deployed)" table had four wrong rows** (TP, position size, EOD close, plus the stale uncommitted-changes warning above it). It is an Apr-2026 screenshot artefact whose "confirmed live" header outranked, in apparent authority, the later gotchas that corrected it. Corrected in place; **prefer reading `GOLD.yaml` over that table.**
 
@@ -927,11 +955,17 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - Command: `docker compose build trading-bot bar-updater && docker compose up -d trading-bot bar-updater`. Both services share build context `./trading-bot-skills` and the same Dockerfile, so **one build serves both** — that is why `bar-updater` could be included at no extra risk.
     - Images: trading-bot `sha256:19ecb886…`, bar-updater `sha256:873ad486…`. **Rollback target (previous trading-bot): `sha256:6a54ba10a420`.**
     - ⚠️ **THE LESSON. Before this deploy, gotchas 22, 38, 49 and all of NEXT_SESSIONS asserted the live container ran broken code where `get_activity()` returns `[]` — so "every close records `pnl = 0.0`, cooldowns never fire, both breakers are inert". That was FALSE.** The container (started 2026-10-21 15:50 UTC) already carried the `status==ACCEPTED` fix and `get_realised_pnl`. Proof, from `trade_history` in the two hours *before* the deploy: `−51.41`, `−6.79`, `+130.98`, `−11.16`, `−50.35`, all with `SL_HIT`/`TP_HIT`. Gotcha 22's whole consequence chain had been fixed live for a day, and the docs never caught up because a deploy happened without a doc update.
-    - **So never infer deployment state from prose — measure it.** Per fix, one command:
+    - **So never infer deployment state from prose — measure it.** That is now one command:
       ```bash
-      docker exec stockscreener-trading-bot-1 grep -c '<symbol>' /app/<file>   # 0 or "No such file" = not deployed
-      docker inspect stockscreener-trading-bot-1 --format '{{.Image}}'          # which image is actually running
+      python3 trading-bot-skills/check_deployed.py          # full report
+      python3 trading-bot-skills/check_deployed.py --quiet   # only the drift; exit 1 if any container is behind
       ```
+      It checks each tracked fix marker in every container against the host tree, lists the running bots with the size the broker *actually* receives, and prints bar freshness. **Add a row to its `MARKERS` list whenever you land a live-path fix** — an unlisted fix is invisible to it. Equivalent by hand:
+      ```bash
+      docker exec stockscreener-trading-bot-1 grep -c '<symbol>' /app/<file>
+      docker inspect stockscreener-trading-bot-1 --format '{{.Image}}'
+      ```
+      ⚠️ Two traps the script exists to encode, both of which produced wrong answers when done by hand first: `grep -c` **exits 1 on zero matches**, so `test -f f && grep -c s f || echo NOFILE` reports "file missing" for a file that merely lacks the symbol; and a marker must be a string **only the fixed code has** — `snapshotTimeUTC` looked like a fine marker for gotcha 54 but the *pre*-fix line contained it too, so it reported a stale container as up to date.
       Useful probes: `status==ACCEPTED` + `snapshotTimeUTC` (`clients/capital_api.py`), `_evaluate_entry_gates` (`skills/risk/risk_skill.py`), `_is_duplicate_candle` (`skills/market_data/market_data_skill.py`), `TimeBasedFlatten` (`core/time_exits.py`), `_run_skill` (`orchestrator/trading_orchestrator.py`), `_norm_ts` (`fetch_data.py`). **`ps` is not installed in the container** — list bot processes by reading `/proc/*/cmdline` from `python3`, not with `ps`.
     - **What this deploy actually added** (i.e. the real pre-deploy gap, once measured): gate unification (41), candle dedup (42), the four orchestrator fixes (49), `core/time_exits.py` (51, shipped **off**), the Supertrend wrong-side stop guard (50), `capital_api` UTC warm-up timestamps + the 429 guard (54), and `bar_updater`'s `_norm_ts` (29).
     - **`bar_updater`'s fix is visibly working for the first time.** All six epics were frozen at `2026-10-22 02:10` in the live volume — gotcha 29's exact signature, still live in that container. The first post-deploy cycle inserted **1008 candles** and brought every epic to `16:10`. Live *trading* was never affected by this (the bot buffers from the broker, gotcha 48), but container-run backtests and the dashboard were.
