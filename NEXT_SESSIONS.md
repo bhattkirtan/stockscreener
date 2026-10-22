@@ -1,8 +1,8 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Rewritten 2026-10-22 (second session that day). Each prompt below is
-self-contained: paste one as the first message of a fresh session. They assume
-the agent reads `CLAUDE.md` first.
+Rewritten 2026-10-22 (second session that day), kept current through the fifth.
+Each prompt below is self-contained: paste one as the first message of a fresh
+session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
@@ -11,7 +11,7 @@ the agent reads `CLAUDE.md` first.
   24, 25, 26, 36, 48.** 19 now has a built, tested fix (51) that is deliberately
   **switched off** — the backtest says flattening removes the only profitable
   cohort. Prompt 2 is now a decision backed by one more measurement, not a
-  build task. Nothing from the last four sessions is deployed either way.
+  build task. Nothing from the last five sessions is deployed either way.
 - **Standing constraint:** the three live bots (GOLD, ETHUSD, US100) run on a
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
@@ -20,10 +20,16 @@ the agent reads `CLAUDE.md` first.
   image code. See prompt 1 — this is the biggest gap between what the repo says
   and what is actually trading, and with prompts 4 and 5 now closed it is the
   only remaining item that touches what is actually trading.
-- **Git state (updated 2026-10-22, fifth session): the branch IS PUSHED.**
-  `origin/fix/gate-unification-and-live-path-coverage` is at `d6d443f`; local is
-  in sync, 0 unpushed. It is now **39 commits ahead of `origin/main`** because
-  nothing is merged — **no PR has been opened.** Open one at
+- **Git state: the branch IS PUSHED and in sync, and no PR has been opened.**
+  **Do not trust a hash quoted here — measure it.** This bullet has gone stale
+  twice, the second time because the commit that updated it moved `HEAD` past
+  the hash it had just recorded. So read the state instead of the prose:
+  ```bash
+  git status -sb                                  # should show no ahead/behind
+  git log --oneline @{u}..HEAD | wc -l            # unpushed commits; expect 0
+  git log --oneline origin/main..HEAD | wc -l     # ~40 and growing; nothing merged
+  ```
+  Open the PR in the browser (`gh` is not installed):
   https://github.com/bhattkirtan/stockscreener/compare/main...fix/gate-unification-and-live-path-coverage
 - **The earlier "pushing is confirmed impossible" note was a missing credential,
   not a blocked path — and it is now resolved.** Diagnosed properly: egress from
