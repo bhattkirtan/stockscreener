@@ -172,6 +172,17 @@ def calculate_supertrend_sl_tp(
 
     SL is placed at the Supertrend line. TP is R:R multiple of the SL distance.
 
+    The stop is always placed on the LOSING side of entry. Normally that is the
+    Supertrend line itself — for a BUY the active line is the lower band, which
+    sits below price — so this returns `supertrend_value` unchanged and matches
+    the previous behaviour exactly.
+
+    If the band is on the wrong side of entry, the band's DISTANCE is kept but
+    mirrored to the correct side. Placing the stop at the band there would mean
+    a BUY whose stop is above entry: hit on the next tick, with a take-profit
+    sized as though the trade were sound. `calculate_fibonacci_sl_tp` has an
+    equivalent guard; this function had none.
+
     Args:
         signal:            'BUY' or 'SELL'
         entry_price:       Trade entry price
@@ -181,13 +192,14 @@ def calculate_supertrend_sl_tp(
     Returns:
         (stop_loss, take_profit)
     """
-    stop_loss = supertrend_value
-    sl_distance = abs(entry_price - stop_loss)
+    sl_distance = abs(entry_price - supertrend_value)
     tp_distance = sl_distance * risk_reward_ratio
 
     if signal == 'BUY':
+        stop_loss = entry_price - sl_distance
         take_profit = entry_price + tp_distance
     else:  # SELL
+        stop_loss = entry_price + sl_distance
         take_profit = entry_price - tp_distance
 
     return stop_loss, take_profit

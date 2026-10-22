@@ -267,20 +267,43 @@ class TestSupertrend:
                                             risk_reward_ratio=3.0)
         assert (tp - 4100.0) / (4100.0 - sl) == pytest.approx(3.0)
 
-    def test_a_band_on_the_wrong_side_of_entry_gives_an_instantly_stopped_trade(self):
+    def test_a_band_on_the_wrong_side_of_entry_is_mirrored_not_used_raw(self):
         """
-        FINDING, pinned as current behaviour. `sl_distance` is `abs()`, and
-        unlike the fibonacci path there is NO guard that the stop lands on the
-        losing side of entry. A BUY whose Supertrend band sits ABOVE entry gets
-        a stop above entry: stopped out on the next tick, with a TP placed as
-        if the trade were sound. Live SL/TP are anchored to the signal-bar
-        close (gotcha 20) and the band is closest to price right after a flip,
-        which is precisely when a signal fires.
+        A BUY whose band sits ABOVE entry previously got a stop above entry —
+        hit on the next tick, with a TP sized as if the trade were sound. The
+        band's DISTANCE is now kept but mirrored to the losing side.
         """
         sl, tp = calculate_supertrend_sl_tp('BUY', 4100.0, 4115.0,
                                             risk_reward_ratio=2.0)
-        assert sl == 4115.0 and sl > 4100.0, 'stop is above entry on a BUY'
-        assert tp == 4130.0, 'and the TP is placed as if the risk were 15 below'
+        assert sl == 4085.0, '15 below entry, not 15 above'
+        assert tp == 4130.0
+
+    def test_a_band_on_the_wrong_side_is_mirrored_for_sell_too(self):
+        sl, tp = calculate_supertrend_sl_tp('SELL', 4100.0, 4085.0,
+                                            risk_reward_ratio=2.0)
+        assert sl == 4115.0
+        assert tp == 4070.0
+
+    def test_the_guard_changes_nothing_when_the_band_is_on_the_correct_side(self):
+        """
+        The reachable case must be byte-identical: for a BUY the active
+        Supertrend line is the lower band, which sits below price, so the stop
+        is still exactly the band.
+        """
+        for band in (4099.9, 4085.0, 4000.0, 3000.0):
+            sl, _ = calculate_supertrend_sl_tp('BUY', 4100.0, band)
+            assert sl == pytest.approx(band)
+        for band in (4100.1, 4115.0, 4200.0):
+            sl, _ = calculate_supertrend_sl_tp('SELL', 4100.0, band)
+            assert sl == pytest.approx(band)
+
+    def test_the_stop_is_always_on_the_losing_side_of_entry(self):
+        """The invariant the fibonacci path has and this one now has too."""
+        for band in (3900.0, 4085.0, 4099.0, 4101.0, 4115.0, 4300.0):
+            buy_sl, buy_tp = calculate_supertrend_sl_tp('BUY', 4100.0, band)
+            sell_sl, sell_tp = calculate_supertrend_sl_tp('SELL', 4100.0, band)
+            assert buy_sl < 4100.0 < buy_tp, f'BUY broken at band {band}'
+            assert sell_sl > 4100.0 > sell_tp, f'SELL broken at band {band}'
 
     def test_a_band_exactly_at_entry_gives_a_zero_width_trade(self):
         assert calculate_supertrend_sl_tp('BUY', 4100.0, 4100.0) == (4100.0, 4100.0)

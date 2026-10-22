@@ -318,14 +318,16 @@ class TestLifecycle:
         assert 'Total signals: 1' in out and 'Total trades: 1' in out
 
     @pytest.mark.asyncio
-    async def test_stop_without_start_raises(self):
+    async def test_stop_without_start_does_not_raise(self, capsys):
         """
         `stop()` subtracts `self.start_time`, which is None until `start()`
-        runs. Documented, not asserted-as-desirable: a shutdown path that
-        raises would mask whatever caused the shutdown.
+        runs. A shutdown path that raises masks whatever caused the shutdown,
+        so the runtime falls back to 0.0 instead.
         """
-        with pytest.raises(TypeError):
-            await TradingOrchestrator({}).stop()
+        orch = TradingOrchestrator({})
+        await orch.stop()
+        assert orch.running is False
+        assert 'Runtime: 0.0 minutes' in capsys.readouterr().out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -654,20 +656,26 @@ class TestReverseSignalClose:
         assert orch.skills['alerting'].ran == 0
 
     @pytest.mark.asyncio
-    async def test_a_rejected_close_still_clears_the_risk_position_flags(self, fast_clock):
+    async def test_a_rejected_close_keeps_the_risk_position_flags(self, fast_clock):
         """
-        Pinning current behaviour, which is questionable: `on_position_closed`
-        runs BEFORE the close result is checked, so a refused close leaves the
-        bot believing it is flat while the broker may still hold the position.
-        The next bar's open-position gate will therefore not block.
+        The other half of the accumulation guard. The close result is checked
+        BEFORE anything is booked, because `on_position_closed` clears the
+        open-position flags — so booking a refused close would leave the bot
+        believing it is flat while the broker still holds the position, and the
+        next bar's open-position gate would not block. Aborting this bar while
+        clearing the flags would defeat the abort.
         """
         orch = pipeline(REVERSE_ON, signals=['SELL'],
                         risk=FakeRisk(has_open_position=True, deal_id='D-OLD',
                                       direction='BUY'),
                         execution=FakeExecution(close_results=[False]))
         await orch.on_candle(candle())
-        assert orch.skills['risk'].has_open_position is False
-        assert orch.skills['risk'].closed[0]['close_reason'] == 'Reverse Signal'
+        risk = orch.skills['risk']
+        assert risk.has_open_position is True
+        assert risk.open_position_deal_id == 'D-OLD'
+        assert risk.open_position_direction == 'BUY'
+        assert risk.closed == [], 'a refused close must not be booked as a trade'
+        assert orch.skills['storage'].closed == []
 
     @pytest.mark.asyncio
     async def test_a_rejected_close_does_not_wedge_the_loop(self, fast_clock):
@@ -678,8 +686,10 @@ class TestReverseSignalClose:
                                                 deal_ids=['D-NEW']))
         await orch.on_candle(candle())
         assert orch.total_trades == 0
-        # Flags were cleared, so bar 2 is a plain entry, not another reverse.
+        # The flags survive the abort, so bar 2 retries the reverse close —
+        # which succeeds this time, and the entry follows.
         await orch.on_candle(candle(close=4101.0))
+        assert orch.skills['execution'].closed == ['D-OLD', 'D-OLD']
         assert orch.total_trades == 1
 
     # ── cases that must NOT trigger a close ───────────────────────────────
@@ -780,34 +790,76 @@ class TestReverseSignalClose:
         assert orch.total_trades == 0
 
 
-class TestReverseCloseBooksZeroPnl:
+class TestReverseCloseDoesNotInventPnl:
     """
-    The reverse path hardcodes `pnl=0.0` and `entry_price=0.0`. That is exactly
-    the shape gotcha 22 describes as the regression: the risk breakers compute
-    `is_loss = pnl < 0`, so 0.0 scores every reverse exit as a WIN and
-    contributes nothing to the daily-loss accumulator. Pinned so the behaviour
-    is visible and a fix is a deliberate decision, not a silent one.
+    The reverse path used to hardcode `pnl=0.0` and `entry_price=0.0`, which is
+    gotcha 22's regression in miniature: the breakers compute
+    `is_loss = pnl < 0`, so 0.0 scored every reverse exit as a WIN and
+    contributed nothing to the daily-loss accumulator. Verified against the
+    real RiskSkill: four consecutive losing reverse exits left
+    `consecutive_losses` at 0 and `_daily_realized_pnl` at 0.0.
+
+    The orchestrator genuinely does not know either figure — it has no broker
+    client, and the risk skill tracks only deal id and direction — so it now
+    reports both as None ("unknown") and the breakers skip the trade. The real
+    numbers arrive moments later from main.py's `_poll_positions`, which sees
+    the same close in the activity feed and resolves P&L via
+    `get_realised_pnl(deal_id)`.
     """
 
     @pytest.mark.asyncio
-    async def test_the_reverse_close_books_exactly_zero_pnl(self, fast_clock):
+    async def test_the_reverse_close_reports_pnl_as_unknown(self, fast_clock):
         orch = pipeline(REVERSE_ON, signals=['SELL'],
                         risk=FakeRisk(has_open_position=True, deal_id='D-OLD',
                                       direction='BUY'))
         await orch.on_candle(candle(close=4150.0))
         booked = orch.skills['risk'].closed[0]
-        assert booked['pnl'] == 0.0
-        assert booked['entry_price'] == 0.0, 'so no price-distance fallback is possible either'
+        assert booked['pnl'] is None, 'must not be 0.0 — that scores as a win'
+        assert booked['entry_price'] is None, (
+            'must not be 0.0 either, or the price-distance fallback computes '
+            '(close - 0.0) and scores a phantom win instead')
 
     @pytest.mark.asyncio
-    async def test_a_losing_reverse_exit_is_indistinguishable_from_a_winning_one(self, fast_clock):
-        orch = pipeline(REVERSE_ON, signals=['SELL', 'BUY'],
+    async def test_the_real_risk_skill_skips_rather_than_scoring_a_win(self, fast_clock):
+        """
+        End to end against the REAL RiskSkill with both breakers armed: four
+        consecutive losing reverse exits must leave the consecutive-loss
+        counter untouched rather than registering four wins.
+        """
+        from skills.risk.risk_skill import RiskSkill
+        risk = RiskSkill({'sl_cooldown_minutes': 30, 'tp_cooldown_minutes': 5,
+                          'position_size_pct': 2.0, 'max_consecutive_losses': 4,
+                          'max_daily_loss_usd': 150})
+        orch = build(REVERSE_ON,
+                     market_data=FakeMarketData(),
+                     analysis=FakeAnalysis(signals=['SELL']),
+                     risk=risk,
+                     execution=FakeExecution(deal_ids=['D-NEW']))
+        for i in range(4):
+            risk.has_open_position = True
+            risk.open_position_deal_id = f'D{i}'
+            risk.open_position_direction = 'BUY'
+            await orch.on_candle(candle(close=3000.0))
+
+        assert risk.consecutive_losses == 0, 'no phantom wins, no phantom losses'
+        assert risk.loss_circuit_until is None
+        assert risk._daily_realized_pnl == 0.0
+        assert risk._daily_halt_date is None
+        # And the breaker still works when a real figure IS supplied.
+        for _ in range(4):
+            risk.on_position_closed(direction='BUY', close_reason='SL_HIT', pnl=-50.0)
+        assert risk.consecutive_losses == 4
+        assert risk.loss_circuit_until is not None
+
+    @pytest.mark.asyncio
+    async def test_the_close_price_is_still_reported(self, fast_clock):
+        """The candle close is the one figure the orchestrator does know."""
+        orch = pipeline(REVERSE_ON, signals=['SELL'],
                         risk=FakeRisk(has_open_position=True, deal_id='D-OLD',
-                                      direction='BUY'),
-                        execution=FakeExecution(deal_ids=['D-NEW']))
-        await orch.on_candle(candle(close=4000.0))     # a large adverse move
-        await orch.on_candle(candle(close=4300.0))     # a large favourable one
-        assert [c['pnl'] for c in orch.skills['risk'].closed] == [0.0, 0.0]
+                                      direction='BUY'))
+        await orch.on_candle(candle(close=4150.0))
+        assert orch.skills['risk'].closed[0]['close_price'] == 4150.0
+        assert orch.skills['storage'].closed[0]['close_price'] == 4150.0
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -876,19 +928,64 @@ class TestErrorContainment:
         assert 'telegram down' in capsys.readouterr().out
 
     @pytest.mark.asyncio
-    async def test_a_skill_returning_none_escapes_the_error_handler(self, capsys):
+    async def test_a_skill_returning_none_is_contained_and_named(self, caplog):
         """
-        FINDING, pinned as-is. A skill whose `execute` forgets to return the
-        context rebinds `context` to None. The next attribute access raises,
-        and then the handler's own `context.errors.append(...)` raises
-        AttributeError on None — so the except block defeats itself and the
-        exception leaves `on_candle`. It is caught by the WebSocket layer, so
-        the bot does not die, but every bar fails with no orchestrator-level
-        record. Changing this is a behaviour decision, not a test fix.
+        A skill whose `execute` forgets to return the context used to rebind
+        `context` to None. The next attribute access raised, and then the
+        handler's own `context.errors.append(...)` raised AttributeError on
+        None — the except block defeated itself and the exception escaped
+        `on_candle`. `_run_skill` now carries the previous context forward and
+        names the offending skill at ERROR level.
         """
         orch = pipeline(market_data=FakeMarketData(returns_none=True))
-        with pytest.raises(AttributeError):
+        with caplog.at_level('ERROR'):
+            await orch.on_candle(candle())      # must not raise
+        assert "Skill 'market_data' returned None" in caplog.text
+        assert 'FakeMarketData' in caplog.text, 'the offending class is named'
+
+    @pytest.mark.asyncio
+    async def test_a_skill_returning_none_does_not_lose_the_bar(self):
+        """The pipeline continues on the carried-forward context, so the bar still trades."""
+        orch = pipeline(market_data=FakeMarketData(returns_none=True))
+        await orch.on_candle(candle())
+        assert orch.total_signals == 1
+        assert orch.total_trades == 1
+
+    @pytest.mark.asyncio
+    async def test_a_none_returning_skill_mid_pipeline_keeps_its_work(self, caplog):
+        """
+        Why carrying the previous context forward is safe rather than lossy:
+        skills mutate the context IN PLACE, so `return context` is redundant
+        with the mutation. The risk skill's `is_allowed` decision survives even
+        though it returned None, and the bar completes normally.
+        """
+        orch = pipeline(risk=FakeRisk(returns_none=True))
+        with caplog.at_level('ERROR'):
             await orch.on_candle(candle())
+        assert "Skill 'risk' returned None" in caplog.text
+        assert orch.total_trades == 1, 'the gate decision was not lost'
+
+    @pytest.mark.asyncio
+    async def test_a_none_returning_risk_skill_that_blocks_still_blocks(self):
+        """The same, for the decision that matters more: a block is not lost."""
+        orch = pipeline(risk=FakeRisk(allow=False, returns_none=True))
+        await orch.on_candle(candle())
+        assert orch.total_trades == 0
+        assert orch.skills['execution'].ran == 0
+
+    @pytest.mark.asyncio
+    async def test_the_failed_bar_is_logged_at_error_with_a_traceback(self, caplog):
+        """
+        A caught bare Exception must be logged at ERROR (project convention),
+        and the traceback is the diagnostic that was missing — the old handler
+        only printed the message.
+        """
+        orch = pipeline(analysis=FakeAnalysis(raises=RuntimeError('boom')))
+        with caplog.at_level('ERROR'):
+            await orch.on_candle(candle())
+        rec = [r for r in caplog.records if 'on_candle' in r.message]
+        assert rec and rec[0].levelname == 'ERROR'
+        assert rec[0].exc_info is not None, 'no traceback attached'
 
     @pytest.mark.asyncio
     async def test_the_error_record_is_appended_to_a_discarded_context(self, capsys):
@@ -1035,6 +1132,86 @@ class TestOnPositionClosedThreading:
             'monitoring.on_position_closed',
             'alerting.send_trade_closed_alert',
         ]
+
+
+class TestOnPositionClosedOnlyClearsItsOwnDeal:
+    """
+    A close event can arrive for a deal that is no longer the tracked one. The
+    reverse path guarantees it: it closes D-OLD and opens D-NEW 1.5s later, and
+    then main.py's `_poll_positions` books that SAME close from the activity
+    feed ~10s afterwards (its `processed` set is a closure local to the poll
+    loop — the orchestrator's own close never registers in it, so the close is
+    booked twice). The second booking used to wipe D-NEW's flags
+    unconditionally, so the open-position gate saw a flat account and the next
+    signal stacked a second position.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_close_for_a_different_deal_keeps_the_flags(self, caplog):
+        risk = FakeRisk(has_open_position=True, deal_id='D-NEW', direction='SELL')
+        orch = pipeline(risk=risk)
+        with caplog.at_level('WARNING'):
+            await orch.on_position_closed('D-OLD', 'BUY', 'SIGNAL', pnl=-87.40)
+        assert risk.has_open_position is True
+        assert risk.open_position_deal_id == 'D-NEW'
+        assert risk.open_position_direction == 'SELL'
+        assert 'tracked position is D-NEW' in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_stale_close_is_still_booked_with_its_real_pnl(self):
+        """
+        Only the position FLAGS are protected. The trade itself is real and
+        must still reach the breakers, storage and the alert — this is the
+        booking that carries the true P&L.
+        """
+        risk = FakeRisk(has_open_position=True, deal_id='D-NEW', direction='SELL')
+        orch = pipeline(risk=risk)
+        await orch.on_position_closed('D-OLD', 'BUY', 'SIGNAL', pnl=-87.40)
+        assert risk.closed[0]['pnl'] == -87.40
+        assert orch.skills['storage'].closed[0]['deal_id'] == 'D-OLD'
+        assert orch.skills['alerting'].alerts[0]['pnl'] == -87.40
+
+    @pytest.mark.asyncio
+    async def test_a_close_for_the_tracked_deal_clears_the_flags(self):
+        risk = FakeRisk(has_open_position=True, deal_id='D1', direction='BUY')
+        orch = pipeline(risk=risk)
+        await orch.on_position_closed('D1', 'BUY', 'SL_HIT', pnl=-15.0)
+        assert risk.has_open_position is False
+        assert risk.open_position_deal_id is None
+
+    @pytest.mark.asyncio
+    async def test_an_untracked_deal_id_still_clears(self):
+        """
+        `open_position_deal_id` is None when a position is open but not yet
+        reconciled. Refusing to clear there would wedge the gate permanently,
+        so an unknown tracked id clears.
+        """
+        risk = FakeRisk(has_open_position=True, deal_id=None, direction='BUY')
+        orch = pipeline(risk=risk)
+        await orch.on_position_closed('D-WHATEVER', 'BUY', 'SL_HIT', pnl=-15.0)
+        assert risk.has_open_position is False
+
+    @pytest.mark.asyncio
+    async def test_the_full_double_booking_sequence_leaves_the_new_position_guarded(self, fast_clock):
+        """
+        The whole race, end to end: reverse close D-OLD -> open D-NEW -> the
+        poll loop books D-OLD's close again with the real figure. D-NEW must
+        still be visible to the open-position gate afterwards.
+        """
+        orch = pipeline(REVERSE_ON, signals=['SELL'],
+                        risk=FakeRisk(has_open_position=True, deal_id='D-OLD',
+                                      direction='BUY'),
+                        execution=FakeExecution(deal_ids=['D-NEW']))
+        await orch.on_candle(candle())
+        risk = orch.skills['risk']
+        assert risk.open_position_deal_id == 'D-NEW'
+
+        # ~10s later: the activity poll books the same close, now with real P&L.
+        await orch.on_position_closed('D-OLD', 'BUY', 'SIGNAL', pnl=-87.40)
+        assert risk.has_open_position is True, 'D-NEW must stay guarded'
+        assert risk.open_position_deal_id == 'D-NEW'
+        # Both bookings happened; only the second carries a usable P&L.
+        assert [c['pnl'] for c in risk.closed] == [None, -87.40]
 
 
 class TestOnPositionClosedResilience:

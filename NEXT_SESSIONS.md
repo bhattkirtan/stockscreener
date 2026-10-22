@@ -34,7 +34,7 @@ Do not redo these; the measurements are in `CLAUDE.md`.
 | old prompt | outcome |
 |---|---|
 | 1. `orchestrator/main.py` coverage | **done** — 13% → 95% (gotcha 44) |
-| 1. `trading_orchestrator.py` coverage | **done** — 15% → 100%; surfaced 3 latent bugs, none fixed (gotchas 49, 50) |
+| 1. `trading_orchestrator.py` coverage | **done** — 15% → 100%; surfaced 4 live-path bugs, **all fixed** (gotchas 49, 50). Not deployed |
 | 2. `analysis_skill` tick-exit / MTF | **done** — 55% → 85% (gotchas 44, 45) |
 | 3. `execution_skill` / websocket + CI gate | **done** — 45% → 93%, 41% → 98%; `pytest.ini` + `.coveragerc`, `fail_under = 64` |
 | 4. the 20 "`test_pip_config`" failures | **done** — they were 20 across 3 files, 3 causes, one a real production bug (gotcha 40) |
@@ -45,19 +45,32 @@ Do not redo these; the measurements are in `CLAUDE.md`.
 
 ## 1. `trading_orchestrator.py` coverage — **DONE 2026-10-22**
 
-> 15% → **100%** (99 of 116 statements were uncovered; now 0). New suite
-> `tests/unit/test_live_orchestrator_loop.py` — 73 tests on a fake-skill
-> harness, no network, no broker. Secondary target also done:
-> `core/sl_tp_engine.py` 44% → **100%** via `tests/unit/test_sl_tp_engine.py`
-> (58 tests). Suite 768 → **899 passing, 0 failing**; total 69.02% → **71.62%**;
+> 15% → **100%**. New suite `tests/unit/test_live_orchestrator_loop.py` (83
+> tests, fake-skill harness, no network). Secondary target also done:
+> `core/sl_tp_engine.py` 44% → **100%** (`test_sl_tp_engine.py`, 61 tests).
+> Suite 768 → **912 passing, 0 failing**; total 69.02% → **71.69%**;
 > `.coveragerc` floor 64 → **69**.
 >
-> **Three latent bugs were surfaced and deliberately NOT fixed — see gotchas
-> 49 and 50.** The one that matters: the reverse-signal close hardcodes
-> `pnl=0.0`, which is gotcha 22's failure mode still live in that path
-> (verified against the real `RiskSkill`: four consecutive losing reverse exits
-> leave `consecutive_losses` at 0 and the daily-loss accumulator at 0.0).
-> Latent only because all six YAMLs set `reverse_signal_exit: false`.
+> **Four live-path bugs surfaced and all fixed — see gotcha 49.** The one that
+> matters most was not the one first reported: `on_position_closed` cleared the
+> open-position flags unconditionally, so a close event for a deal that is no
+> longer the tracked one wiped the *current* position's flags. The reverse path
+> guarantees this, because **every reverse close is booked twice** — once by
+> the orchestrator and again ~10s later by `_poll_positions` (its `processed`
+> set is a closure local to the poll loop). Also fixed: the invented
+> `pnl=0.0`/`entry_price=0.0` (gotcha 22's regression in miniature, verified
+> against the real `RiskSkill`), booking a refused close before checking the
+> broker result, and the error handler that defeated itself on a None context.
+> Plus the unguarded Supertrend stop (gotcha 50).
+>
+> **Regression-checked:** GOLD 2y = 493 trades / WR 21.70% / PF 1.0501 vs
+> gotcha 41's 492 / 21.54% / 1.046; the +1 trade is the DB growing 188,260 →
+> 188,435 bars. `run_skills_backtest.py` never instantiates
+> `TradingOrchestrator`, so these are live-path-only changes.
+>
+> ⚠️ **NOT deployed.** Same constraint as gotcha 38: deploying needs
+> `docker compose build trading-bot`, which bakes in every uncommitted change
+> in that tree.
 
 ---
 
