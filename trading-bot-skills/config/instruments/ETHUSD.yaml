@@ -26,7 +26,7 @@ backtest:
 
 backtesting:
   initial_capital: 10000.0          # Start with $20k for ETHUSD (higher volatility than GOLD/EURUSD)
-  position_size: 2              # 1 ETH per trade
+  position_size: 1              # 1 ETH per trade
   spread_cost_usd: 1.75         # $1.75/contract → $3.50 total  (live screenshot: $2059.14/$2060.89)
   slippage_cost_usd: 0.50       # $0.50/contract → $1.00 total  (crypto slippage)
   dynamic_sizing:
@@ -70,6 +70,7 @@ analysis:
     method: fixed               # pip_size / stop_loss_pips / take_profit_pips come from risk:
 
 risk:
+  position_size: 1             # 1 ETH per trade
   pip_size: 1.0                 # 1 pip = $1.00 price move
   stop_loss_pips: 25            # 25 pips × $1.00 = $25 SL distance per ETH  (keep tight — wider SL tested worse)
   take_profit_pips: 125         # 125 pips × $1.00 = $125 TP  (1:5 R:R, breakeven WR 16.7%)
@@ -92,4 +93,5 @@ risk:
 execution:
   instrument: ETHUSD
   epic: ETHUSD
+  position_size: 1           # 1 ETH per trade
   environment: demo
