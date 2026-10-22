@@ -1,0 +1,32 @@
+[run]
+source =
+    skills
+    clients
+    core
+    orchestrator
+omit =
+    */tests/*
+    */__init__.py
+
+[report]
+# Floor, not a target. The suite measured 66% on 2026-10-22 across these four
+# packages (761 tests); this is that minus 2 points, so an ordinary refactor
+# does not trip it but deleting or bypassing a tested path does.
+#
+# Per-module state at the time it was set:
+#   orchestrator/main.py                 94%   (was 13%)
+#   clients/capital_websocket.py         98%   (was 41%)
+#   skills/execution/execution_skill.py  89%   (was 45%)
+#   skills/analysis/analysis_skill.py    85%   (was 55%)
+#   skills/risk/risk_skill.py            76%
+#   skills/market_data/market_data_skill.py  34%  <- the next real gap
+#
+# Raise the floor when the number genuinely rises. Do not raise it to a figure
+# the suite has not actually met.
+fail_under = 64
+precision = 0
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
