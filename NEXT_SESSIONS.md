@@ -412,7 +412,8 @@ bots that are actually trading.
 > Also corrected: the docstring's own worked example passed `from`+`to`
 > together, which this API rejects with a 400 (gotcha 30).
 >
-> **Six hazards pinned rather than fixed**, each for a stated reason — most
+> **Six hazards pinned rather than fixed** — the date-range forwarding under
+> (c) above, plus gotcha 54's (d)–(h) — each for a stated reason, most
 > importantly `confirm_order` returning `{}` on failure (the caller then
 > substitutes the dealReference for the dealId, bounded by the 60s REST
 > reconcile) and `CAPITAL_ENVIRONMENT` being shadowed by the signature default
