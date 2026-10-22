@@ -9,10 +9,18 @@ omit =
     */__init__.py
 
 [report]
-# Floor, not a target. The suite measured 74.80% on 2026-10-22 across these
-# four packages (1152 tests, 0 failing); this is that minus ~2.8 points, so an
+# Floor, not a target. The suite measured 78.13% on 2026-10-22 across these
+# four packages (1319 tests, 0 failing); this is that minus ~3 points, so an
 # ordinary refactor does not trip it but deleting or bypassing a tested path
 # does.
+#
+# MEASURE ON A CLEAN TREE. Editing a source file while a --cov run is in flight
+# corrupts the report: coverage records line numbers from the module it
+# imported and maps them onto the file as it stands at report time, so any edit
+# that shifts lines makes covered statements show up as missing. Doing exactly
+# that during this session reported clients/capital_api.py at 91% (20 missing)
+# when it was in fact 100% — the "missing" lines were ordinary covered
+# statements that had moved. Re-run; do not chase the phantom gap.
 #
 # Per-module state is NOT duplicated here — it goes stale and then misleads.
 # The single source of truth is the "Test coverage — status board" section of
@@ -20,15 +28,15 @@ omit =
 # table copied into two places kept reporting trading_orchestrator at 15% for
 # three sessions after it reached 100%.)
 #
-# The largest remaining risky gap is clients/capital_api.py at 19% — the broker
-# boundary, 172 uncovered statements, needs HTTP mocking. See NEXT_SESSIONS
-# prompt 5.
+# clients/capital_api.py — the broker boundary and for a long time the largest
+# risky gap — is now at 100% (tests/unit/test_capital_api.py). The remaining
+# gaps are reporting, alerting, logging and firestore: lower risk, no owner.
 #
 # Raise the floor when the number genuinely rises. Do not raise it to a figure
 # the suite has not actually met. Measure with `--cov` (bare) or
 # `--cov=<package>`, NEVER `--cov=<dotted.module.path>` — see the warning in
 # pytest.ini.
-fail_under = 72
+fail_under = 75
 precision = 0
 show_missing = True
 exclude_lines =

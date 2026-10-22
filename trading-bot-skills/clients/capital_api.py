@@ -104,7 +104,10 @@ class CapitalAPIClient:
             }
         
         except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 429:
+            # `is not None`, NOT truthiness: requests.Response.__bool__ returns
+            # self.ok, so a 429 response is FALSY and `if e.response` made this
+            # branch dead for the one status it exists to classify.
+            if e.response is not None and e.response.status_code == 429:
                 logger.error("❌ Rate limit hit on session creation")
                 raise Exception("Capital.com API rate limit exceeded")
             raise Exception(f"Failed to create session: {e}")
@@ -496,12 +499,27 @@ class CapitalAPIClient:
         """
         Fetch historical OHLC candles from Capital.com API
         
+        Timestamps: the returned 'timestamp' is 'snapshotTimeUTC' (UTC).  The
+        API also sends 'snapshotTime' in ACCOUNT-LOCAL time (UTC+2, varying with
+        DST); preferring it put the live warm-up buffer two hours ahead of the
+        DB bars the backtest runs on, from this same endpoint.  fetch_data.
+        parse_candle makes the same choice — keep the two in step.
+
+        Prices are BID only.  Unlike fetch_data.parse_candle there is no ask
+        fallback: a row carrying only an ask maps to 0.0 rather than silently
+        shifting the candle by the spread.
+
         Args:
             epic: Market identifier (e.g., 'GOLD')
             resolution: Candle resolution - MINUTE, MINUTE_5, MINUTE_15, HOUR, DAY, WEEK
             max_bars: Maximum number of candles to fetch (default: 100, max: 1000)
             from_date: Start date in ISO format 'YYYY-MM-DDTHH:MM:SS' (optional)
             to_date: End date in ISO format 'YYYY-MM-DDTHH:MM:SS' (optional)
+
+        WARNING: 'from' and 'to' together return 400 — this API has no
+        date-range mode.  Walk backwards with 'to' + 'max' instead, and pass a
+        full ISO timestamp ('T' included); a date-only 'to' also returns 400.
+        See CLAUDE.md gotcha 30.
             
         Returns:
             List of candle dicts with OHLC data:
@@ -523,13 +541,13 @@ class CapitalAPIClient:
         Example:
             # Get last 100 M5 candles for GOLD
             candles = client.get_historical_prices('GOLD', 'MINUTE_5', 100)
-            
-            # Get specific date range
+
+            # Walk backwards from a point in time — 'to' WITHOUT 'from'.
+            # (Passing both, as this example used to, is a guaranteed 400.)
             candles = client.get_historical_prices(
                 'GOLD',
                 'MINUTE_5',
                 max_bars=500,
-                from_date='2026-03-01T00:00:00',
                 to_date='2026-03-29T23:59:59'
             )
         """
@@ -564,7 +582,14 @@ class CapitalAPIClient:
             candles = []
             for price in prices[-max_bars:]:  # Take last N candles
                 candle = {
-                    'timestamp': price.get('snapshotTime', price.get('snapshotTimeUTC', '')),
+                    # snapshotTimeUTC first, NOT snapshotTime: the API returns
+                    # snapshotTime in account-local time (UTC+2, DST-varying)
+                    # while `to` is UTC.  fetch_data.parse_candle (the DB/backtest
+                    # writer) already picks the UTC field for exactly this
+                    # reason, so preferring the local one here put the live
+                    # warm-up buffer two hours ahead of the bars the backtest
+                    # runs on, from the same endpoint.  See CLAUDE.md gotcha 30.
+                    'timestamp': price.get('snapshotTimeUTC') or price.get('snapshotTime', ''),
                     'open': float(price.get('openPrice', {}).get('bid', 0)),
                     'high': float(price.get('highPrice', {}).get('bid', 0)),
                     'low': float(price.get('lowPrice', {}).get('bid', 0)),
