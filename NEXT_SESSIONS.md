@@ -44,7 +44,7 @@ the agent reads `CLAUDE.md` first.
   then deliberately **reverted** by `6a26450`. GOLD therefore still trades 0.5
   contracts against an intended 10. Recover with `git show c0fb630` only when
   the edge justifies it (gotcha 26).
-- Test commands (re-measured 2026-10-22, third session):
+- Test commands (re-measured 2026-10-22, fourth session):
   `cd trading-bot-skills && python3 -m pytest` → **1152 passing, 0 failing** (~80s)
   `python3 -m pytest --cov` → **74.80%**, floor `fail_under = 72` (~160s)
   Full per-module status: see **Test coverage — status board** below.
@@ -284,59 +284,62 @@ alerting and logging. `backtesting_skill.py` — the other half of this note unt
 > live bar capture, so only reach for it if Lead A comes back clean.
 >
 > **Note gotcha 48 before you start:** GOLD's repaired bars are in the HOST
-> stray `/data/trading.db` (188,435 as of 2026-10-22), not the live volume
-> (163,867). Pin `DB_PATH` deliberately and say which DB every number came from.
+> `/data/trading.db`, not the live volume. Pin `DB_PATH` deliberately and say
+> which DB every number came from. **Exact bar counts drift daily — read gotcha
+> 53's closing correction rather than any count quoted here;** as of 2026-10-22
+> the host DB is the better one for **both** GOLD and US100 (GOLD 188,466 /
+> US100 202,994 vs the volume's 163,894 / 202,774), which inverts the original
+> gotcha-24 advice.
 
 ---
 
-## 4. `backtesting_skill.py` coverage — every strategy number comes from here
+## 4. ~~`backtesting_skill.py` coverage~~ — **DONE 2026-10-22**
 
-> **STATUS: OPEN, not started. 59%, 111 uncovered.** Read `CLAUDE.md` gotchas
-> **31** (the 50x typo that lived in this file's cost model), **40** (the
-> cost-scaling contract), **51** (`max_hours` is the only time exit this file
-> models) and **43**/**44** (how to measure).
+> **STATUS: CLOSED. 59% → 100%, 111 uncovered → 0.** Do not re-run this prompt.
+> The full write-up is **`CLAUDE.md` gotcha 53**; the suite is
+> `tests/unit/test_backtest_engine.py` (**168 tests**, 31 classes).
 >
-> Highest *consequence* gap left: every PF, win rate and P&L figure in gotchas
-> 28-35 came out of this file, and a silent arithmetic error here does not crash
-> — it produces a confident wrong number. Gotcha 31 is exactly that: one
-> character turned -$2,560 into -$134,629 and nothing complained.
+> The number is kept here only so the cross-references from CLAUDE.md gotchas
+> 39/44 and from prompts 5 and 6 still resolve — the prompt numbering is
+> referenced by number in both files, so this section is retained rather than
+> deleted and renumbered.
 >
-> ### Implemented today
+> **What it closed:** `get_results` (the PF/WR/expectancy aggregation),
+> `check_exits` (SL/TP detection, same-bar precedence, the `max_hours` time
+> exit), `_close_position` (P&L arithmetic, equity curve, drawdown ratchet),
+> `_compute_position_size` (both dynamic-sizing modes, driven end-to-end across
+> a winning *and* a losing sequence), `close_reverse_positions`,
+> `validate_config`, `__init__`, `execute`, `reset`, `run_backtest`, `to_dict`.
 >
-> | suite | tests | what it pins |
-> |---|---|---|
-> | `test_backtesting_skill.py` | 13 | basic execute/fill happy path |
-> | `test_pip_config.py` | 39 | `_propagate_risk_to_sl_tp`, and `TestCostScalingHappensOnce`, which drives `BacktestingSkill.execute()` and asserts the stored cost totals so a double-multiplication fails |
-> | `test_time_based_exits.py` | 14 | the `time_based_exits.max_hours` config surface |
+> **Two fixes shipped** (both in gotcha 53 with the reasoning):
+> 1. `profit_factor` reported **100x the gross win total** on a loss-free run —
+>    `max(total_losses, 0.01)` was a divide-by-zero guard used as a *value*, so
+>    one $60 win came out as PF 6000.0, and `optimize_params.py:71` ranks on it.
+>    Now the 999.0 sentinel `live_report.py:54` already uses. Provably inert for
+>    any run with ≥1 cent of losses.
+> 2. The `_compute_position_size` docstring claimed 'steps' keys off *profit
+>    above initial_capital*; it keys off **total capital from trade 1**, a 10x
+>    understatement of starting size on gotcha 25's `+$733,912` mechanism.
 >
-> So the **cost-scaling contract is already pinned** (gotcha 40) — extend
-> `TestCostScalingHappensOnce`, do not duplicate it.
+> **Four more findings pinned as tests rather than changed** — GOLD's
+> `dynamic_sizing` is inert (so gotchas 35/41/49's GOLD runs are *not*
+> compounding-contaminated); a break-even trade is counted in `losing_trades`
+> but not `total_losses`; `if exit_price:` drops a 0.0 TIME_EXIT (fails closed);
+> `max_drawdown_pct` divides by peak equity ever reached, which is the origin of
+> gotcha 28's "maxDD 1346%".
 >
-> ### Missing — the 111 uncovered statements, by function
+> **Also found:** the pre-existing `test_sl_hit_before_tp` was **vacuous** — it
+> never called the skill and asserted `sl_hit or tp_hit`, so it could not fail,
+> and it was the only cover for the SL-vs-TP precedence question. The code does
+> make a documented choice (SL wins); now pinned for real.
 >
-> | function | lines | uncovered | why it matters |
-> |---|---|---|---|
-> | `check_exits` | 365-416 | **52** | **the exit engine.** SL/TP detection and the `max_hours` exit at `:398`. Contains the SL-vs-TP-in-the-same-bar precedence question — **if the code has no documented choice, that is a finding, not a test to write around.** |
-> | `_close_position` | 444-480 | **37** | the P&L arithmetic and where `spread_cost_usd * current_size` is applied |
-> | `close_reverse_positions` | 423-440 | 18 | the reverse-exit path; gotcha 25's `+$185,306` artefact came through here, and the `reverse_signal_exit` guard is at `run_skills_backtest.py:553` |
-> | `_compute_position_size` | 267-277 | 11 | **`dynamic_sizing`, which compounds** — how the stale runner produced `+$733,912` on $10k (gotcha 25). Pin it across a winning *and* a losing sequence |
-> | `get_results` | 504-512 | 9 | **the PF / WR / P&L aggregation itself.** Every number this project quotes is this function's output and it is entirely untested |
-> | `validate_config` | 239-247 | 9 | config rejection paths |
-> | `__init__` | 186-235 | 7 | config defaults, incl. `max_hours` |
-> | `execute` | 291-333 | 6 | branch tails |
-> | `to_dict` | 86 | 1 | trivial |
+> **Regressions re-run after the fix** (`DB_PATH=/data/trading.db`): US100 2y
+> `2485 / 25.473% / PF 0.9728` — exact match; GOLD 2y `493 / 21.704% /
+> PF 1.0555` — trades and WR exact, PF +0.0054 from the DB gaining bars, with
+> the fix shown bit-identical on that run's own `trades.csv`.
 >
-> `get_results` was **not** named in the earlier version of this prompt and
-> should be done early — it is only 9 statements and it is the function whose
-> output every gotcha in this file quotes.
->
-> ### Rules for this work
->
-> Assert **exact** values, not inequalities — gotcha 50's lesson: a factor-of-50
-> error passes every inequality test. Report the real before/after from a bare
-> `--cov` run and raise `fail_under` only to a number the suite actually meets.
-> **Expect to find bugs**: the last two coverage pushes into untested live code
-> turned up four live-loop bugs (gotcha 49) and an unguarded stop (gotcha 50).
+> Suite **984 → 1152 passing**, TOTAL **72.67% → 74.80%**, floor **69 → 72**.
+> Committed as `017327c`.
 
 ---
 
@@ -518,7 +521,8 @@ alerting and logging. `backtesting_skill.py` — the other half of this note unt
   Enabling it makes live diverge from backtest (gotcha 16).
 - **`MarketDataSkill.process_candle` has no production callers** (gotcha 42) —
   dead path, consider deleting it rather than maintaining two code paths.
-- **Coverage beyond prompts 4 and 5:** see the **Test coverage — status board**
+- **Coverage beyond prompt 5** (prompt 4 is closed — gotcha 53): see the
+  **Test coverage — status board**
   near the top of this file — it is the single source of truth for every
   module's number, status and owning suite. Do not re-quote figures here; that
   duplication is how the old "`trading_orchestrator` 15%" line survived three
