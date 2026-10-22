@@ -1,19 +1,14 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Written 2026-10-21. Each prompt below is self-contained: paste one as the first
-message of a fresh session. They assume the agent reads `CLAUDE.md` first —
-every prompt references the gotcha numbers that carry the background, so none
-of the investigation has to be re-derived.
+Rewritten 2026-10-22, after the session that worked streams 1–6 of the previous
+version of this file. Each prompt below is self-contained: paste one as the
+first message of a fresh session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are all from the 2026-10-21 session. 22, 29, 31
-  describe bugs that are now **fixed**; 24, 25, 26, 36 describe hazards that are
-  **still open**.
-- Commits from that session: `153c557` (live close/P&L/bar-sync fixes),
-  `b11ca33` (universe + sizing/validation layer), `22b1fe4` (21y weekly
-  validation + leverage/DSR fixes), `c0534f4` (regression tests),
-  `5807aa2` (live-POV test suites).
+- `CLAUDE.md` gotchas **22–38** are from the 2026-10-21 session; **40–48** are
+  from 2026-10-22. 22, 29, 31, 40, 41, 42 describe bugs that are now **fixed**;
+  24, 25, 26, 36, 48 describe hazards that are **still open**.
 - **Standing constraint:** the three live bots (GOLD, ETHUSD, US100) run on a
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
@@ -23,199 +18,158 @@ of the investigation has to be re-derived.
   trade from $7.50 to $150 (20×) on a strategy with no demonstrated edge
   (gotcha 26). Leave them unless told otherwise.
 - Test commands:
-  `cd trading-bot-skills && python3 -m pytest tests/unit/ -q`  (401 passing)
-  `python3 -m pytest tests/ -q`  from repo root (45 passing, research tools)
-  The **20 `test_pip_config` failures are pre-existing** and unrelated —
-  confirmed by stashing all session changes and re-running. See prompt 4.
+  `cd trading-bot-skills && python3 -m pytest` → **768 passing, 0 failing**
+  `python3 -m pytest --cov` → adds the 64% coverage floor (~160s vs ~40s;
+  measured 68.8%)
+  `python3 -m pytest tests/ -q` from repo root (research tools)
+  **Never pass `--cov=<dotted.module.path>`** — it reloads numpy and fails ~47
+  unrelated tests. Gotcha 43.
 
 ---
 
-## 1. Coverage: `orchestrator/main.py` (largest gap, worst track record)
+## What the 2026-10-22 session closed
 
-> Read `CLAUDE.md` first, especially gotchas 22, 24 and 38.
->
-> `orchestrator/main.py` is at **13% coverage (395 of 456 statements
-> uncovered)** and contains the live close-detection path whose previous version
-> silently zeroed P&L on 365 trades and disabled three risk breakers for about
-> three months. `classify_activity()` and `derive_close_reason()` were already
-> extracted and are tested in `tests/unit/test_live_close_and_risk.py`; the
-> uncovered mass is the async machinery around them.
->
-> Build a fake `CapitalAPIClient` (scripted `get_activity` / `get_open_positions`
-> / `get_realised_pnl` / `update_position`) and drive `_poll_positions` directly
-> with a cancellable task, asserting on the orchestrator calls it makes. Cover at
-> minimum:
-> - activity poll detects an open then a close, with the right exit reason
-> - the 60s REST reconcile path detects a close the activity poll missed
-> - **a close must never be recorded with `pnl=0.0` when P&L is unknown** —
->   `None` means unknown and is flagged `pnl_unknown`; a genuine broker `0.0`
->   is kept. This distinction is the regression; see gotcha 22.
-> - the `processed` set prevents double-firing when the lookback window overlaps
-> - startup seeding from REST open positions
-> - a transient API exception does not kill the loop
-> - `stop_manager.forget()` is called on close
->
-> Target ≥85% on `main.py`. Run
-> `python3 -m pytest tests/unit/ -q --cov=orchestrator.main --cov-report=term-missing`
-> and report the before/after number. Do not change live behaviour — if you find
-> a bug, report it rather than fixing it silently.
+Do not redo these; the measurements are in `CLAUDE.md`.
+
+| old prompt | outcome |
+|---|---|
+| 1. `orchestrator/main.py` coverage | **done** — 13% → 95% (gotcha 44) |
+| 2. `analysis_skill` tick-exit / MTF | **done** — 55% → 85% (gotchas 44, 45) |
+| 3. `execution_skill` / websocket + CI gate | **done** — 45% → 93%, 41% → 98%; `pytest.ini` + `.coveragerc`, `fail_under = 64` |
+| 4. the 20 "`test_pip_config`" failures | **done** — they were 20 across 3 files, 3 causes, one a real production bug (gotcha 40) |
+| 5. the two gate-path divergences + candle dedup | **done** — one gate chain, dedup fixed (gotchas 41, 42); also found `process_candle` has no production callers, so the old dedup tests tested a dead path. The GOLD trade-count divergence itself is **still open** — see prompt 2 below |
+| 6. breadth expansion | **done, and it FAILED** — breadth rose 4.9 → 14.1 and both gross and net Sharpe fell; bonds/rates cannot help (gotchas 46, 47) |
 
 ---
 
-## 2. Coverage: `analysis_skill` tick exit and MTF branches
+## 1. `trading_orchestrator.py` coverage — the live event loop, at 15%
 
-> Read `CLAUDE.md` gotchas 9 and 16 (tick exit has two modes; only the
-> profit-trail mode is active) and 36.
+> Read `CLAUDE.md` gotchas 41, 43 and 44.
 >
-> `skills/analysis/analysis_skill.py` is at **55% (283 statements uncovered)**.
-> `tests/unit/test_live_analysis_path.py` covers warm-up, edge detection, SL/TP
-> geometry and the ADX/MA100 filters. The uncovered mass is:
-> - **`on_price_tick()` (line ~448) — live-only, never runs in backtest, and
->   currently has no tests at all.** This is the profit-trail exit: it shrinks
->   its check interval as unrealised profit grows (3min → 2min → 1min → every
->   tick). Drive it with a synthetic quote stream and cover each interval tier,
->   the trail-cross exit, and that `reverse_on_loss: false` really does suppress
->   the dangerous reverse-on-loss mode.
-> - `on_m1_candle_closed()` — M1 exit validation, disabled in config but live code.
-> - the H1 / 4h / daily Bollinger and daily-bias branches
->   (`require_h1_bb`, `require_mtf_bb`, `require_daily_bias`), all currently off
->   in config but all reachable.
+> `orchestrator/trading_orchestrator.py` is at **15% (99 of 116 statements
+> uncovered)** and is the biggest real risk left. It is the loop
+> `bot_control_api` → `main.py` actually runs (`main.py:767`), and `main.py`'s
+> own 95% does not touch it. It owns:
 >
-> Note `on_candle_closed` recomputes indicators over the whole rolling buffer, so
-> cost is O(bars × buffer) — keep fixtures small. Warm-up needs only ~35 bars
-> with Supertrend-only config, ~120 with MA100 bias. Target ≥85%.
+> - `on_candle` — the whole sequential pipeline: market_data → analysis →
+>   reverse-signal close → risk → execution → storage/alerting;
+> - the **reverse-signal close** at line ~131, including the "broker rejected
+>   the close, so abort the new entry" branch that is the only thing preventing
+>   position accumulation, and the 1.5s settle sleep after it;
+> - `on_position_closed`, which threads realised P&L into the risk breakers —
+>   the path gotcha 22 broke for three months;
+> - `warming_up`, which must suppress signals and orders during the historical
+>   replay or the bot trades its own warm-up.
+>
+> Build a fake-skill harness (each skill is just an object with `execute` /
+> handlers) and drive `on_candle` as a sequence. The pattern is already
+> established in `tests/unit/test_live_poll_loop.py` and
+> `tests/unit/test_live_bootstrap.py` — reuse it rather than inventing another.
+>
+> Target ≥85%. Measure with `python3 -m pytest --cov` (bare — see gotcha 43) and
+> raise `fail_under` in `.coveragerc` only to a number the suite actually meets.
+>
+> Secondary, if time allows: `core/sl_tp_engine.py` is at 44% with only 30
+> uncovered statements and is pure SL/TP arithmetic — the highest value per line
+> left, and exactly the kind of code where gotcha 31's 50× typo hid.
 
 ---
 
-## 3. Coverage: `execution_skill`, `capital_websocket`, and a CI gate
+## 2. The GOLD live/backtest trade-count divergence — four hypotheses rejected, one left
 
-> `skills/execution/execution_skill.py` is at **45%**,
-> `clients/capital_websocket.py` at **41%**. For execution, build a fake REST
-> client and cover order placement, the size resolution path (gotcha 26 —
-> `config.get('position_size', 0.5)` at line 51 is why GOLD trades 0.5 contracts
-> instead of 10), SL/TP attachment, rejection/failure handling, and the
-> idempotency interaction. For the websocket, cover `connect`/`run`/`_keepalive`/
-> `_handle_message` dispatch and reconnect behaviour with a fake socket;
-> `_handle_ohlc` and `_handle_quote` are already covered in
-> `tests/unit/test_live_signal_path.py`.
+> Read `CLAUDE.md` gotcha 36 (the rejected hypotheses) and 41, then 48.
 >
-> Then add a coverage floor so this cannot regress: `--cov-fail-under` in a
-> `pytest.ini` (the repo has none), set to whatever the suite actually achieves
-> minus 2 points. Report the real number; do not set a target you did not meet.
+> Live window 2026-08-01..10-21: backtest takes **61** trades at WR 21.31% /
+> PF 1.046; live took **93** at WR 13.98% / PF 0.646. Cause still unknown.
+>
+> **Already tested and REJECTED — do not re-test:**
+> 1. broken SL/TP cooldowns — `sl_cooldown_minutes` 0 / 60 / 30 all give exactly
+>    61 trades, because the gate only blocks *same-direction* re-entry and
+>    `edge_detection` means the next signal is usually the opposite one;
+> 2. the daily 21:00 restart resetting `last_signal_state` — the 31 excess live
+>    trades are spread across hours 8–20, and hour 21 has **zero** live entries;
+> 3. Supertrend path-dependence on the 300-bar live buffer — **100.00%**
+>    direction agreement over 1,100 bars, 85 vs 85 flips;
+> 4. *(new)* startup-flip suppression — it would make live take **fewer** trades,
+>    and live takes more. Also now applied by both paths (gotcha 41).
+>
+> **The remaining untested lead:** the live bot builds candles from the
+> WebSocket tick stream (`_handle_ohlc`, ASK/OFR only) while the DB bars come
+> from the REST price endpoint. Bar boundaries, and which bars exist at all, may
+> differ. Compare live candle timestamps against DB bars for the same window —
+> count bars per day on each side first, before comparing OHLC values.
+>
+> **Note gotcha 48 before you start:** GOLD's repaired bars are in the HOST
+> stray `/data/trading.db` (188,260), not the live volume (163,867). Pin
+> `DB_PATH` deliberately and say which DB a number came from.
 
 ---
 
-## 4. Fix the 20 pre-existing `test_pip_config` failures
+## 3. Where to take the strategy research next — breadth is closed off
 
-> `tests/unit/test_pip_config.py::TestCalculatePnl` has **20 failures that
-> predate the 2026-10-21 session** (confirmed by stashing all changes and
-> re-running). They cover `calculate_pnl` — per-contract P&L, cost scaling, and
-> `pnl_pct` as net return on trade value.
+> Read `CLAUDE.md` gotchas 32, 34, 37, 46 and 47 **before proposing anything**.
+> Three different levers have now been measured and failed, and the failures are
+> informative:
 >
-> This matters more than "20 red tests": cost and P&L arithmetic is exactly where
-> this session's worst errors hid. A 50× slippage typo (gotcha 31) made a US100
-> backtest read −$134,629 instead of −$2,560, and cost drag turned out to be the
-> whole reason the strategy loses (gotcha 32). Decide per test whether the test
-> or the implementation is wrong, and say which — do not just make them green.
-
----
-
-## 5. Resolve the two live/backtest divergences found by the live-POV tests
-
-> Read `CLAUDE.md` gotcha 36, then `tests/unit/test_live_close_and_risk.py`
-> classes `TestGatePathAsymmetry` and `TestStartupFlipSuppression`.
+> - **Parameter tuning** (gotcha 34): ~20 configs, 3 instruments. The one GOLD
+>   winner did not transfer — US100 0.973 → 0.948, ETHUSD 0.858 → 0.829.
+> - **Breadth** (gotcha 46): effective breadth 4.9 → 14.1 as designed, and
+>   *gross* Sharpe fell 0.37 → −0.05. Grinold's `IR ≈ IC × √breadth` assumes
+>   uniform IC; measured IC is concentrated in **9 of 48** names with **21
+>   actively negative**. Adding bets added noise.
+> - **Bonds / rates** (gotcha 47): 7 instruments exist in total, 2 pass the
+>   friction screen, and both have under 3 years of weekly history.
 >
-> Two divergences are **pinned by passing tests but not resolved**:
+> What the evidence actually points at, in order:
+> 1. **Instrument selection on measured edge, not on friction.** The current
+>    screen ranks by spread/range and takes the cheapest — but the 9 names with
+>    edge are not the 9 cheapest. Selecting on realised per-instrument Sharpe is
+>    in-sample fitting, so it needs the IS/OOS + cross-instrument transfer bar
+>    from gotcha 34 and a trial-count-corrected DSR.
+> 2. **Vol target.** Half-Kelly implies **15%**, the config runs 20% — the one
+>    change the measurements already justify, and it only affects sizing.
+> 3. **A second, uncorrelated signal family.** Breadth in *signals* was never
+>    tested; breadth in *instruments* has now been ruled out. One signal family
+>    at breadth ≈ 1 is the structural problem gotcha 37 describes.
 >
-> 1. **`RiskSkill` has two gate implementations with different rules.**
->    `execute(context)` (used by `TradingOrchestrator`, i.e. live) gates on
->    open-position and startup-flip. `on_signal_generated(event)` (the EventBus
->    path, which `run_skills_backtest.py` drives) does **not**. Anything routed
->    through the event path can stack positions, and the event flow documented in
->    CLAUDE.md describes exactly that path.
-> 2. **Startup-flip suppression is live-only** and re-arms on the daily 21:00 UTC
->    restart, so it fires once per bot per day with no backtest equivalent.
->
-> Also open: candle dedup compares only against the **last** timestamp, so a
-> reconnect replaying 3 bars produces 13 CANDLE_CLOSED events for 10 distinct
-> bars and duplicates land in the analysis buffer
-> (`test_reconnect_replay_produces_extra_events`).
->
-> Decide the intended behaviour for each and make the two paths agree, keeping
-> the pinning tests meaningful (update them to assert the new intent rather than
-> deleting them). Then re-run the GOLD live-window comparison in gotcha 36 — live
-> took 93 trades where the backtest takes 61, win rate 13.98% vs 21.31%, and the
-> cause is still unknown. Three hypotheses were already **tested and rejected**:
-> broken cooldowns, the 21:00 restart resetting signal state, and Supertrend
-> rolling-buffer truncation (100.00% direction agreement, 85 vs 85 flips — do not
-> re-test that one). The remaining untested lead is that the live bot builds
-> candles from the WebSocket tick stream while the DB bars come from the REST
-> price endpoint, so bar boundaries may differ. Compare live candle timestamps
-> against DB bars for the same window.
+> **Non-negotiable in any write-up:** no Sharpe without its DSR and the
+> buy-and-hold benchmark beside it. Buy-and-hold currently beats the trend
+> overlay at **every** breadth level (0.34 → 0.52), and the gap *widens* as the
+> universe grows. Preserve the known limitations rather than dropping them: the
+> universe is screened on *today's* spread snapshot then backtested over 21–40
+> years (selection bias), these are CFD proxies not futures, spreads are assumed
+> constant, and the weekly sample is closes only.
 
 ---
 
-## 6. Strategy: expand breadth and re-validate
-
-> Read `CLAUDE.md` gotchas 32, 34, 37 and the commit message of `22b1fe4`.
->
-> State of play: `universe.py` discovers 2,956 epics, friction-screens to 126,
-> and selects a low-correlation subset. `trend_portfolio.py --weekly` runs a
-> volatility-targeted EWMAC portfolio over **1,904 weekly bars (1986–2026,
-> 40 years)** with a leverage cap, a buy-and-hold benchmark, deflated Sharpe and
-> fractional-Kelly sizing. Current result on 13 epics:
->
-> | | Sharpe | Annual | maxDD | IS | OOS |
-> |---|---|---|---|---|---|
-> | trend net | 0.30 | +2.7% | 42.8% | 0.18 | 0.38 |
-> | buy & hold | 0.34 | +4.1% | 65.2% | 0.51 | 0.32 |
->
-> Costs are 19.8% of gross (vs >100% on M5). **Deflated Sharpe 0.296 — below
-> 0.95, so not significant.** Half-Kelly implies a 15% vol target, not the 20%
-> used.
->
-> The identified next lever is **breadth**, not tuning: effective breadth is 4.9
-> and Grinold gives `IR ≈ IC × √breadth`, so breadth raises both expected IR and
-> the statistical power to detect it. Lift it toward 15–20 by relaxing
-> `CLASS_CAP` in `universe.py` and deliberately including the bonds and
-> interest-rate instruments the screen found (the navigation tree has
-> `bonds_group` and `interest_rates_group`). Re-run the weekly validation and
-> report Sharpe, DSR, and the benchmark comparison.
->
-> **Known limitations to preserve in any write-up, not quietly drop:** the
-> universe is screened on *today's* spread snapshot then backtested over 21 years
-> (selection bias — the instruments cheap and listed now are not what you would
-> have picked in 2005); these are CFD proxies, not futures; spreads are assumed
-> constant at today's level; weekly closes only. Do not report a Sharpe without
-> its DSR and the buy-and-hold benchmark beside it — every single-number result
-> in this project has been wrong so far.
-
----
-
-## 7. Deferred operational decisions (need a human call)
+## 4. Deferred operational decisions (need a human call)
 
 These are **not** tasks to start unprompted. Raise them, get a decision, then act.
 
-- **Repair Aug–Oct `trade_history`.** 365 rows carry `pnl=0.0 / exit_reason=SIGNAL`
-  from the gotcha-22 bug. `backfill_trade_history.py --days 120` rewrites them
-  from `/history/transactions`, which is the authoritative source. The live path
-  is fixed going forward but historical rows will not self-heal.
-- **Rebuild `backtest-runner`.** Its baked code and config are months stale: no
-  `reverse_signal_exit` support at all (it closes on reverse signals
-  unconditionally), US100 on ST(7, 2.0) instead of ST(14, 1.5), ETHUSD on
-  SL 45/TP 170 instead of 25/125. Every UI-triggered backtest therefore tests a
-  different strategy than the one deployed — it produced `+$733,912` on $10k
-  from a reverse-signal scalper. `docker compose build backtest-runner`. See
-  gotcha 25. Note the build context bakes in all uncommitted changes in that
-  tree — check `git status` first.
-- **Pin `DB_PATH`.** Host scripts default to a stray 35 MB `/data/trading.db`
-  that is not the live volume; a host-run US100 backtest silently used 1,500
-  bars (~5 days) and reported 18 trades without warning. Gotcha 24.
-- **The GOLD/ETHUSD `position_size` changes.** Still uncommitted and
-  undeployed, by design. Gotcha 26.
+- **Deploy the 2026-10-21 live fixes.** The close-detection / realised-P&L /
+  bar-sync fixes (gotcha 38) and now the gate unification (41), dedup fix (42)
+  and alerting fix (40) are all **host-side only**. The live bot runs baked-in
+  code. `docker compose build trading-bot && docker compose up -d trading-bot`
+  — which per gotcha 10 also bakes in every other uncommitted change in that
+  tree, including the held-back `position_size`. Check `git status` first.
+- **Repair Aug–Oct `trade_history`.** 365 rows carry `pnl=0.0 /
+  exit_reason=SIGNAL` from the gotcha-22 bug. `backfill_trade_history.py
+  --days 120` rewrites them from `/history/transactions`, the authoritative
+  source. The live path is fixed going forward; historical rows will not
+  self-heal.
+- **Rebuild `backtest-runner`.** Baked code and config are months stale: no
+  `reverse_signal_exit` support at all, US100 on ST(7, 2.0) instead of
+  ST(14, 1.5), ETHUSD on SL 45/TP 170 instead of 25/125. Every UI-triggered
+  backtest tests a different strategy than the one deployed — it produced
+  `+$733,912` on $10k from a reverse-signal scalper. Gotcha 25.
+- **Reconcile the two GOLD bar sets.** Gotcha 48: the host stray DB has 24k more
+  GOLD bars than the live volume, so container-run backtests still see starved
+  GOLD data. Decide which is canonical, then pin `DB_PATH` (gotcha 24).
+- **The GOLD/ETHUSD `position_size` changes.** Still uncommitted and undeployed,
+  by design. Gotcha 26.
 - **Whether to keep running the Supertrend bots at all.** Measured live
   Aug 1–Oct 21: **−€2,004** (−€1,664 of it US100, plus −€184 swap). Every
-  instrument sits at or below its breakeven win rate. This was raised and the
-  instruction was to improve rather than stop, which is why the research
-  streams above exist — but the bots are still running the unchanged strategy
-  with only the measurement fixed.
+  instrument sits at or below its breakeven win rate. This was raised before and
+  the instruction was to improve rather than stop. Since then three improvement
+  levers have been measured and all three failed (see prompt 3), so the question
+  is now better posed than it was.

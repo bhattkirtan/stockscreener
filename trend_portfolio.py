@@ -331,6 +331,15 @@ def main():
                     help='cap on gross notional / capital')
     ap.add_argument('--max-n', type=int, default=20,
                     help='max instruments for --weekly selection')
+    ap.add_argument('--class-cap', type=int, default=4,
+                    help='max instruments kept per asset class in --weekly '
+                         'selection. This is the binding constraint on breadth: '
+                         'at 4 the screen yields 13 names and effective breadth '
+                         '4.9, because the candidate pool is 75%% currencies and '
+                         'the cap is what stops it filling up with them.')
+    ap.add_argument('--max-corr', type=float, default=0.70,
+                    help='reject a candidate correlated above this with any '
+                         'already-selected instrument')
     ap.add_argument('--universe', default=None,
                     help='path to universe.json from universe.py (uses its cached '
                          'daily history and MEASURED spreads instead of the local DB)')
@@ -347,7 +356,7 @@ def main():
     if args.weekly:
         ANNUAL_DAYS = 52
         pairs = [(2, 8), (4, 16), (8, 32), (16, 64)]   # weeks
-        price_df, spreads = load_weekly(args.max_n)
+        price_df, spreads = load_weekly(args.max_n, args.max_corr, args.class_cap)
         epics = list(price_df.columns)
         print(f"weekly universe: {len(epics)} epics, {len(price_df)} bars, "
               f"{price_df.index[0].date()} .. {price_df.index[-1].date()}")
