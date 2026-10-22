@@ -67,6 +67,33 @@ risk:
   # NYSE 09:30–16:00 ET); block the thin overnight/Asian/EU-morning hours where the
   # index chops. This is the US100 analogue of GOLD/ETH skip_hours.
   skip_hours: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21, 22, 23]
+
+  # Weekend-gap cap (CLAUDE.md gotcha 19). Nothing else force-closes a live
+  # position and guaranteedStop is false on all of them, so a Friday position
+  # rides the Sunday reopen uncapped. This instrument has the confirmed loss:
+  # SELL 1 @ 28288.7 opened Fri 2026-07-31 20:00:07 UTC with a 28320.1 stop,
+  # closed Sun 2026-08-02 22:00:10 at 28441.7 — 121.6 pts past the stop,
+  # -$153 against an intended -$50.
+  #
+  # Friday-only on purpose: a daily eod_hour cannot work here. The whole
+  # allowed session is 13:00-20:59, so a 16:00 flatten would close every
+  # afternoon position the moment it opened. 20:45 is 15 min before the cash
+  # close, inside the last allowed hour, so Mon-Thu are untouched.
+  # NOTE: currently OFF; enabling also needs a trading-bot image rebuild (gotcha 10).
+  time_exits:
+    enabled: false              # ← MEASURED OFF. Read the note below before flipping.
+    friday_enabled: true
+    friday_hour: 20
+    friday_minute: 45
+    daily_enabled: false        # a daily flatten is a strategy change, not a gap cap
+    max_hold_hours: 0           # 0 = disabled
+    block_entries_after_flatten: true   # without this the 20:50 signal re-opens it
+  # Why enabled: false despite this instrument owning the confirmed -$153 gap:
+  # on the 2y backtest the 97 trades (3.9%) open across a Friday 20:45 net
+  # +$15,780 while the other 2,388 net -$28,880. Removing them takes US100 from
+  # -$13,100 to roughly -$28,880. The flatten caps a real tail but, on the best
+  # evidence available, costs more than the tail it caps. Simulate the flatten
+  # in the backtester before turning this on — see NEXT_SESSIONS prompt 2.
   trading_hours:
     enabled: false               # session enforced via skip_hours above (proven mechanism)
     start_hour: 13

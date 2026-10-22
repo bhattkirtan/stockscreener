@@ -7,8 +7,11 @@ the agent reads `CLAUDE.md` first.
 **Read before starting any of these:**
 
 - `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–50** from 2026-10-22.
-  Fixed: 22, 29, 31, 40, 41, 42, 49, 50. **Still open hazards: 19, 24, 25, 26,
-  36, 48** — and 19 is the one that is actively losing money.
+  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51. **Still open hazards: 19, 24, 25,
+  26, 36, 48.** 19 now has a built, tested fix (51) that is deliberately
+  **switched off** — the backtest says flattening removes the only profitable
+  cohort. Prompt 2 is now a decision backed by one more measurement, not a
+  build task. Nothing from the last four sessions is deployed either way.
 - **Standing constraint:** the three live bots (GOLD, ETHUSD, US100) run on a
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
@@ -47,6 +50,7 @@ the agent reads `CLAUDE.md` first.
 | the 20 "`test_pip_config`" failures | **done** — 20 across 3 files, 3 causes, one a real production bug (gotcha 40) |
 | gate-path divergences + candle dedup | **done** — one gate chain, dedup fixed (gotchas 41, 42) |
 | breadth expansion | **done, and it FAILED** — breadth rose 4.9 → 14.1 and *gross* Sharpe fell too (gotchas 46, 47) |
+| nothing force-closes a position | **built, shipped OFF** — mechanism done + tested; the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated first (gotcha 51) |
 
 Four bugs the coverage work found in the live loop, all fixed, none deployed:
 unconditional position-flag clearing (the real accumulation hole — every reverse
@@ -102,39 +106,51 @@ checking the broker result, and an error handler that raised inside its own
 
 ---
 
-## 2. Nothing force-closes a live position — this is losing money now
+## 2. The flatten is BUILT but deliberately OFF — decide whether to enable it
 
-> Read `CLAUDE.md` gotcha **19**, then **20** and **27**.
+> Read `CLAUDE.md` gotcha **51** first (what was built and the measurement that
+> stopped it being switched on), then **19**, **10** and **27**.
 >
-> **Verified still true on 2026-10-22:** `eod_hour` / `eod_enabled` are read
-> **only** by `orchestrator/production_orchestrator.py:143`. The live bot is
-> `bot_control_api.py` → `orchestrator/main.py` → `TradingOrchestrator`, which
-> contains **zero** references to `EndOfDayClose` or `IntraDayTimeExit`. Live
-> exits are SL / TP / tick-exit only. `time_based_exits` in the YAML is dead
-> config.
+> **Status 2026-10-22:** `core/time_exits.py` + gate + poll-loop close exist,
+> 72 tests, module at 100%. Shipped `enabled: false` on GOLD and US100, absent
+> on ETHUSD. So the live bots **still carry positions over the weekend** — by
+> choice now, not by oversight.
 >
-> **Confirmed cost:** US100 `dealId 00384627-…-000083765fd6`, SELL 1 @ 28288.7
-> opened Fri 2026-07-31 20:00:07 UTC with a stop at 28320.1, closed Sun
-> 2026-08-02 22:00:10 UTC at **28441.7** on the reopen gap — 121.6 pts *past*
-> the stop, realised **−$153** against an intended −$50. `guaranteedStop: false`
-> on every position, so weekend gap risk is **uncapped**.
+> **Why it is off.** The trades open across a Friday 20:45 hold *all* the
+> backtested profit on both instruments:
 >
-> **The naive fix does not work.** A single global `eod_hour: 16` is useless for
-> US100, whose entire allowed session is 13:00–20:59 UTC — every position it
-> opens is created *after* the close hour. This needs a **per-instrument**
-> flatten time, and a Friday-specific one is what actually caps the gap.
+> | | carry trades | their net | all others | their net | total |
+> |---|---|---|---|---|---|
+> | GOLD | 61 (12.4%) | +$12,234 | 430 | −$9,532 | +$2,702 |
+> | US100 | 97 (3.9%) | +$15,780 | 2,388 | −$28,880 | −$13,100 |
 >
-> Scope it as: wire a time-based flatten into the live path (`TradingOrchestrator`
-> or `main.py`'s poll loop, whichever owns the clock), per-instrument config,
-> with a distinct Friday flatten hour. Then decide whether `guaranteedStop`
-> is worth its premium on the Friday position specifically.
+> Flattening every Friday removes exactly that cohort. That is partly
+> survivorship — losers hit a 1:3–1:4 stop fast, so long holds skew to winners
+> — and a flatten closes them at the Friday price rather than converting them
+> to losses. But the magnitude dwarfs both totals, so it cannot be enabled on
+> a guess.
 >
-> **Cover it with tests before deploying** — `tests/unit/test_live_orchestrator_loop.py`
-> has the fake-skill harness and `test_live_poll_loop.py` has the `fast_clock`
-> fixture for anything that awaits `asyncio.sleep`. Note that
-> `run_skills_backtest.py` does **not** simulate a flatten, so enabling this
-> makes live diverge from backtest unless the backtester gets it too — say which
-> you did.
+> **The one job that settles it: simulate the flatten in the backtester.**
+> `run_skills_backtest.py` models SL/TP exits only. Teach it to close a
+> position at the configured flatten moment (the entry-gate half already works
+> there — `RiskSkill` is shared, so `risk.time_exits` reaches backtest and
+> blocks Friday-evening entries using bar time). Then re-run GOLD and US100 2y
+> with `--set risk.time_exits.enabled=true` and compare properly. That single
+> change turns this from a judgement call into a measurement.
+>
+> Only after that: flip the YAMLs, rebuild (prompt 1), and watch one Friday —
+> the close should land in `trade_history` with a real P&L from
+> `get_realised_pnl`, not 0.00, since the flatten books nothing itself.
+>
+> **Separate and still open: `guaranteedStop` is false on every position.** An
+> intraweek gap (a Wednesday news spike) is uncapped and the Friday flatten
+> never addressed it. Price the premium against the measured tail.
+>
+> **Do not** reach for `time_based_exits` / `eod_hour`: still dead, left dead
+> on purpose — its base value would close every US100 position from 17:00
+> onward. `production_orchestrator.EndOfDayClose` is wrong twice over too:
+> local-time `datetime.now()` against a UTC config hour, and `hour >=
+> close_hour`, true for every later hour of every day.
 
 ---
 

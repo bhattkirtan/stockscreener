@@ -7,7 +7,7 @@ EVENT-DRIVEN:
 - Publishes: RISK_APPROVED or RISK_REJECTED
 """
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import pytz
 import pandas as pd
@@ -85,6 +85,16 @@ class RiskSkill(Skill):
 
         # Hour filter — list of UTC hours where new entries are blocked
         self.skip_hours = config.get('skip_hours', [])
+
+        # Time-based flatten (CLAUDE.md gotcha 19). Defaults to disabled, so
+        # an instrument that does not configure `risk.time_exits` behaves
+        # exactly as before. The same object drives the close in main.py's
+        # poll loop, so the flatten moment and this entry block cannot drift.
+        from core.time_exits import TimeBasedFlatten
+        self.time_exits = TimeBasedFlatten(config.get('time_exits', {}))
+        if self.time_exits.enabled:
+            self.time_exits.log_validation(self.skip_hours)
+            logger.info(f"⏰ {self.time_exits.describe()}")
 
         # Consecutive-loss circuit breaker.
         # After `max_consecutive_losses` losing trades in a row, block ALL new
@@ -212,42 +222,53 @@ class RiskSkill(Skill):
             if ts_hour in self.skip_hours:
                 return False, f"🚫 Skip hour: {ts_hour:02d}h UTC"
 
-        # 4. Consecutive-loss circuit breaker
+        # 4. Past the day's flatten moment — refuse new entries.
+        #    Without this the flatten in main.py's poll loop is cosmetic: it
+        #    closes the position and the next signal re-opens it, which is
+        #    exactly how the -$153 US100 position came to be carried over a
+        #    weekend (opened 20:00 Friday, inside its own allowed session).
+        blocked, why = self.time_exits.blocks_entry(
+            candle_ts if candle_ts is not None else datetime.now(timezone.utc)
+        )
+        if blocked:
+            return False, f"🚫 Flatten window: {why}"
+
+        # 5. Consecutive-loss circuit breaker
         ok, reason = self._check_loss_circuit(timestamp=candle_ts)
         if not ok:
             return False, reason
 
-        # 5. Daily-loss limit
+        # 6. Daily-loss limit
         ok, reason = self._check_daily_loss(timestamp=candle_ts)
         if not ok:
             return False, reason
 
-        # 6. Trading hours
+        # 7. Trading hours
         if self.trading_hours_enabled:
             ok, reason = self._check_trading_hours(timestamp=candle_ts)
             if not ok:
                 return False, f"🚫 Trading hours: {reason}"
 
-        # 7. Circuit breaker (injected; None = not configured)
+        # 8. Circuit breaker (injected; None = not configured)
         if self.circuit_breaker:
             from core.circuit_breakers import CircuitBreakerStatus
             status, reason = self.circuit_breaker.check_status(self.current_capital)
             if status != CircuitBreakerStatus.CLOSED:
                 return False, f"🚫 Circuit breaker: {reason}"
 
-        # 8. Session filter
+        # 9. Session filter
         if self.session_filter:
             ok, reason = self.session_filter.is_trading_allowed()
             if not ok:
                 return False, f"🚫 Session: {reason}"
 
-        # 9. News kill switch
+        # 10. News kill switch
         if self.news_killswitch:
             ok, reason = self.news_killswitch.is_trading_allowed()
             if not ok:
                 return False, f"🚫 News: {reason}"
 
-        # 10. Cooldown (last — anchored to the previous close)
+        # 11. Cooldown (last — anchored to the previous close)
         ok, reason = self._check_cooldown(signal, timestamp=candle_ts)
         if not ok:
             return False, reason

@@ -19,7 +19,7 @@ import logging
 import sys
 import os
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add parent directory to path
@@ -242,6 +242,7 @@ async def _poll_positions(
     epic: str,
     interval: int = 10,
     stop_manager=None,
+    flatten=None,
 ) -> None:
     """
     Track position lifecycle via REST activity polling.
@@ -262,6 +263,16 @@ async def _poll_positions(
     # Tracks (deal_id, action_type) pairs already processed to prevent
     # double-firing when the activity lookback window overlaps polls.
     processed: set[str] = set()
+    # Deals we have already asked the broker to flatten, so a close that takes
+    # a few polls to confirm is not re-requested every `interval` seconds.
+    flatten_requested: set[str] = set()
+    warned_no_execution = False
+
+    # Deliberately the *same* TimeBasedFlatten instance the risk skill gates
+    # entries with — sharing the object is what makes "flatten at 20:45" and
+    # "no entries after 20:45" impossible to configure inconsistently.
+    if flatten is None:
+        flatten = getattr(orchestrator.skills.get('risk'), 'time_exits', None)
 
     def _positions_for_epic(raw: list) -> list[tuple[str, dict]]:
         result = []
@@ -463,6 +474,65 @@ async def _poll_positions(
                             await _persist_open_position(deal_id, pos, upl=upl)
                 except Exception as e:
                     logger.warning(f"⚠️ REST reconciliation error: {e}")
+
+            # ── Time-based flatten ───────────────────────────────────────────
+            # Nothing else force-closes a live position (gotcha 19), and
+            # guaranteedStop is false on every one of them, so a weekend gap is
+            # otherwise uncapped. We only ASK the broker to close here and book
+            # nothing: the next activity poll detects the close and resolves the
+            # real realised P&L via get_realised_pnl(). Inventing a figure here
+            # would repeat the gotcha-49 mistake of scoring an unknown as 0.0.
+            if flatten is not None and getattr(flatten, 'enabled', False) and known:
+                now_utc = datetime.now(timezone.utc)
+                due, why = flatten.should_flatten(now_utc)
+                # Forget deals that have since closed, so this cannot grow.
+                flatten_requested.intersection_update(known)
+
+                for deal_id, pos in list(known.items()):
+                    reason = why
+                    if not due:
+                        aged, aged_why = flatten.position_exceeded_hold(
+                            pos.get('createdDateUTC') or pos.get('createdDate')
+                            or pos.get('opened_at'),
+                            now_utc,
+                        )
+                        if not aged:
+                            continue
+                        reason = aged_why
+
+                    if deal_id in flatten_requested:
+                        continue  # already asked — waiting for the close event
+
+                    execution = orchestrator.skills.get('execution')
+                    if execution is None:
+                        # Log once, not 8,640 times a day. Nothing can be
+                        # closed, so stop trying this cycle.
+                        if not warned_no_execution:
+                            warned_no_execution = True
+                            logger.error(
+                                f"❌ {epic} flatten is due but no execution skill is "
+                                f"registered — positions will NOT be closed"
+                            )
+                        flatten_requested.discard(deal_id)
+                        break
+
+                    flatten_requested.add(deal_id)
+                    logger.warning(f"⏰ Flattening {deal_id} ({epic}): {reason}")
+                    closed = False
+                    try:
+                        closed = await execution.close_position(deal_id)
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Flatten close raised for {deal_id}: {e}", exc_info=True
+                        )
+                    if not closed:
+                        # A refused close must not look like a flat book, or the
+                        # position rides the gap anyway. Un-flag it so the next
+                        # poll retries.
+                        flatten_requested.discard(deal_id)
+                        logger.warning(
+                            f"⚠️ Flatten refused for {deal_id} — retrying next poll"
+                        )
 
             # Keep the stop manager's view in sync with the broker (entry,
             # direction, and the authoritative current stop level).

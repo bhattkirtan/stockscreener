@@ -89,6 +89,11 @@ risk:
   # Live Jun–Jul 2026 session-only ETH was +$55 vs −$61 all-hours.
   skip_hours: [0, 1, 2, 3, 4, 5, 6, 7, 19, 20, 21, 22, 23]
 
+  # No `time_exits` here on purpose. The Friday flatten on GOLD/US100 exists to
+  # cap the weekend reopen gap (CLAUDE.md gotcha 19); ETH trades through the
+  # weekend, so there is no gap to cap and a Friday flatten would just forgo
+  # two days of signals. Add one only if Capital.com starts halting ETH.
+
 execution:
   instrument: ETHUSD
   epic: ETHUSD

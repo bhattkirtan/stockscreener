@@ -107,6 +107,38 @@ risk:
   # Late US session (19–23) kept — it was net positive live.
   skip_hours: [0, 1, 2, 3, 4, 5, 6, 7]
 
+  # Weekend-gap cap (CLAUDE.md gotcha 19) — same mechanism as US100, where the
+  # confirmed -$153 gap loss happened. Gold gaps on the Sunday reopen too and
+  # nothing force-closes a live position.
+  #
+  # If you enable it, expect ONE startup warning: "truncates the session on
+  # Fridays: hours 21-23". That is correct and benign — skip_hours allows
+  # 21-23 because they trade Mon-Thu, but XAUUSD is shut from 21:00 Friday to
+  # 22:00 Sunday, so there are no Friday bars in that window to enter on. The
+  # validator has no market-hours calendar; it flags a gap it cannot rule out.
+  # NOTE: takes effect only on a trading-bot image rebuild (gotcha 10).
+  time_exits:
+    enabled: false              # ← MEASURED OFF. Read the note below before flipping.
+    friday_enabled: true
+    friday_hour: 20
+    friday_minute: 45
+    daily_enabled: false        # NOT the documented 16:00 EOD — see below
+    max_hold_hours: 0
+    block_entries_after_flatten: true
+  # Why enabled: false, when the mechanism exists and weekend gap risk is real:
+  # on a 2y backtest the 61 GOLD trades (12.4%) that are open across a Friday
+  # 20:45 net +$12,234, while the other 430 net -$9,532. The weekend-carry
+  # trades hold ALL of the strategy's backtested profit. Flattening them is
+  # therefore not free — it removes the only profitable cohort.
+  # That is partly survivorship (losers hit their 1:4 stop fast, so long holds
+  # skew to winners) and is NOT proof the flatten loses money: the real cost
+  # needs the flatten simulated in run_skills_backtest.py, which does not model
+  # it. But the magnitude is far too large to enable blind. Measure first.
+  # Why daily_enabled stays false: the strategy notes say "EOD close at 16:00
+  # UTC", but skip_hours only blocks 00-07, so GOLD may enter at 17:00-23:00.
+  # Turning on a 16:00 daily flatten would silently cut those hours from the
+  # session — a strategy change that needs its own backtest, not a gap fix.
+
 m1_validation:
   data_path: "../cloud-function/data/GOLD_M1_20240101_20251231.csv"
   tz_offset_hours: -1           # Kaggle XAU data is GMT+1 → shift to UTC
