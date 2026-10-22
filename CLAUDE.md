@@ -451,7 +451,15 @@ The project has **two independent git repositories**:
 | Main repo | `/opt/stockscreener/` | Bot engine, configs, deploy scripts, cloud-function, CLAUDE.md |
 | UI repo | `/opt/stockscreener/capital-connect/` | React frontend (TypeScript + Vite) |
 
+| UI repo | `/opt/stockscreener/capital-connect/` | separate remote: `github.com/bhattkirtan/capital-connect.git` |
+
 **Gotcha:** `git status` at `/opt/stockscreener/` will NOT show changes inside `capital-connect/` — it's a nested repo, not a subdirectory tracked by the parent. Always `cd capital-connect` and run git commands separately for UI changes.
+
+**⚠️ The UI repo has unpushed and uncommitted work that the main repo's `git status` hides (2026-10-22).** `capital-connect` is **2 commits ahead of its own `origin/main`** (`cf45988` live trade-history table + per-bot selector, `331efb5` chart the live results) **and carries an uncommitted 176-line change to `src/pages/Performance.tsx`.**
+- That uncommitted diff is **the feature gotcha 18 documents as done** — the trade-history row filters (Side / Result / Reason / Instrument, four `FilterChips`) and sortable columns. It is finished, not WIP: `npx tsc --noEmit -p tsconfig.app.json` reports only the pre-existing `MonthlyPnlChart.tsx:85` error (gotcha 17). But it exists in **no commit**, so one `git checkout` deletes a documented feature.
+- Per gotcha 17, what nginx serves comes from the `react_dist` volume, so the running dashboard and this working tree can disagree independently of git.
+
+**Push credentials (2026-10-22).** Egress from this box works (`curl https://github.com` → 200); the long-standing "pushing is impossible here" note was only a missing credential. A `credential.helper store` entry is now cached, so **`git push` works from this box for the main repo**. `gh` is still **not** installed — open PRs in the browser. Pushing is still an explicit-request action, not a default, and **never hunt for tokens on disk** to get around an auth failure.
 
 ```bash
 # Commit UI changes
