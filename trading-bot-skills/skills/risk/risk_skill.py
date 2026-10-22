@@ -118,176 +118,193 @@ class RiskSkill(Skill):
         # Startup flip gate: block entries until the Supertrend direction changes
         # at least once since the bot started. Prevents entering mid-trend on restart.
         # Set _startup_flip_seen = True externally when resuming a live position.
+        # `startup_flip_gate: false` disables it entirely. It is applied by BOTH
+        # gate paths so live and backtest agree; previously it was live-only,
+        # which cost one bar of divergence after every restart.
+        self.startup_flip_gate: bool = bool(config.get('startup_flip_gate', True))
         self._startup_signal: Optional[str] = None
         self._startup_flip_seen: bool = False
+
+        # Reverse-signal exit. When enabled an opposite-direction signal arriving
+        # while a position is open is an exit-and-reenter, not a stack, so the
+        # open-position gate must let it through — the caller closes the old
+        # position first (live does so before gating, backtest on the next bar's
+        # open). Default False matches the live orchestrator and every deployed
+        # instrument YAML; run_skills_backtest.py used to default it to True.
+        self.reverse_signal_exit: bool = bool(config.get('reverse_signal_exit', False))
         
-    async def execute(self, context) -> 'Context':
+    # ------------------------------------------------------------------
+    # The single entry-gate chain
+    # ------------------------------------------------------------------
+
+    def _check_startup_flip(self, signal: str) -> Tuple[bool, str]:
         """
-        Context-pipeline path (sequential orchestrator).
-        Validates signal → sets context.is_allowed / context.risk_reason.
+        Suppress entries until the signal direction has flipped at least once
+        since this process started, so a restart mid-trend does not immediately
+        enter. Mutates state, so it must be evaluated exactly once per signal.
         """
-        if not context.signal or context.signal not in ('BUY', 'SELL'):
-            return context
+        if not self.startup_flip_gate or self._startup_flip_seen:
+            return True, ''
+        if self._startup_signal is None:
+            self._startup_signal = signal
+            return False, f"⏳ Startup: recorded initial signal={signal}, waiting for trend flip"
+        if signal == self._startup_signal:
+            return False, f"⏳ Startup: trend hasn't flipped yet (still {signal})"
+        self._startup_flip_seen = True
+        logger.info(
+            f"✅ Startup flip detected: {self._startup_signal} → {signal} — entries now enabled")
+        return True, ''
 
-        signal    = context.signal
-        candle_ts = context.current_candle.get('timestamp') if context.current_candle else None
+    def _check_open_position(self, signal: str) -> Tuple[bool, str]:
+        """
+        One position at a time.
 
-        # 0a. Startup flip gate — don't enter on the first signal seen after bot
-        # start; wait for the trend to flip at least once first.
-        # Bypassed if _startup_flip_seen is True (set when resuming a live position).
-        if not self._startup_flip_seen:
-            if self._startup_signal is None:
-                self._startup_signal = signal
-                context.is_allowed  = False
-                context.risk_reason = f"⏳ Startup: recorded initial signal={signal}, waiting for trend flip"
-                return context
-            elif signal == self._startup_signal:
-                context.is_allowed  = False
-                context.risk_reason = f"⏳ Startup: trend hasn't flipped yet (still {signal})"
-                return context
-            else:
-                # Trend has flipped — normal operation from here
-                self._startup_flip_seen = True
-                logger.info(f"✅ Startup flip detected: {self._startup_signal} → {signal} — entries now enabled")
+        The single exception is a reverse-signal exit: with
+        `reverse_signal_exit: true`, an opposite-direction signal is an
+        exit-and-reenter and the caller closes the open position before the new
+        entry lands. Same-direction signals are always blocked.
+        """
+        if not self.has_open_position:
+            return True, ''
+        if (
+            self.reverse_signal_exit
+            and self.open_position_direction is not None
+            and signal != self.open_position_direction
+        ):
+            return True, ''
+        if self.reverse_signal_exit and self.open_position_direction is None:
+            # Direction unknown (backtest does not always set it) — defer to the
+            # caller's own reverse-close handling rather than silently dropping
+            # a legitimate reverse entry.
+            return True, ''
+        return False, "🚫 Max positions: position already open"
 
-        # 0b. Max positions — hard stop, no trading if position already open
-        if self.has_open_position:
-            context.is_allowed  = False
-            context.risk_reason = "🚫 Max positions: position already open"
-            return context
+    def _evaluate_entry_gates(self, signal: str, candle_ts=None) -> Tuple[bool, str]:
+        """
+        The one and only entry-gate chain. Both ``execute(context)`` (the
+        sequential orchestrator the live bot runs) and
+        ``on_signal_generated(event)`` (the EventBus path that
+        run_skills_backtest.py drives) route through this, so the two cannot
+        drift apart again.
 
-        # 1. Skip-hours filter
+        They previously were two separate chains with different rules: the event
+        path was missing the startup-flip and open-position gates, so anything
+        routed that way could stack positions; the context path was missing the
+        circuit breaker, session filter and news kill-switch, so the live bot
+        silently ignored all three.
+
+        Order matters — the startup gate mutates state and must be first, and
+        cooldown stays last. Returns (allowed, reason).
+        """
+        # 1. Startup flip
+        ok, reason = self._check_startup_flip(signal)
+        if not ok:
+            return False, reason
+
+        # 2. One position at a time
+        ok, reason = self._check_open_position(signal)
+        if not ok:
+            return False, reason
+
+        # 3. Skip-hours filter (cheapest real check)
         if self.skip_hours:
             ts_hour = pd.Timestamp(candle_ts).hour if candle_ts else datetime.now().hour
             if ts_hour in self.skip_hours:
-                context.is_allowed  = False
-                context.risk_reason = f"🚫 Skip hour: {ts_hour:02d}h UTC"
-                return context
+                return False, f"🚫 Skip hour: {ts_hour:02d}h UTC"
 
-        # 1b. Consecutive-loss circuit breaker
-        is_ok, reason = self._check_loss_circuit(timestamp=candle_ts)
-        if not is_ok:
-            context.is_allowed  = False
-            context.risk_reason = reason
-            return context
+        # 4. Consecutive-loss circuit breaker
+        ok, reason = self._check_loss_circuit(timestamp=candle_ts)
+        if not ok:
+            return False, reason
 
-        # 1c. Daily-loss limit
-        is_ok, reason = self._check_daily_loss(timestamp=candle_ts)
-        if not is_ok:
-            context.is_allowed  = False
-            context.risk_reason = reason
-            return context
+        # 5. Daily-loss limit
+        ok, reason = self._check_daily_loss(timestamp=candle_ts)
+        if not ok:
+            return False, reason
 
-        # 2. Trading hours
+        # 6. Trading hours
         if self.trading_hours_enabled:
-            is_ok, reason = self._check_trading_hours(timestamp=candle_ts)
-            if not is_ok:
-                context.is_allowed  = False
-                context.risk_reason = reason
-                return context
+            ok, reason = self._check_trading_hours(timestamp=candle_ts)
+            if not ok:
+                return False, f"🚫 Trading hours: {reason}"
 
-        # 3. Cooldown
-        is_ok, reason = self._check_cooldown(signal, timestamp=candle_ts)
-        if not is_ok:
-            context.is_allowed  = False
-            context.risk_reason = reason
-            return context
-
-        context.is_allowed    = True
-        context.risk_reason   = "✅ Risk checks passed"
-        context.position_size = self._calculate_position_size()
-        return context
-
-    async def on_signal_generated(self, event: 'Event') -> None:
-        """
-        Handle SIGNAL_GENERATED event - validate signal and publish result.
-        
-        Args:
-            event: Event with signal and indicators
-        """
-        signal = event.payload.get('signal')
-        if not signal or signal not in ['BUY', 'SELL']:
-            return
-        
-        # Extract entry_price from signal (fallback to indicators if missing)
-        entry_price = event.payload.get('entry_price')
-        if not entry_price:
-            entry_price = event.payload.get('indicators', {}).get('current_price', 0)
-        
-        # 0. Trading hours check (NEW - FIRST VALIDATION)
-        # Use candle timestamp if available (backtest), otherwise wall clock (live)
-        candle_ts = event.payload.get('candle', {}).get('timestamp') or event.payload.get('timestamp')
-
-        # 0a. Skip-hours filter (before everything else — cheapest check)
-        if self.skip_hours:
-            import pandas as pd
-            ts_hour = pd.Timestamp(candle_ts).hour if candle_ts else datetime.now().hour
-            if ts_hour in self.skip_hours:
-                await self._publish_risk_rejected(event, f"Skip hour: {ts_hour:02d}h UTC filtered out")
-                return
-
-        # 0b. Consecutive-loss circuit breaker
-        is_allowed, reason = self._check_loss_circuit(timestamp=candle_ts)
-        if not is_allowed:
-            await self._publish_risk_rejected(event, reason)
-            return
-
-        # 0c. Daily-loss limit
-        is_allowed, reason = self._check_daily_loss(timestamp=candle_ts)
-        if not is_allowed:
-            await self._publish_risk_rejected(event, reason)
-            return
-
-        if self.trading_hours_enabled:
-            is_allowed, reason = self._check_trading_hours(timestamp=candle_ts)
-            if not is_allowed:
-                await self._publish_risk_rejected(event, f"Trading hours: {reason}")
-                return
-
-        # 1. Circuit breaker check
+        # 7. Circuit breaker (injected; None = not configured)
         if self.circuit_breaker:
             from core.circuit_breakers import CircuitBreakerStatus
             status, reason = self.circuit_breaker.check_status(self.current_capital)
             if status != CircuitBreakerStatus.CLOSED:
-                await self._publish_risk_rejected(event, f"Circuit breaker: {reason}")
-                return
-        
-        # 2. Session filter
+                return False, f"🚫 Circuit breaker: {reason}"
+
+        # 8. Session filter
         if self.session_filter:
-            allowed, reason = self.session_filter.is_trading_allowed()
-            if not allowed:
-                await self._publish_risk_rejected(event, f"Session: {reason}")
-                return
-        
-        # 3. Spread filter (would need current spread from market data)
-        # Skipping for now - would need integration with live spread data
-        
-        # 4. News kill switch
+            ok, reason = self.session_filter.is_trading_allowed()
+            if not ok:
+                return False, f"🚫 Session: {reason}"
+
+        # 9. News kill switch
         if self.news_killswitch:
-            allowed, reason = self.news_killswitch.is_trading_allowed()
-            if not allowed:
-                await self._publish_risk_rejected(event, f"News: {reason}")
-                return
-        
-        # 5. Cooldown check (pass candle timestamp so backtest uses data time, not wall clock)
-        is_allowed, reason = self._check_cooldown(signal, timestamp=candle_ts)
-        if not is_allowed:
+            ok, reason = self.news_killswitch.is_trading_allowed()
+            if not ok:
+                return False, f"🚫 News: {reason}"
+
+        # 10. Cooldown (last — anchored to the previous close)
+        ok, reason = self._check_cooldown(signal, timestamp=candle_ts)
+        if not ok:
+            return False, reason
+
+        return True, "✅ Risk checks passed"
+
+    async def execute(self, context) -> 'Context':
+        """
+        Context-pipeline path (sequential orchestrator — this is what the live
+        bot runs). Validates signal → sets context.is_allowed / risk_reason.
+        """
+        if not context.signal or context.signal not in ('BUY', 'SELL'):
+            return context
+
+        candle_ts = context.current_candle.get('timestamp') if context.current_candle else None
+        allowed, reason = self._evaluate_entry_gates(context.signal, candle_ts)
+
+        context.is_allowed  = allowed
+        context.risk_reason = reason
+        if allowed:
+            context.position_size = self._calculate_position_size()
+        return context
+
+    async def on_signal_generated(self, event: 'Event') -> None:
+        """
+        EventBus path (SIGNAL_GENERATED → RISK_APPROVED / RISK_REJECTED).
+        Runs the same gate chain as execute().
+        """
+        signal = event.payload.get('signal')
+        if not signal or signal not in ['BUY', 'SELL']:
+            return
+
+        # Entry price from the signal, falling back to the indicator snapshot
+        entry_price = event.payload.get('entry_price')
+        if not entry_price:
+            entry_price = event.payload.get('indicators', {}).get('current_price', 0)
+
+        # Candle timestamp if available (backtest), else wall clock (live)
+        candle_ts = (event.payload.get('candle', {}).get('timestamp')
+                     or event.payload.get('timestamp'))
+
+        allowed, reason = self._evaluate_entry_gates(signal, candle_ts)
+        if not allowed:
             await self._publish_risk_rejected(event, reason)
             return
-        
-        # 6. Calculate position size
+
         position_size = self._calculate_position_size()
 
-        # 7. Pass through SL/TP computed by AnalysisSkill (uses sl_tp_engine with full
-        #    indicator context — ATR, Supertrend, Fibonacci, or fixed pips as configured).
-        #    RiskSkill does NOT recompute SL/TP; ExecutionSkill/BacktestingSkill use what
-        #    AnalysisSkill set so the same levels flow through the entire pipeline.
-        stop_loss  = event.payload.get('stop_loss')
+        # Pass through SL/TP computed by AnalysisSkill (sl_tp_engine with full
+        # indicator context). RiskSkill does NOT recompute them, so the same
+        # levels flow through the whole pipeline.
+        stop_loss   = event.payload.get('stop_loss')
         take_profit = event.payload.get('take_profit')
 
-        # ALL CHECKS PASSED - Publish RISK_APPROVED
-        await self._publish_risk_approved(event, signal, position_size, entry_price, stop_loss, take_profit)
-    
+        await self._publish_risk_approved(
+            event, signal, position_size, entry_price, stop_loss, take_profit)
+
     def _check_trading_hours(self, timestamp=None) -> Tuple[bool, str]:
         """
         Check if given time (or now for live trading) is within allowed trading hours.

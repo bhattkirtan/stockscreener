@@ -23,7 +23,13 @@ def risk_config():
         'position_size_pct': 2.0,
         'max_drawdown_pct': 20.0,
         'max_positions': 1,
-        'trading_hours': {'enabled': False}  # Disable for unit tests
+        'trading_hours': {'enabled': False},  # Disable for unit tests
+        # The startup-flip gate suppresses the first signal after process start
+        # on BOTH gate paths (see RiskSkill._evaluate_entry_gates). It is off
+        # here so these tests exercise their actual subject — cooldowns, sizing —
+        # rather than tripping over startup suppression. The gate itself is
+        # covered in test_live_close_and_risk.py::TestStartupFlipSuppression.
+        'startup_flip_gate': False,
     }
 
 

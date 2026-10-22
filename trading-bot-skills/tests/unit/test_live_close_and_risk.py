@@ -215,6 +215,18 @@ async def arm(risk, first_signal='SELL', ts=None):
     await risk.execute(live_context(signal=first_signal, ts=ts))
 
 
+async def arm_events(risk, first_signal='SELL', ts=None):
+    """
+    Same as arm(), but driven through the EventBus path.
+
+    Since the two gate chains were unified behind
+    RiskSkill._evaluate_entry_gates, the event path applies the startup-flip
+    gate too — so an event-path test whose subject is some *other* gate has to
+    walk past it first, exactly as the context-path tests already did.
+    """
+    await risk.on_signal_generated(signal_event(signal=first_signal, ts=ts))
+
+
 def signal_event(signal='BUY', price=4100.0, ts=None):
     return Event(event_type=EventType.SIGNAL_GENERATED, instrument='GOLD',
                  source='analysis',
@@ -243,6 +255,8 @@ class TestRiskGatingLiveSequence:
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk = make_risk(bus)
+        await arm_events(risk)
+        out.rejected.clear()          # the arming signal is itself rejected
         await risk.on_signal_generated(signal_event())
         assert len(out.approved) == 1 and out.rejected == []
 
@@ -259,6 +273,8 @@ class TestRiskGatingLiveSequence:
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk = make_risk(bus, skip_hours=[0, 1, 2, 3, 4, 5, 6, 7])
+        await arm_events(risk, ts=datetime(2026, 10, 21, 10, 0))
+        out.rejected.clear()
         await risk.on_signal_generated(
             signal_event(ts=datetime(2026, 10, 21, 3, 0)))
         assert out.approved == [] and len(out.rejected) == 1
@@ -268,6 +284,7 @@ class TestRiskGatingLiveSequence:
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk = make_risk(bus, skip_hours=[0, 1, 2])
+        await arm_events(risk, ts=datetime(2026, 10, 21, 10, 0))
         await risk.on_signal_generated(
             signal_event(ts=datetime(2026, 10, 21, 10, 0)))
         assert len(out.approved) == 1
@@ -283,6 +300,8 @@ class TestRiskGatingLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, sl_cooldown_minutes=30)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
+        out.rejected.clear()
         risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                 entry_price=4100.0, close_price=4085.0,
                                 close_time=t0, pnl=-15.0)
@@ -298,6 +317,7 @@ class TestRiskGatingLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, sl_cooldown_minutes=30)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
         risk.on_position_closed(direction='BUY', close_reason='SIGNAL',
                                 entry_price=4100.0, close_price=4085.0,
                                 close_time=t0, pnl=-15.0)
@@ -310,6 +330,8 @@ class TestRiskGatingLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, sl_cooldown_minutes=30, tp_cooldown_minutes=10)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
+        out.rejected.clear()
         risk.on_position_closed(direction='BUY', close_reason='TP_HIT',
                                 entry_price=4100.0, close_price=4160.0,
                                 close_time=t0, pnl=60.0)
@@ -375,33 +397,66 @@ class TestStartupFlipSuppression:
         assert ctx.is_allowed is True
 
     @pytest.mark.asyncio
-    async def test_the_event_path_has_NO_startup_suppression(self):
+    async def test_the_event_path_suppresses_the_first_signal_too(self):
         """
-        The backtest drives this path, so backtest takes the very first signal
-        while live discards it — one bar of divergence after every restart.
+        Was a divergence: the backtest drives the event path, so it used to take
+        the very first signal while live discarded it — one bar of divergence
+        after every restart. Both paths now share
+        RiskSkill._evaluate_entry_gates, so both suppress it.
         """
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk = make_risk(bus)
         await risk.on_signal_generated(signal_event(signal='BUY'))
+        assert out.approved == [] and len(out.rejected) == 1
+        assert 'Startup' in out.rejected[0].payload['reason']
+
+    @pytest.mark.asyncio
+    async def test_a_flip_enables_entries_on_the_event_path(self):
+        bus = EventBus(fast_mode=True)
+        out = Outcomes(bus)
+        risk = make_risk(bus)
+        await risk.on_signal_generated(signal_event(signal='BUY'))
+        await risk.on_signal_generated(signal_event(signal='SELL'))
         assert len(out.approved) == 1
 
+    @pytest.mark.asyncio
+    async def test_the_gate_can_be_switched_off(self):
+        """
+        `startup_flip_gate: false` disables it on both paths — the escape hatch
+        for a backtest that wants to measure the strategy without the restart
+        artefact.
+        """
+        bus = EventBus(fast_mode=True)
+        out = Outcomes(bus)
+        risk = make_risk(bus, startup_flip_gate=False)
+        await risk.on_signal_generated(signal_event(signal='BUY'))
+        assert len(out.approved) == 1
 
-class TestGatePathAsymmetry:
+    @pytest.mark.asyncio
+    async def test_resuming_a_live_position_bypasses_the_gate(self):
+        """_startup_flip_seen is set externally when a position is resumed."""
+        risk = make_risk()
+        risk._startup_flip_seen = True
+        assert (await risk.execute(live_context(signal='BUY'))).is_allowed is True
+
+
+class TestGatePathParity:
     """
-    RiskSkill has TWO gate implementations and they do NOT enforce the same
-    rules:
+    RiskSkill used to have TWO gate implementations enforcing DIFFERENT rules:
 
-      execute(context)        — used by TradingOrchestrator (the live bot).
-                                Gates: open-position, startup-flip, skip_hours,
+      execute(context)        — the sequential orchestrator the live bot runs.
+                                Had: open-position, startup-flip, skip_hours,
                                 loss circuit, daily loss, trading hours, cooldown.
-      on_signal_generated(e)  — the EventBus path. Gates: skip_hours, loss
-                                circuit, daily loss, trading hours, cooldown.
-                                MISSING the open-position and startup-flip gates.
+      on_signal_generated(e)  — the EventBus path that run_skills_backtest.py
+                                drives. Had: skip_hours, loss circuit, daily
+                                loss, trading hours, cooldown, plus the circuit
+                                breaker / session filter / news kill-switch.
 
-    Anything routed through the event path can therefore stack positions. The
-    documented event flow in CLAUDE.md (SIGNAL_GENERATED -> RiskSkill) describes
-    that path, so this asymmetry is a live hazard, not a theoretical one.
+    So the event path could stack positions, and the live path silently ignored
+    the news kill-switch and session filter. Both now delegate to
+    RiskSkill._evaluate_entry_gates, so the two cannot drift apart again. These
+    tests assert each gate fires on BOTH paths.
     """
 
     @pytest.mark.asyncio
@@ -409,22 +464,65 @@ class TestGatePathAsymmetry:
         risk = make_risk()
         await arm(risk)
         risk.has_open_position = True
-        assert (await risk.execute(live_context())).is_allowed is False
+        ctx = await risk.execute(live_context())
+        assert ctx.is_allowed is False
+        assert 'Max positions' in ctx.risk_reason
 
     @pytest.mark.asyncio
-    async def test_event_path_does_NOT_block_when_a_position_is_open(self):
+    async def test_event_path_also_blocks_when_a_position_is_open(self):
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk = make_risk(bus)
+        await arm_events(risk)
+        out.rejected.clear()
         risk.has_open_position = True
         await risk.on_signal_generated(signal_event())
-        assert len(out.approved) == 1, (
-            "event path has no open-position gate; if signals are ever routed "
-            "this way the bot can stack positions")
+        assert out.approved == [], "event path must not stack positions"
+        assert 'Max positions' in out.rejected[0].payload['reason']
+
+    @pytest.mark.asyncio
+    async def test_reverse_exit_lets_an_opposite_signal_through(self):
+        """
+        With `reverse_signal_exit: true` an opposite-direction signal is an
+        exit-and-reenter, not a stack: the caller closes the open position
+        first (live before gating, backtest at the next bar's open), so the gate
+        must allow it.
+        """
+        bus = EventBus(fast_mode=True)
+        out = Outcomes(bus)
+        risk = make_risk(bus, reverse_signal_exit=True, sl_cooldown_minutes=0)
+        await arm_events(risk)
+        out.rejected.clear()
+        risk.has_open_position = True
+        risk.open_position_direction = 'SELL'
+        await risk.on_signal_generated(signal_event(signal='BUY'))
+        assert len(out.approved) == 1
+
+    @pytest.mark.asyncio
+    async def test_reverse_exit_still_blocks_a_same_direction_stack(self):
+        bus = EventBus(fast_mode=True)
+        out = Outcomes(bus)
+        risk = make_risk(bus, reverse_signal_exit=True, sl_cooldown_minutes=0)
+        await arm_events(risk)
+        out.rejected.clear()
+        risk.has_open_position = True
+        risk.open_position_direction = 'BUY'
+        await risk.on_signal_generated(signal_event(signal='BUY'))
+        assert out.approved == []
+        assert 'Max positions' in out.rejected[0].payload['reason']
+
+    @pytest.mark.asyncio
+    async def test_reverse_exit_is_off_by_default(self):
+        """
+        Default False now matches trading_orchestrator.py and every deployed
+        instrument YAML. run_skills_backtest.py used to default it to True, so
+        an instrument omitting the key got reverse-exit ON in backtest and OFF
+        in live.
+        """
+        assert make_risk().reverse_signal_exit is False
 
     @pytest.mark.asyncio
     async def test_both_paths_honour_skip_hours(self):
-        """The gates they DO share must agree."""
         risk_a = make_risk(skip_hours=[3])
         await arm(risk_a, ts=datetime(2026, 10, 21, 10, 0))
         ctx = await risk_a.execute(live_context(ts=datetime(2026, 10, 21, 3, 0)))
@@ -433,6 +531,8 @@ class TestGatePathAsymmetry:
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk_b = make_risk(bus, skip_hours=[3])
+        await arm_events(risk_b, ts=datetime(2026, 10, 21, 10, 0))
+        out.rejected.clear()
         await risk_b.on_signal_generated(
             signal_event(ts=datetime(2026, 10, 21, 3, 0)))
         assert len(out.rejected) == 1
@@ -450,10 +550,44 @@ class TestGatePathAsymmetry:
         bus = EventBus(fast_mode=True)
         out = Outcomes(bus)
         risk_b = make_risk(bus, sl_cooldown_minutes=30)
+        await arm_events(risk_b, ts=t0)
+        out.rejected.clear()
         risk_b.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                   close_time=t0, pnl=-15.0)
         await risk_b.on_signal_generated(signal_event(ts=t0 + timedelta(minutes=5)))
         assert len(out.rejected) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_news_killswitch_now_reaches_the_live_path(self):
+        """
+        It used to be checked only on the event path, so the live bot ignored it
+        entirely.
+        """
+        class Blocked:
+            def is_trading_allowed(self):
+                return False, 'high-impact event'
+
+        risk = RiskSkill({'trading_hours': {'enabled': False},
+                          'sl_cooldown_minutes': 0, 'initial_capital': 10000},
+                         news_killswitch=Blocked())
+        await arm(risk)
+        ctx = await risk.execute(live_context())
+        assert ctx.is_allowed is False
+        assert 'News' in ctx.risk_reason
+
+    @pytest.mark.asyncio
+    async def test_the_session_filter_now_reaches_the_live_path(self):
+        class Closed:
+            def is_trading_allowed(self):
+                return False, 'outside LONDON/NY'
+
+        risk = RiskSkill({'trading_hours': {'enabled': False},
+                          'sl_cooldown_minutes': 0, 'initial_capital': 10000},
+                         session_filter=Closed())
+        await arm(risk)
+        ctx = await risk.execute(live_context())
+        assert ctx.is_allowed is False
+        assert 'Session' in ctx.risk_reason
 
 
 class TestDailyLossLimitLiveSequence:
@@ -468,6 +602,8 @@ class TestDailyLossLimitLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, max_daily_loss_usd=100, sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
+        out.rejected.clear()
         for i in range(2):
             risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                     close_time=t0 + timedelta(minutes=i),
@@ -482,6 +618,7 @@ class TestDailyLossLimitLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, max_daily_loss_usd=100, sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
         for i in range(20):
             risk.on_position_closed(direction='BUY', close_reason='SIGNAL',
                                     close_time=t0 + timedelta(minutes=i), pnl=0.0)
@@ -494,6 +631,8 @@ class TestDailyLossLimitLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, max_daily_loss_usd=100, sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
+        out.rejected.clear()
         risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                 close_time=t0, pnl=-150.0)
         await risk.on_signal_generated(signal_event(ts=t0 + timedelta(hours=1)))
@@ -507,6 +646,7 @@ class TestDailyLossLimitLiveSequence:
         out = Outcomes(bus)
         risk = make_risk(bus, sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
         risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                 close_time=t0, pnl=-5000.0)
         await risk.on_signal_generated(signal_event(ts=t0 + timedelta(hours=1)))
@@ -523,6 +663,8 @@ class TestConsecutiveLossBreaker:
                          consecutive_loss_cooldown_minutes=120,
                          sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
+        out.rejected.clear()
         for i in range(3):
             risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                     close_time=t0 + timedelta(minutes=i), pnl=-15.0)
@@ -553,6 +695,7 @@ class TestConsecutiveLossBreaker:
         out = Outcomes(bus)
         risk = make_risk(bus, sl_cooldown_minutes=0)
         t0 = datetime(2026, 10, 21, 10, 0)
+        await arm_events(risk, ts=t0)
         for i in range(10):
             risk.on_position_closed(direction='BUY', close_reason='SL_HIT',
                                     close_time=t0 + timedelta(minutes=i), pnl=-15.0)

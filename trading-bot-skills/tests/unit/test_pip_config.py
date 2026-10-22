@@ -112,7 +112,21 @@ class TestPropagateRiskToSlTp:
 # 2. SimulatedTrade.calculate_pnl — per-contract cost scaling
 # ---------------------------------------------------------------------------
 
-def _trade(side, entry, exit_price, size, spread=0.0, slippage=0.0):
+def _trade(side, entry, exit_price, size,
+           spread=0.0, slippage=0.0, margin=0.0):
+    """
+    NOTE on the cost contract: `spread_cost` / `slippage_cost` on a SimulatedTrade
+    are TOTALS for the whole position, not per-contract rates. BacktestingSkill
+    does the size multiplication once, at trade creation
+    (`spread_cost=self.spread_cost_usd * current_size`), and calculate_pnl then
+    subtracts them as-is. These helpers therefore take totals.
+
+    This is the contract that matters: if calculate_pnl ALSO multiplied by size,
+    every backtest would be charged size² of cost. That is the same class of
+    error as the US100 `slippage_cost_usd: 10` typo, which alone moved a 2-year
+    run from -$2,560 to -$134,629. TestCostScalingHappensOnce below pins the
+    multiplication to exactly one place.
+    """
     t = SimulatedTrade(
         entry_time=datetime(2024, 1, 1),
         entry_price=entry,
@@ -121,6 +135,7 @@ def _trade(side, entry, exit_price, size, spread=0.0, slippage=0.0):
         exit_price=exit_price,
         spread_cost=spread,
         slippage_cost=slippage,
+        margin=margin,
     )
     t.calculate_pnl()
     return t
@@ -146,27 +161,40 @@ class TestCalculatePnl:
         t = _trade(OrderSide.SELL, entry=2000.0, exit_price=2020.0, size=1)
         assert t.pnl == pytest.approx(-20.0)
 
-    # --- cost scaling: costs are per-contract, so total_cost = cost × size ---
+    # --- cost contract: stored costs are totals, calculate_pnl must not re-scale ---
 
-    def test_costs_scale_with_size(self):
-        """With size=10, total costs must be 10× the per-contract cost."""
-        size_1  = _trade(OrderSide.BUY, 2000, 2020, size=1,  spread=0.50, slippage=0.05)
-        size_10 = _trade(OrderSide.BUY, 2000, 2020, size=10, spread=0.50, slippage=0.05)
-        # gross_pnl scales 10× AND costs scale 10×, so net ratio holds
+    def test_calculate_pnl_does_not_multiply_costs_by_size(self):
+        """
+        The stored cost is a total. A size=10 trade carrying a $5.50 total cost
+        must lose exactly $5.50 to costs — not $55.00.
+        """
+        t = _trade(OrderSide.BUY, 2000, 2020, size=10, spread=5.00, slippage=0.50)
+        gross = (2020 - 2000) * 10
+        assert t.pnl == pytest.approx(gross - 5.50)
+
+    def test_net_pnl_scales_linearly_when_costs_are_scaled_too(self):
+        """
+        With per-contract rates of 0.50 / 0.05, a size-10 position carries 10x
+        the total cost, so net P&L scales exactly 10x.
+        """
+        size_1 = _trade(OrderSide.BUY, 2000, 2020, size=1,
+                        spread=0.50, slippage=0.05)
+        size_10 = _trade(OrderSide.BUY, 2000, 2020, size=10,
+                         spread=0.50 * 10, slippage=0.05 * 10)
         assert size_10.pnl == pytest.approx(size_1.pnl * 10)
 
     def test_gold_tp_hit_10_contracts(self):
         """GOLD: entry=2000, TP at +$20, size=10, spread=$0.50/contract."""
         t = _trade(OrderSide.BUY, entry=2000.0, exit_price=2020.0,
-                   size=10, spread=0.50, slippage=0.05)
-        # gross = 20×10 = 200, costs = 0.55×10 = 5.50
+                   size=10, spread=0.50 * 10, slippage=0.05 * 10)
+        # gross = 20x10 = 200, costs = 0.55x10 = 5.50
         assert t.pnl == pytest.approx(194.50)
 
     def test_gold_sl_hit_10_contracts(self):
         """GOLD: entry=2000, SL at -$20, size=10."""
         t = _trade(OrderSide.BUY, entry=2000.0, exit_price=1980.0,
-                   size=10, spread=0.50, slippage=0.05)
-        # gross = -20×10 = -200, costs = 0.55×10 = 5.50
+                   size=10, spread=0.50 * 10, slippage=0.05 * 10)
+        # gross = -20x10 = -200, costs = 0.55x10 = 5.50
         assert t.pnl == pytest.approx(-205.50)
 
     def test_eurusd_tp_hit_10k_units(self):
@@ -174,23 +202,47 @@ class TestCalculatePnl:
         entry = 1.08000
         exit_price = 1.08060      # +60 pips
         size = 10_000
-        spread = 0.00007          # $0.70 total
-        slippage = 0.00001        # $0.10 total
+        spread = 0.00007 * size   # $0.70 total
+        slippage = 0.00001 * size  # $0.10 total
         t = _trade(OrderSide.BUY, entry, exit_price, size, spread, slippage)
-        # gross = 0.00060 × 10000 = $6.00, costs = 0.00008 × 10000 = $0.80
+        # gross = 0.00060 x 10000 = $6.00, costs = $0.80
         assert t.pnl == pytest.approx(5.20)
 
     def test_eurusd_costs_stay_small_for_large_lot(self):
-        """Per-unit costs × 10k units must be < $2 (sanity check on cost model)."""
-        t = _trade(OrderSide.BUY, 1.08, 1.08, size=10_000,
-                   spread=0.00007, slippage=0.00001)
-        total_cost = abs(t.pnl)   # zero price move → pnl = -total_cost
+        """Per-unit costs x 10k units must be < $2 (sanity check on cost model)."""
+        size = 10_000
+        t = _trade(OrderSide.BUY, 1.08, 1.08, size=size,
+                   spread=0.00007 * size, slippage=0.00001 * size)
+        total_cost = abs(t.pnl)   # zero price move -> pnl = -total_cost
+        assert total_cost == pytest.approx(0.80)
         assert total_cost < 2.0, f"EURUSD costs too large: ${total_cost:.4f}"
 
-    def test_pnl_pct_is_net_return_on_trade_value(self):
-        """pnl_pct = net pnl / (entry × size) × 100, independent of absolute size."""
-        t1 = _trade(OrderSide.BUY, 2000, 2020, size=1,  spread=0.50, slippage=0.05)
-        t10 = _trade(OrderSide.BUY, 2000, 2020, size=10, spread=0.50, slippage=0.05)
+    # --- pnl_pct denominator: margin when known, notional otherwise ---
+
+    def test_pnl_pct_uses_margin_when_set(self):
+        """
+        pnl_pct is a leveraged return: net P&L over the margin actually posted,
+        not over notional. BacktestingSkill sets margin = entry x size / leverage.
+        """
+        t = _trade(OrderSide.BUY, 2000, 2020, size=10,
+                   spread=5.00, slippage=0.50, margin=2000.0)
+        assert t.pnl == pytest.approx(194.50)
+        assert t.pnl_pct == pytest.approx(194.50 / 2000.0 * 100)
+
+    def test_pnl_pct_falls_back_to_notional_without_margin(self):
+        t = _trade(OrderSide.BUY, 2000, 2020, size=10,
+                   spread=5.00, slippage=0.50)
+        assert t.pnl_pct == pytest.approx(194.50 / (2000.0 * 10) * 100)
+
+    def test_pnl_pct_is_size_independent_at_fixed_leverage(self):
+        """
+        Same leverage => same margin-per-contract => pnl_pct independent of size
+        once costs scale with size. (Here leverage=1, so margin = entry x size.)
+        """
+        t1 = _trade(OrderSide.BUY, 2000, 2020, size=1,
+                    spread=0.50, slippage=0.05, margin=2000.0 * 1)
+        t10 = _trade(OrderSide.BUY, 2000, 2020, size=10,
+                     spread=0.50 * 10, slippage=0.05 * 10, margin=2000.0 * 10)
         assert t1.pnl_pct == pytest.approx(t10.pnl_pct, rel=1e-6)
 
     def test_no_exit_price_leaves_pnl_zero(self):
@@ -203,6 +255,77 @@ class TestCalculatePnl:
         t.calculate_pnl()
         assert t.pnl == 0.0
         assert t.pnl_pct == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 2b. Cost scaling happens exactly once, in BacktestingSkill.execute()
+# ---------------------------------------------------------------------------
+
+class TestCostScalingHappensOnce:
+    """
+    Regression cover for the cost-arithmetic class of bug (CLAUDE.md gotchas 31
+    and 32). The size multiplication must live in exactly one place: trade
+    creation. These tests assert the stored totals, and the resulting P&L, for a
+    known config -- so either half of a double-multiplication fails here.
+    """
+
+    def _skill(self, size=1.0, spread=1.80, slippage=0.20, leverage=1.0):
+        return BacktestingSkill({
+            'backtesting': {
+                'initial_capital': 10_000.0,
+                'position_size': size,
+                'spread_cost_usd': spread,
+                'slippage_cost_usd': slippage,
+            },
+            'backtest': {'leverage': leverage},
+            'risk': {'pip_size': 1.0, 'stop_loss_pips': 50, 'take_profit_pips': 150},
+        }, event_bus=None)
+
+    def _enter(self, skill, entry=29_000.0, signal='BUY'):
+        ctx = Context(
+            timestamp=datetime(2026, 1, 1, 14, 0),
+            current_candle={'timestamp': datetime(2026, 1, 1, 14, 0),
+                            'open': entry, 'high': entry, 'low': entry,
+                            'close': entry},
+            signal=signal,
+            entry_price=entry,
+            stop_loss=entry - 50.0,
+            take_profit=entry + 150.0,
+        )
+        assert skill.execute(ctx) is True
+        return skill.open_positions[-1]
+
+    def test_stored_costs_are_rate_times_size(self):
+        trade = self._enter(self._skill(size=5.0))
+        assert trade.size == 5.0
+        assert trade.spread_cost == pytest.approx(1.80 * 5.0)
+        assert trade.slippage_cost == pytest.approx(0.20 * 5.0)
+
+    def test_size_one_costs_equal_the_configured_rates(self):
+        trade = self._enter(self._skill(size=1.0))
+        assert trade.spread_cost + trade.slippage_cost == pytest.approx(2.00)
+
+    def test_us100_sl_hit_charges_cost_once(self):
+        """
+        US100 at size 1: SL = 50 pts, true cost ~$2.00/trade. The 50x
+        `slippage_cost_usd: 10` typo made this -$59 of cost instead.
+        """
+        skill = self._skill(size=1.0)
+        trade = self._enter(skill, entry=29_000.0)
+        trade.exit_price = 28_950.0        # stop hit, -50 pts
+        trade.calculate_pnl()
+        assert trade.pnl == pytest.approx(-52.00)
+
+    def test_cost_per_trade_is_independent_of_entry_price(self):
+        """Costs are per contract, not a fraction of notional."""
+        a = self._enter(self._skill(size=1.0), entry=1_000.0)
+        b = self._enter(self._skill(size=1.0), entry=29_000.0)
+        assert a.spread_cost == pytest.approx(b.spread_cost)
+        assert a.slippage_cost == pytest.approx(b.slippage_cost)
+
+    def test_margin_reflects_leverage(self):
+        trade = self._enter(self._skill(size=2.0, leverage=20.0), entry=29_000.0)
+        assert trade.margin == pytest.approx(29_000.0 * 2.0 / 20.0)
 
 
 # ---------------------------------------------------------------------------

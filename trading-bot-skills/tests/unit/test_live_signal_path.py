@@ -205,14 +205,14 @@ class TestCandleDedup:
         assert len(rec.events) == 2
 
     @pytest.mark.asyncio
-    async def test_non_consecutive_resend_is_NOT_suppressed(self):
+    async def test_a_non_consecutive_resend_is_suppressed(self):
         """
-        Documents a real limitation: dedup tracks only the LAST timestamp, so a
-        re-sent older bar (A, B, A) passes through and is appended to history a
-        second time. After a reconnect replays recent bars this produces a
-        duplicated bar in the analysis buffer and can fire an extra signal.
-        This is a candidate explanation for the measured live/backtest trade
-        count divergence.
+        Was a real limitation: dedup tracked only the LAST timestamp, so a
+        re-sent older bar (A, B, A) passed through and was appended to history a
+        second time, skewing every indicator computed over the buffer.
+
+        Dedup now keeps a bounded set of the timestamps already seen, so the
+        resend is dropped and the buffer holds each bar exactly once.
         """
         bus, rec = EventBus(fast_mode=True), Recorder()
         bus.subscribe(EventType.CANDLE_CLOSED, rec)
@@ -221,9 +221,34 @@ class TestCandleDedup:
         await md.process_candle(a)
         await md.process_candle(b)
         await md.process_candle(a)          # replayed after a reconnect
-        assert len(rec.events) == 3, "dedup is last-timestamp-only"
+        assert len(rec.events) == 2
         ts = [c['timestamp'] for c in md.get_candle_history()]
-        assert len(ts) == 3 and ts != sorted(set(ts)), "duplicate bar in buffer"
+        assert ts == sorted(set(ts)), "no duplicate bar in the buffer"
+
+    @pytest.mark.asyncio
+    async def test_the_seen_set_is_bounded(self):
+        """
+        It must not grow without bound in a long-running bot. The cap has a
+        floor of 500, and only timestamps already trimmed from the buffer are
+        forgotten.
+        """
+        bus, rec = EventBus(fast_mode=True), Recorder()
+        bus.subscribe(EventType.CANDLE_CLOSED, rec)
+        md = make_md_skill(bus)
+        for i in range(900):
+            await md.process_candle(m5_candle(i * 5, close=4100.0 + i))
+        cap = max(md.buffer_size, 500)
+        assert len(md._seen_timestamps) <= cap
+
+    @pytest.mark.asyncio
+    async def test_dedup_can_still_be_switched_off(self):
+        bus, rec = EventBus(fast_mode=True), Recorder()
+        bus.subscribe(EventType.CANDLE_CLOSED, rec)
+        md = make_md_skill(bus, dedup=False)
+        c = m5_candle()
+        await md.process_candle(c)
+        await md.process_candle(c)
+        assert len(rec.events) == 2
 
     @pytest.mark.asyncio
     async def test_dedup_can_be_disabled(self):
@@ -393,11 +418,12 @@ class TestWireToEventChain:
         assert len(md.get_candle_history()) == 10
 
     @pytest.mark.asyncio
-    async def test_reconnect_replay_produces_extra_events(self):
+    async def test_a_reconnect_replay_is_fully_suppressed(self):
         """
-        Mimics a reconnect that replays the last 3 bars. Because dedup is
-        last-timestamp-only, the replay is NOT fully suppressed — 13 events for
-        10 distinct bars. Pinned as observed behaviour, not endorsed.
+        Mimics a reconnect that replays the last 3 bars. This used to produce 13
+        CANDLE_CLOSED events for 10 distinct bars, with 3 duplicate bars landing
+        in the analysis buffer. The bounded seen-set now drops the replay
+        entirely: 10 events, 10 bars.
         """
         bus, rec = EventBus(fast_mode=True), Recorder()
         bus.subscribe(EventType.CANDLE_CLOSED, rec)
@@ -406,5 +432,68 @@ class TestWireToEventChain:
             await md.process_candle(m5_candle(i * 5, close=4100.0 + i))
         for i in (7, 8, 9):
             await md.process_candle(m5_candle(i * 5, close=4100.0 + i))
-        assert len(rec.events) == 13
-        assert len(md.get_candle_history()) == 13
+        assert len(rec.events) == 10
+        assert len(md.get_candle_history()) == 10
+
+
+class TestDedupOnTheLivePath:
+    """
+    The dedup tests above drive `process_candle`, which has NO production
+    callers — the live bot goes through `execute(context)`
+    (trading_orchestrator.py:115). These pin the same behaviour on the path that
+    actually runs, so the two cannot diverge unnoticed.
+    """
+
+    @staticmethod
+    def _ctx(candle):
+        from skills.base_skill import Context
+        return Context(current_candle=candle)
+
+    @pytest.mark.asyncio
+    async def test_an_immediate_repeat_is_dropped(self):
+        md = make_md_skill(None)
+        c = m5_candle()
+        await md.execute(self._ctx(c))
+        await md.execute(self._ctx(c))
+        assert len(md.get_candle_history()) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_replay_is_dropped(self):
+        md = make_md_skill(None)
+        for i in range(10):
+            await md.execute(self._ctx(m5_candle(i * 5, close=4100.0 + i)))
+        for i in (7, 8, 9):
+            await md.execute(self._ctx(m5_candle(i * 5, close=4100.0 + i)))
+        ts = [c['timestamp'] for c in md.get_candle_history()]
+        assert len(ts) == 10
+        assert ts == sorted(set(ts))
+
+    @pytest.mark.asyncio
+    async def test_distinct_bars_are_all_kept(self):
+        md = make_md_skill(None)
+        await md.execute(self._ctx(m5_candle(0)))
+        await md.execute(self._ctx(m5_candle(5)))
+        assert len(md.get_candle_history()) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_flag_now_reaches_the_live_path(self):
+        """
+        `dedup_enabled` was read by process_candle but ignored by execute(), so
+        setting it false had no effect on live. It does now.
+        """
+        md = make_md_skill(None, dedup=False)
+        c = m5_candle()
+        await md.execute(self._ctx(c))
+        await md.execute(self._ctx(c))
+        assert len(md.get_candle_history()) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_two_paths_agree_on_the_same_replay(self):
+        a, b = make_md_skill(None), make_md_skill(None)
+        bars = [m5_candle(i * 5, close=4100.0 + i) for i in range(6)] + \
+               [m5_candle(i * 5, close=4100.0 + i) for i in (4, 5)]
+        for c in bars:
+            await a.process_candle(c)
+            await b.execute(self._ctx(c))
+        assert [c['timestamp'] for c in a.get_candle_history()] == \
+               [c['timestamp'] for c in b.get_candle_history()]

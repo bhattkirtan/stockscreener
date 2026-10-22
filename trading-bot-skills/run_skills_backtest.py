@@ -486,6 +486,7 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
             backtesting._close_position(trade, exit_price, reason, ts)
             backtesting.open_positions.remove(trade)
             risk.has_open_position = False
+            risk.open_position_direction = None
             risk.on_position_closed(
                 direction=trade.side.value,
                 close_reason=reason,
@@ -549,12 +550,16 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
                 prev_ts    = pending['timestamp']
                 fill_price = candle['open']
 
-                # Close any opposite-direction positions (only when reverse_signal_exit enabled)
-                reverse_exit_enabled = config.get('risk', {}).get('reverse_signal_exit', True)
+                # Close any opposite-direction positions (only when reverse_signal_exit enabled).
+                # Default is False, matching trading_orchestrator.py and every deployed
+                # instrument YAML. It used to default True here, so an instrument that
+                # omitted the key got reverse-exit ON in backtest and OFF in live.
+                reverse_exit_enabled = config.get('risk', {}).get('reverse_signal_exit', False)
                 if sig and reverse_exit_enabled:
                     rev_closed = backtesting.close_reverse_positions(sig, fill_price, timestamp)
                     for t in rev_closed:
                         risk.has_open_position = False
+                        risk.open_position_direction = None
                         risk.on_position_closed(
                             direction=t.side.value,
                             close_reason='Reverse Signal',
@@ -603,6 +608,9 @@ async def run_skills_backtest(df: pd.DataFrame, config: dict, shuffle_signals: b
                     entered = backtesting.execute(context)
                     if entered:
                         risk.has_open_position = True
+                        # Direction is what the open-position gate consults to tell a
+                        # reverse-signal re-entry apart from a stack.
+                        risk.open_position_direction = sig
                         # Tell skill about the open position for M1 exit tracking
                         analysis.register_open_position(sig, fill_price, trade_sl, trade_tp)
 

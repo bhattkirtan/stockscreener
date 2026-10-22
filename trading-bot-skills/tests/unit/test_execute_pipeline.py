@@ -6,6 +6,7 @@ which is separate from the event-driven path (on_signal_generated etc.)
 These methods are what actually runs in live trading.
 """
 
+import pandas as pd
 import pytest
 import sys
 import os
@@ -53,6 +54,10 @@ RISK_CONFIG = {
     'tp_cooldown_minutes': 5,
     'skip_hours': [],
     'position_size_pct': 2.0,
+    # Startup-flip suppression is the first gate in the chain and mutates state,
+    # so it would short-circuit every test below. Disabled here; covered in
+    # test_live_close_and_risk.py::TestStartupFlipSuppression.
+    'startup_flip_gate': False,
 }
 
 EXECUTION_CONFIG = {
@@ -222,10 +227,23 @@ class TestAnalysisSkillMTF:
         skill.load_daily_history([])
         assert skill.df_daily is None
 
-    def test_h1_bb_gate_blocks_buy_below_midline(self):
-        """H1 BB gate must block BUY when H1 close is below midline."""
-        import pandas as pd
-        skill = AnalysisSkill({
+    # ------------------------------------------------------------------
+    # H1 Bollinger gate
+    #
+    # This gate treats BB lines as PRICE WALLS, not as a trend filter:
+    #   BUY  is blocked when H1 price sits near the UPPER band (resistance above)
+    #   SELL is blocked when H1 price sits near the LOWER band (support below)
+    # band_pct = (close - lower) / (upper - lower), thresholds 0.75 / 0.25.
+    #
+    # The previous tests here asserted the opposite ("block BUY below midline")
+    # and set an `h1_bb_middle` column the gate never reads, so they tested a
+    # gate that does not exist. The companion "allows" test passed only
+    # vacuously: with a flat price series the bands are degenerate
+    # (band_width == 0) and the gate short-circuits.
+    # ------------------------------------------------------------------
+
+    def _h1_skill(self):
+        return AnalysisSkill({
             **ANALYSIS_CONFIG,
             'signal_rules': {
                 **ANALYSIS_CONFIG['signal_rules'],
@@ -233,37 +251,88 @@ class TestAnalysisSkillMTF:
             },
         })
 
-        candles = _make_candle_list(60, base=2650.0, step=0.0)
-        skill.load_h1_history(candles)
+    def _load_h1_bands(self, skill, close, lower=2600.0, upper=2700.0):
+        """
+        Load H1 history then force an explicit, non-degenerate band.
 
-        # Force close well below midline
-        skill.df_h1['close'] = 2600.0
-        skill.df_h1['h1_bb_middle'] = 2650.0
+        Two mechanics matter here and both bit the previous version of these
+        tests:
 
-        ts = pd.Timestamp('2026-01-01T01:00:00', tz='UTC')
+        1. `load_h1_history` does NOT resample — it indexes whatever candles it
+           is handed. 60 M5 candles become 60 "H1" rows at 5-minute spacing.
+        2. The gate looks the row up with `DataFrame.asof`, which returns the
+           last row with NO NaN in ANY column. `h1_bb_middle` is NaN for the
+           first `h1_bb_period` (20) rows, so any lookup landing in the warm-up
+           returns an all-NaN row and the gate silently no-ops. The returned
+           timestamp is therefore chosen past the warm-up, and every band column
+           is set explicitly.
+        """
+        skill.load_h1_history(_make_candle_list(60, base=2650.0, step=0.0))
+        skill.df_h1['h1_bb_lower'] = lower
+        skill.df_h1['h1_bb_upper'] = upper
+        skill.df_h1['h1_bb_middle'] = (lower + upper) / 2
+        skill.df_h1['close'] = close
+        # index is 5-min spaced from 2026-01-01T00:00; -1h must land past row 20
+        return pd.Timestamp('2026-01-01T03:00:00', tz='UTC')
+
+    def test_h1_bb_gate_noops_during_band_warmup(self):
+        """
+        Pins mechanic (2) above: a lookup inside the BB warm-up window yields an
+        all-NaN asof row, so the gate must allow rather than block.
+        """
+        skill = self._h1_skill()
+        skill.load_h1_history(_make_candle_list(60, base=2650.0, step=0.0))
+        skill.df_h1['h1_bb_lower'] = 2600.0
+        skill.df_h1['h1_bb_upper'] = 2700.0
+        skill.df_h1['close'] = 2690.0          # would block if the row resolved
+        early = pd.Timestamp('2026-01-01T01:00:00', tz='UTC')
+        assert skill._check_mtf_confluence(early, 'BUY')[0] is True
+
+    def test_h1_bb_gate_blocks_buy_near_upper_band(self):
+        """band_pct 0.90 > 0.75 -> resistance overhead -> BUY blocked."""
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2690.0)
         ok, reason = skill._check_mtf_confluence(ts, 'BUY')
         assert ok is False
-        assert reason == 'h1_below_midline_long'
+        assert reason == 'h1_near_upper_resistance'
 
-    def test_h1_bb_gate_allows_buy_above_midline(self):
-        """H1 BB gate must allow BUY when H1 close is above midline."""
-        import pandas as pd
-        skill = AnalysisSkill({
-            **ANALYSIS_CONFIG,
-            'signal_rules': {
-                **ANALYSIS_CONFIG['signal_rules'],
-                'require_h1_bb': True,
-            },
-        })
-        candles = _make_candle_list(60, base=2650.0, step=0.0)
-        skill.load_h1_history(candles)
+    def test_h1_bb_gate_blocks_sell_near_lower_band(self):
+        """band_pct 0.10 < 0.25 -> support below -> SELL blocked."""
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2610.0)
+        ok, reason = skill._check_mtf_confluence(ts, 'SELL')
+        assert ok is False
+        assert reason == 'h1_near_lower_support'
 
-        skill.df_h1['close'] = 2700.0
-        skill.df_h1['h1_bb_middle'] = 2650.0
+    def test_h1_bb_gate_allows_buy_near_lower_band(self):
+        """A BUY with room overhead is exactly what this gate is for."""
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2610.0)
+        assert skill._check_mtf_confluence(ts, 'BUY')[0] is True
 
-        ts = pd.Timestamp('2026-01-01T01:00:00', tz='UTC')
-        ok, reason = skill._check_mtf_confluence(ts, 'BUY')
-        assert ok is True
+    def test_h1_bb_gate_allows_sell_near_upper_band(self):
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2690.0)
+        assert skill._check_mtf_confluence(ts, 'SELL')[0] is True
+
+    def test_h1_bb_gate_allows_both_directions_mid_band(self):
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2650.0)
+        assert skill._check_mtf_confluence(ts, 'BUY')[0] is True
+        assert skill._check_mtf_confluence(ts, 'SELL')[0] is True
+
+    def test_h1_bb_gate_does_not_block_on_degenerate_band(self):
+        """upper == lower (flat series) must not block — band_width guard."""
+        skill = self._h1_skill()
+        ts = self._load_h1_bands(skill, close=2650.0, lower=2650.0, upper=2650.0)
+        assert skill._check_mtf_confluence(ts, 'BUY')[0] is True
+        assert skill._check_mtf_confluence(ts, 'SELL')[0] is True
+
+    def test_h1_bb_gate_is_off_when_not_required(self):
+        """With require_h1_bb False the gate must not run at all."""
+        skill = AnalysisSkill(ANALYSIS_CONFIG)
+        ts = self._load_h1_bands(skill, close=2690.0)
+        assert skill._check_mtf_confluence(ts, 'BUY')[0] is True
 
 
 # ── RiskSkill.execute() ───────────────────────────────────────────────────────

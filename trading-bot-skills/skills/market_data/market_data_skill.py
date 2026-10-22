@@ -5,11 +5,14 @@ Fetches and manages market data from Capital.com WebSocket and REST API.
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from collections import deque
+import logging
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from skills.base_skill import Skill, Context, SkillExecutionError
+
+logger = logging.getLogger(__name__)
 
 
 class M5toM15Aggregator:
@@ -89,14 +92,43 @@ class MarketDataSkill(Skill):
         # M5 to M15 aggregator
         self.aggregator = M5toM15Aggregator()
         
-        # Deduplication
+        # Deduplication.
+        # `last_candle_timestamp` alone only catches an IMMEDIATE repeat. A
+        # reconnect that replays the last few bars arrives as e.g. 7,8,9 after
+        # 9, and since 7 != 9 the whole replay was accepted: 13 CANDLE_CLOSED
+        # events for 10 distinct bars, with duplicates landing in the analysis
+        # buffer and skewing every indicator computed over it. A bounded set of
+        # the timestamps already seen suppresses the replay exactly.
         self.last_candle_timestamp = None
+        self._seen_timestamps: set = set()
+        self._seen_order: deque = deque()
         
         # Last quote
         self.last_quote: Optional[Dict] = None
         
         print(f"📊 Market Data Skill initialized: {self.instrument} {self.timeframe}, buffer={self.buffer_size}")
     
+    def _is_duplicate_candle(self, candle_ts) -> bool:
+        """
+        True if this bar has already been processed.
+
+        Returns False (and records the timestamp) for a genuinely new bar. The
+        seen-set is capped at the buffer size, with a floor, so a long-running
+        bot does not grow it without bound; evicting in arrival order means the
+        only timestamps forgotten are ones already trimmed from the buffer.
+        """
+        if candle_ts in self._seen_timestamps:
+            return True
+
+        self._seen_timestamps.add(candle_ts)
+        self._seen_order.append(candle_ts)
+        cap = max(self.buffer_size, 500)
+        while len(self._seen_order) > cap:
+            self._seen_timestamps.discard(self._seen_order.popleft())
+
+        self.last_candle_timestamp = candle_ts
+        return False
+
     async def process_candle(self, candle: Dict) -> None:
         """
         Process incoming candle and publish CANDLE_CLOSED event.
@@ -113,11 +145,9 @@ class MarketDataSkill(Skill):
         # Deduplicate
         if self.dedup_enabled:
             candle_ts = candle.get('timestamp')
-            if candle_ts == self.last_candle_timestamp:
-                print(f"⏭️ Skipping duplicate candle: {candle_ts}")
+            if self._is_duplicate_candle(candle_ts):
+                logger.debug(f"⏭️ Skipping duplicate candle: {candle_ts}")
                 return
-            
-            self.last_candle_timestamp = candle_ts
         
         # Add to M5 history
         self.m5_history.append(candle)
@@ -179,13 +209,17 @@ class MarketDataSkill(Skill):
         if context.current_candle:
             candle = context.current_candle
             
-            # Deduplicate
-            candle_ts = candle.get('timestamp')
-            if candle_ts == self.last_candle_timestamp:
-                print(f"⏭️ Skipping duplicate candle: {candle_ts}")
-                return context
-            
-            self.last_candle_timestamp = candle_ts
+            # Deduplicate — same rule AND same on/off flag as process_candle,
+            # so the two agree. NOTE this is the path the live bot actually
+            # runs (trading_orchestrator.py:115); `process_candle` has no
+            # production callers and is exercised only by tests. The flag used
+            # to be ignored here, so `dedup_enabled: false` silently had no
+            # effect on live.
+            if self.dedup_enabled:
+                candle_ts = candle.get('timestamp')
+                if self._is_duplicate_candle(candle_ts):
+                    logger.debug(f"⏭️ Skipping duplicate candle: {candle_ts}")
+                    return context
             
             # Add to M5 history
             self.m5_history.append(candle)

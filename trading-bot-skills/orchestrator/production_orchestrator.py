@@ -361,7 +361,7 @@ class ProductionOrchestrator:
         
         # Reverse signal monitoring (close positions on opposite signal)
         # Disabled when risk.reverse_signal_exit = false — only SL/TP exits allowed
-        if self.config.get('risk', {}).get('reverse_signal_exit', True):
+        if self.config.get('risk', {}).get('reverse_signal_exit', False):
             self.event_bus.subscribe(
                 EventType.SIGNAL_GENERATED,
                 self._check_reverse_signals

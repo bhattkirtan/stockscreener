@@ -64,9 +64,14 @@ class AlertingSkill(Skill):
                 self.mock_mode = True
                 self.telegram_client = TelegramAPIClient(mock_mode=True)
         else:
-            self.telegram_client = None
-        
-        print(f"📢 Alerting Skill initialized: telegram={self.telegram_enabled}")
+            # Mock mode (or telegram disabled): still hand out a real client object
+            # in mock_mode. Every on_* handler guards only on `telegram_enabled`
+            # and then dereferences `telegram_client`, so leaving this None made
+            # `mock_mode: true` + `telegram.enabled: true` — a documented combo in
+            # trading_config_example.yaml — raise AttributeError on every alert.
+            self.telegram_client = TelegramAPIClient(mock_mode=True)
+
+        print(f"📢 Alerting Skill initialized: telegram={self.telegram_enabled}, mock={self.mock_mode}")
     
     async def on_order_filled(self, event: 'Event') -> None:
         """
