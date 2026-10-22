@@ -6,9 +6,9 @@ the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–50** from 2026-10-22.
-  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51. **Still open hazards: 19, 24, 25,
-  26, 36, 48.** 19 now has a built, tested fix (51) that is deliberately
+- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–54** from 2026-10-22.
+  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54. **Still open hazards: 19,
+  24, 25, 26, 36, 48.** 19 now has a built, tested fix (51) that is deliberately
   **switched off** — the backtest says flattening removes the only profitable
   cohort. Prompt 2 is now a decision backed by one more measurement, not a
   build task. Nothing from the last four sessions is deployed either way.
@@ -16,9 +16,10 @@ the agent reads `CLAUDE.md` first.
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
   anything that reaches the broker is not.
-- **Nothing in the last three sessions is deployed.** The live bots run baked-in
+- **Nothing in the last five sessions is deployed.** The live bots run baked-in
   image code. See prompt 1 — this is the biggest gap between what the repo says
-  and what is actually trading.
+  and what is actually trading, and with prompts 4 and 5 now closed it is the
+  only remaining item that touches what is actually trading.
 - **Git state (updated 2026-10-22): the branch IS PUSHED.** `origin/fix/gate-
   unification-and-live-path-coverage` is at `1145f16`; local is in sync, 0
   unpushed. It is still **31 commits ahead of `origin/main`** because nothing is
@@ -44,9 +45,13 @@ the agent reads `CLAUDE.md` first.
   then deliberately **reverted** by `6a26450`. GOLD therefore still trades 0.5
   contracts against an intended 10. Recover with `git show c0fb630` only when
   the edge justifies it (gotcha 26).
-- Test commands (re-measured 2026-10-22, fourth session):
-  `cd trading-bot-skills && python3 -m pytest` → **1152 passing, 0 failing** (~80s)
-  `python3 -m pytest --cov` → **74.80%**, floor `fail_under = 72` (~160s)
+- Test commands (re-measured 2026-10-22, fifth session):
+  `cd trading-bot-skills && python3 -m pytest` → **1319 passing, 0 failing** (~85s)
+  `python3 -m pytest --cov` → **78.13%**, floor `fail_under = 75` (~165s)
+  **Measure coverage on a clean tree.** Editing a source file mid-run makes
+  coverage map recorded line numbers onto a shifted file, so covered statements
+  report as missing — it showed `capital_api.py` at 91% when it was 100%
+  (gotcha 54). Re-run before chasing a surprising gap.
   Full per-module status: see **Test coverage — status board** below.
   `python3 -m pytest tests/ -q` from repo root (research tools)
   **Never pass `--cov=<dotted.module.path>`** — it reloads numpy and fails ~47
@@ -68,6 +73,7 @@ the agent reads `CLAUDE.md` first.
 | breadth expansion | **done, and it FAILED** — breadth rose 4.9 → 14.1 and *gross* Sharpe fell too (gotchas 46, 47) |
 | nothing force-closes a position | **built, shipped OFF** — mechanism done + tested; the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated first (gotcha 51) |
 | `backtesting_skill.py` coverage (old prompt 4) | **done** — 59% → **100%**; 6 findings, 2 fixed (the PF divide-by-zero guard reporting 100x gross wins, and a docstring that understated dynamic sizing 10x) (gotcha 53) |
+| `capital_api.py` coverage (old prompt 5) | **done** — 19% → **100%**; `place_order` was at 0%. 2 live bugs fixed: `create_session`'s 429 branch was dead (`Response.__bool__` is `self.ok`), and `get_historical_prices` returned account-local timestamps, putting the live warm-up buffer 2h off the DB bars — which closes half of prompt 3's remaining lead (gotcha 54) |
 
 Four bugs the coverage work found in the live loop, all fixed, none deployed:
 unconditional position-flag clearing (the real accumulation hole — every reverse
@@ -79,11 +85,12 @@ checking the broker result, and an error handler that raised inside its own
 
 ## Test coverage — status board
 
-**Measured 2026-10-22 (fourth session), canonically.** Reproduce with exactly:
+**Measured 2026-10-22 (fifth session), canonically, on a clean tree.** Reproduce
+with exactly:
 
 ```bash
 cd trading-bot-skills && python3 -m pytest --cov -o addopts= -q
-# -> 1152 passed, TOTAL 74.80%, "Required test coverage of 72.0% reached"
+# -> 1319 passed, TOTAL 78.13%, "Required test coverage of 75.0% reached"
 ```
 
 **Never `--cov=<dotted.module.path>`** — it reloads numpy and fails ~47 unrelated
@@ -102,12 +109,13 @@ below owns it · **LOW** = acknowledged gap, deliberately deprioritised.
 | `core/time_exits.py` | **100%** | 0 | DONE | `test_time_exits.py` (72) |
 | `orchestrator/trading_orchestrator.py` | **100%** | 0 | DONE | `test_live_orchestrator_loop.py` (83) |
 | `skills/backtesting/backtesting_skill.py` | **100%** | 0 | DONE | `test_backtest_engine.py` (**168**), `test_pip_config` (39), `test_backtesting_skill` (13) |
+| **`clients/capital_api.py`** | **100%** | 0 | DONE | `test_capital_api.py` (**167**), `test_activity_parsing.py` (15) |
 | `clients/capital_websocket.py` | 98% | 2 | DONE | `test_live_execution_and_socket.py` (87) |
 | `core/stop_manager.py` | 97% | 3 | DONE | `test_stop_manager.py` (14) |
 | `orchestrator/main.py` | 95% | 22 | DONE | `test_live_poll_loop` (66), `test_live_bootstrap` (63), `test_live_tick_exit` (102) |
 | `core/operational_monitoring.py` | 95% | 12 | DONE | `test_operational_monitoring.py` (27) |
 | `skills/execution/execution_skill.py` | 93% | 11 | DONE | `test_execution_skill` (8) + live suites |
-| `core/idempotency.py` | 92% | 9 | DONE | `test_idempotency.py` (17) |
+| `core/idempotency.py` | 94% | 7 | DONE | `test_idempotency.py` (17), `test_capital_api` (1) |
 | `skills/base_skill.py` | 92% | 4 | DONE | — |
 | `core/circuit_breakers.py` | 89% | 22 | PARTIAL | `test_circuit_breakers.py` (26) |
 | `core/indicators.py` | 87% | 15 | PARTIAL | — |
@@ -124,10 +132,9 @@ below owns it · **LOW** = acknowledged gap, deliberately deprioritised.
 | `clients/sqlite_api.py` | 51% | 91 | LOW | — |
 | `orchestrator/production_orchestrator.py` | 49% | 119 | **WON'T DO** | not the live path; see note |
 | `clients/log_publisher.py` | 30% | 61 | LOW | — |
-| **`clients/capital_api.py`** | **19%** | **172** | **OPEN — prompt 5** | `test_activity_parsing.py` (15), partial |
-| `clients/firestore_api.py` | 12% | 140 | LOW — prompt 5 tail | — |
+| `clients/firestore_api.py` | 12% | 140 | LOW — largest remaining | — |
 | `skills/reporting/reporting_skill.py` | 11% | 209 | LOW (lowest risk) | — |
-| **TOTAL** | **74.80%** | 1317 / 5227 | floor `fail_under = 72` | 32 suites, **1152 tests** |
+| **TOTAL** | **78.13%** | 1143 / 5227 | floor `fail_under = 75` | 33 suites, **1319 tests** |
 
 **`production_orchestrator.py` is deliberately not worth covering.** The live bot
 never instantiates it (gotcha 19) — it is the only thing that reads `eod_hour`,
@@ -136,15 +143,21 @@ time compared against a UTC config hour, and `hour >= close_hour` true for every
 later hour). Covering it would pin behaviour nobody runs. If it is ever revived,
 **fix those two defects first**, then cover it.
 
-**One gap now accounts for the largest remaining risky block: `capital_api.py`
-at 19% (172 uncovered), the broker boundary.** That is prompt 5 and it is the
-whole remaining coverage story; everything else marked LOW is reporting,
-alerting and logging. `backtesting_skill.py` — the other half of this note until
-2026-10-22 — is **done at 100%** (gotcha 53).
+**No risky module is under-covered any more.** `capital_api.py` — the broker
+boundary and the last real gap — reached **100%** on 2026-10-22 (gotcha 54),
+after `backtesting_skill.py` did the same (gotcha 53). Everything still marked
+LOW is reporting, alerting, logging and firestore: nothing that can place an
+order, price a trade, or compute a P&L figure.
+
+The largest remaining block by raw count is `reporting_skill.py` (209) and the
+largest by risk is `firestore_api.py` (140, the storage boundary), but neither
+has an owner and neither is worth a session ahead of **prompt 1 (deploy)**,
+which is now the only thing standing between five sessions of fixes and the
+bots that are actually trading.
 
 ---
 
-## 1. Deploy the fix stack — three sessions of fixes are not live
+## 1. Deploy the fix stack — five sessions of fixes are not live
 
 > Read `CLAUDE.md` gotchas **10** (deploy topology), **38** and **49** (what is
 > undeployed), then **26** (what must NOT ride along).
@@ -283,6 +296,20 @@ alerting and logging. `backtesting_skill.py` — the other half of this note unt
 > bar-count mismatch and an OHLC mismatch have different causes. This one needs
 > live bar capture, so only reach for it if Lead A comes back clean.
 >
+> **Narrowed 2026-10-22 — the *timestamp* half of Lead B is resolved, and it was
+> a real defect.** `get_historical_prices` labelled candles with `snapshotTime`
+> (account-local, UTC+2, DST-varying) while `fetch_data.parse_candle` stores
+> `snapshotTimeUTC`, so the live **warm-up** buffer sat two hours off the DB
+> bars — from the same endpoint. Fixed (gotcha 54b), with a regression test that
+> asserts both functions pick the same field on one identical broker row.
+> **This is not the divergence**, and do not spend the session re-deriving it:
+> warm-up bars generate no signals (`warming_up = True`), the MTF `.asof()`
+> consumers that *are* label-sensitive are gated by `require_h1_bb`, false on
+> all three running bots, and it cannot make live take *more* trades. What
+> remains of Lead B is the genuine question — **do the WebSocket-built bars and
+> the REST bars have the same boundaries, and do the same bars exist on both
+> sides** — which still needs live capture.
+>
 > **Note gotcha 48 before you start:** GOLD's repaired bars are in the HOST
 > `/data/trading.db`, not the live volume. Pin `DB_PATH` deliberately and say
 > which DB every number came from. **Exact bar counts drift daily — read gotcha
@@ -343,61 +370,66 @@ alerting and logging. `backtesting_skill.py` — the other half of this note unt
 
 ---
 
-## 5. `capital_api.py` coverage — the broker boundary, 19%
+## 5. ~~`capital_api.py` coverage~~ — **DONE 2026-10-22**
 
-> **STATUS: OPEN, barely started. 19%, 172 uncovered — but the priority list in
-> the previous version of this prompt pointed at ground that is already
-> covered.** Read `CLAUDE.md` gotchas **12**, **15**, **22**, **23**, **30** and
-> **38** — each is a fact about this file's endpoints learned the hard way, and
-> several contradict each other's earlier versions.
+> **STATUS: CLOSED. 19% → 100%** (213 statements, 0 missing).
+> `tests/unit/test_capital_api.py`, **167 tests in 23 classes**.
+> Full detail: `CLAUDE.md` gotcha **54**.
 >
-> Needs HTTP mocking (`responses` or `requests-mock`). **Nothing here may reach
-> the broker.**
+> Kept as a closed marker rather than deleted — prompt numbers are
+> cross-referenced by number from gotchas 39, 44 and the small-items list below,
+> and renumbering would break all of them.
 >
-> ### Implemented today — more than the old prompt implied
+> **What closed it.** `place_order` — the only call in the repo that can move
+> money — was at **0% cover**. So were `_request` (the shared auth/retry/error
+> layer everything flows through), `get_historical_prices`, `create_session`,
+> `update_position`, `close_position` and `confirm_order`.
 >
-> `test_activity_parsing.py` (15 tests) subclasses the real client as
-> `_RecordingClient` and drives the real `get_activity()`, so these are **already
-> pinned** and need no new work:
-> - `status==ACCEPTED` is sent, not `EXECUTED` (gotcha 22)
-> - the `epic==` clause and `detailed=true` are included (gotcha 23)
-> - `details.openPrice` discriminates a close from an open
-> - `source` -> `SL_HIT` / `TP_HIT` / `SIGNAL`
-> - there is no `details['actions']` array and no `details.profit`
-> - `/history/transactions`: `size` IS the realised P&L; `lastPeriod` capped at 86400s
+> **The harness is the transferable part.** No HTTP-mocking library is
+> installed (`responses`, `requests-mock`, `pytest-httpserver` all absent) and
+> none was added. The suite patches `requests.request` / `requests.post` and
+> returns **real `requests.Response` objects**, because `Response.__bool__`
+> returns `self.ok` and `raise_for_status()` must attach a genuine `HTTPError`.
+> That is not fussiness: a hand-rolled fake response is *truthy*, and would have
+> hidden the `create_session` bug below while making the test assert the wrong
+> behaviour. An autouse fixture points `requests.request/post/get` at a raiser,
+> so a missed patch fails loudly instead of dialling Capital.com.
 >
-> **`get_activity` is down to 3 uncovered lines (341-343, its `except` branch)
-> and `get_realised_pnl` to 8.** The old bullet list led with these. The real gap
-> is elsewhere.
+> **Two live bugs fixed:**
+> 1. `create_session`'s rate-limit branch was **dead code** — `if e.response and
+>    e.response.status_code == 429`, and an error Response is falsy, so the one
+>    status the branch exists to classify was the one it could never see. Impact
+>    was cosmetic (the generic message still carries "Too Many Requests", which
+>    `idempotency.is_transient_error` matches, and nothing retries session
+>    creation) — fixed because the *shape* is the hazard.
+> 2. `get_historical_prices` returned **account-local** timestamps
+>    (`snapshotTime`, UTC+2, DST-varying) while `fetch_data.parse_candle:145` —
+>    the DB/backtest writer reading the *same endpoint* — picks `snapshotTimeUTC`
+>    and documents why. Two readers of one endpoint, two hours apart; the live
+>    warm-up buffer was the one that was wrong. **This closes half of prompt 3's
+>    remaining lead.**
 >
-> ### Missing — the 172 uncovered statements, by function
+> Also corrected: the docstring's own worked example passed `from`+`to`
+> together, which this API rejects with a 400 (gotcha 30).
 >
-> | function | lines | uncovered | why it matters |
-> |---|---|---|---|
-> | `get_historical_prices` | 536-588 | **53** | `from`+`to` together returns **400** — there is no date-range mode, only backward pagination on `to` + `max`; `to` must be full ISO with `T`; `snapshotTime` is account-local (UTC+2) while `to` is UTC, so pagination must anchor on `snapshotTimeUTC`. Gotchas 30/38. This is the function whose bug starved the bars for two quarters |
-> | `create_session` | 75-114 | **40** | session creation; creating sessions in a tight loop returns 400 on `/session` (gotcha 15) — reuse one client |
-> | `_request` | 153-186 | **34** | **everything flows through here** — the shared request/retry/error layer. Cover it first; it is the cheapest way to make the rest testable |
-> | `place_order` | 218-245 | **28** | **the call that puts money at the broker, at 0% cover.** Not mentioned at all in the old prompt. Highest-risk untested function in the repo |
-> | `update_position` | 428-449 | 22 | the stop amend `core/stop_manager.py` drives (gotcha 16); its invariants are tested, this HTTP leg is not |
-> | `confirm_order` | 253-269 | 17 | fill confirmation |
-> | `close_position` | 396-409 | 14 | the leg the flatten and reverse-exit paths call (gotcha 51) |
-> | `__init__` | 42-63 | 22 | env/credential wiring |
-> | `get_open_positions` | 278-286 | 9 | drives `_poll_positions` reconcile |
-> | `get_account_info` | 458-466 | 9 | — |
-> | `find_market` | 478-486 | 9 | — |
+> **Six hazards pinned rather than fixed**, each for a stated reason — most
+> importantly `confirm_order` returning `{}` on failure (the caller then
+> substitutes the dealReference for the dealId, bounded by the 60s REST
+> reconcile) and `CAPITAL_ENVIRONMENT` being shadowed by the signature default
+> (inert, and it fails towards *demo* — honouring it would newly make it
+> possible to go live by editing a dotenv file). Gotcha 54 has all six.
 >
-> ### Suggested order
+> **Regression:** GOLD 2y = 493 / 21.703853955375255% / PF 1.0555001992825828 /
+> +$3,342 — **bit-identical** to gotcha 53's documented float. US100 2y = 2488 /
+> 25.482% / PF 0.97328 / −$12,880 vs 2485 / 25.473% / 0.9728, the +3 trades
+> explained by its DB gaining 113 tail bars. Expected, and the point:
+> `get_historical_prices` has three production callers, all the live warm-up in
+> `main.py`, and **zero references anywhere in the backtest path** — the
+> regression confirms, it is not the argument.
 >
-> `_request` (34, unblocks everything) -> `place_order` + `confirm_order` (45,
-> highest risk) -> `get_historical_prices` (53, biggest single block and a proven
-> bug site) -> `create_session` -> the rest. That is ~155 of the 172.
->
-> Keep `get_realised_pnl`'s contract explicit: default look-back is 3600s, it
-> returns `None` beyond that, and **`None` must stay `None`, never `0.0`** —
-> coercing it is gotcha 22's and 49(a)'s shared root cause.
->
-> `clients/firestore_api.py` (12%, 140 uncovered) is the same shape of work and
-> lower risk — do it second if there is time.
+> **Still uncovered here: nothing.** `clients/firestore_api.py` (12%, 140) is
+> the same shape of work and genuinely lower risk — it has no owner and no
+> prompt, and it should not jump the queue ahead of prompt 1.
 
 ---
 
@@ -521,7 +553,7 @@ alerting and logging. `backtesting_skill.py` — the other half of this note unt
   Enabling it makes live diverge from backtest (gotcha 16).
 - **`MarketDataSkill.process_candle` has no production callers** (gotcha 42) —
   dead path, consider deleting it rather than maintaining two code paths.
-- **Coverage beyond prompt 5** (prompt 4 is closed — gotcha 53): see the
+- **Coverage beyond prompts 4 and 5** (both closed — gotchas 53, 54): see the
   **Test coverage — status board**
   near the top of this file — it is the single source of truth for every
   module's number, status and owning suite. Do not re-quote figures here; that
