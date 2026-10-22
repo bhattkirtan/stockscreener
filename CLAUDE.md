@@ -122,7 +122,10 @@ All services share a `trading_data` Docker volume mounted at `/data` (SQLite DB 
 
 **Current GOLD strategy (as deployed in live/demo bot):**
 - Entry: M5 Supertrend(14×1.5) flip + MA100 bias + MA100 slope
-- SL: **15 pips** ($15/contract) | TP: **40 pips** ($40/contract) — R:R 1:2.67
+- SL: **15 pips** ($15/contract) | TP: **60 pips** ($60/contract) — R:R 1:4
+  (verified in `GOLD.yaml` 2026-10-22: `risk.stop_loss_pips: 15` / `risk.take_profit_pips: 60`.
+  This line said TP 40 and the table below said 45; both were stale. 60 is also what gotcha 35's
+  "baseline SL15/TP60" measured, so the backtest numbers in this file are the live geometry.)
 - EMA and SMA(25/30) filters **disabled** — MA100 bias is the only filter
 - Tick exit enabled (Supertrend trail cross closes position in live mode)
 - No reverse-signal exit — SL / TP / tick exit only
@@ -138,8 +141,9 @@ instruments/GOLD.yaml (instrument overrides)
     ↓ _propagate_risk_to_sl_tp()
 analysis.sl_tp values are overwritten by risk pip values
 ```
-**Gotcha:** `risk.sl_pips` / `risk.tp_pips` is the single source of truth for SL/TP pips.
-`analysis.sl_tp.stop_loss_pips` gets overwritten at load time — edit `risk` section, not `analysis`.
+**Gotcha:** `risk.stop_loss_pips` / `risk.take_profit_pips` is the single source of truth for
+SL/TP pips. `analysis.sl_tp.*` gets overwritten at load time — edit `risk`, not `analysis`.
+**`risk.sl_pips` / `risk.tp_pips` do not exist and are read by nothing** (gotcha 52).
 
 ---
 
@@ -215,7 +219,8 @@ docker compose --profile build run --rm react-builder
 
 - **Indicators on/off:** Set `enabled: true/false` under `analysis.indicators.<name>`
 - **Signal logic:** Set `require_*: true/false` under `analysis.signal_rules`
-- **SL/TP:** Edit `risk.sl_pips` / `risk.tp_pips` (not analysis.sl_tp — it gets overwritten)
+- **SL/TP:** Edit `risk.stop_loss_pips` / `risk.take_profit_pips` (not `analysis.sl_tp` — it gets
+  overwritten at load time). **Not `risk.sl_pips`/`tp_pips`** — those are read by nothing (gotcha 52).
 - **Cooldowns:** `risk.sl_cooldown_minutes` / `risk.tp_cooldown_minutes`
 - **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:141`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
 - **Consecutive-loss circuit breaker (opt-in, default OFF):** `risk.max_consecutive_losses: N` blocks all new entries after N losing trades in a row for `risk.consecutive_loss_cooldown_minutes` (default 120), then resets; a win resets the counter immediately. `0` = disabled. Backtest with `--set risk.max_consecutive_losses=4 --set risk.consecutive_loss_cooldown_minutes=720`. **Note:** on trend-followers this is a safety rail, not a profit lever — the GOLD/ETH sweep was non-monotonic/path-dependent (pausing can lock you out of the recovery leg), so it's left disabled on both.
@@ -223,7 +228,11 @@ docker compose --profile build run --rm react-builder
 - **EOD close / flatten:** `time_based_exits.eod_hour` is **DEAD** — read only by
   `production_orchestrator.py`, which the live bot does not run (gotcha 19). The live
   mechanism is `risk.time_exits` (per-instrument, Friday-specific, defaults off) — gotcha 51.
-- **Position size:** `risk.position_size_pct` and `risk.max_position_size`
+- **Position size:** the size the broker actually receives is `risk.position_size` /
+  `execution.position_size`, defaulting to **0.5** at `execution_skill.py:51` — see gotcha 26,
+  which is still live on GOLD and ETHUSD. `risk.position_size_pct` is read (`risk_skill.py:119`)
+  but does not set the order size; **`risk.max_position_size` is a dead key** — present at
+  `trading_config.yaml:173`, read by no production code.
 - **Bot mode:** `bot.mode: AUTO` (trades) or `SIGNAL_ONLY` (logs only, no orders)
 
 ---
@@ -373,11 +382,14 @@ gold_txns = [t for t in txns if t.get('instrumentName') == 'GOLD' and t.get('tra
 
 ## Live GOLD Strategy Parameters (as deployed)
 
-> **Warning:** `GOLD.yaml` has uncommitted local changes. Always verify against `git show HEAD:trading-bot-skills/config/instruments/GOLD.yaml` before running a comparison backtest.
+> ⚠️ **This table is an Apr-2026 screenshot artefact and FOUR of its "confirmed live" rows were
+> wrong as of 2026-10-22.** The rows are corrected below, but prefer reading `GOLD.yaml` directly —
+> it is committed and the working tree is clean, so the old "has uncommitted local changes"
+> warning that stood here no longer applies.
 
-**Verified from live Capital.com trade screenshot (Apr 2026):**
-SL distance shown as 15.75, TP distance as 39.25 — confirming SL=15/TP=40 is live (0.75 pip spread adjustment by broker).
-The local uncommitted changes were deployed via rsync before being committed to git.
+**Original note (Apr 2026), kept for provenance:** a live trade screenshot showed SL distance
+15.75 / TP distance 39.25, read at the time as confirming SL=15/TP=40. The SL still matches; the
+TP does not — `risk.take_profit_pips` is now **60**, so that screenshot predates a TP change.
 
 | Parameter | Deployed (confirmed live) | Git HEAD (stale) |
 |-----------|--------------------------|-----------------|
@@ -387,17 +399,19 @@ The local uncommitted changes were deployed via rsync before being committed to 
 | SMA(25/30) filter | disabled | disabled |
 | MA100 bias | **enabled** (`require_sma_bias: true`) | not present |
 | Stop loss | **15 pips** ($15/contract) | 20 pips |
-| Take profit | **45 pips** ($45/contract, 1:3 R:R) | 60 pips |
+| Take profit | **60 pips** ($60/contract, 1:4 R:R) — was wrong here as 45 | 60 pips |
 | Tick exit | **enabled, `reverse_on_loss: false`** | not present |
-| Position size | 10 contracts | 10 contracts |
-| EOD close | 16:00 UTC | 16:00 UTC |
+| Position size | **0.5** — the `execution_skill.py:51` default (gotcha 26). The `10` is under `backtesting:` only, so it never reached live | 10 (`backtesting:`) |
+| EOD close | **none** — `time_based_exits` is dead in the live bot (gotchas 19, 51). This row claimed 16:00 UTC and was never true | dead key |
 
 ### Correct backtest command to match live
 
 ```bash
 cd trading-bot-skills
 
-# --instrument GOLD already has all correct live params (SL=15, TP=45, MA100 bias)
+# --instrument GOLD already has all correct live params (SL=15, TP=60, MA100 bias)
+# NOTE: backtest size comes from backtesting.position_size = 10; live trades 0.5 (gotcha 26),
+# so backtest P&L magnitudes are ~20x live. PF/WR are unaffected.
 # Note: tick exit (profit trail) is not simulated — backtest exits are SL/TP only
 python run_skills_backtest.py --instrument GOLD --bars 1500
 ```
@@ -483,7 +497,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 
 ## Common Gotchas
 
-1. **SL/TP config source:** Always edit `risk.sl_pips` / `risk.tp_pips` — not `analysis.sl_tp`. The propagation function overwrites analysis values at load time.
+1. **SL/TP config source:** Always edit `risk.stop_loss_pips` / `risk.take_profit_pips` — not `analysis.sl_tp`, which the propagation function overwrites at load time. **The keys are NOT `risk.sl_pips`/`risk.tp_pips`** — this file said that in three places until 2026-10-22 and nothing reads them; see gotcha 52.
 
 2. **Warm-up bars:** `buffer_size` in config is overridden at runtime to `max_indicator_period × WARMUP_MULTIPLIER (3)`. Don't worry about it manually.
 
@@ -847,6 +861,15 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - Cover: `tests/unit/test_time_exits.py` (72 tests — clock, tz/string parsing, the gate, and the poll loop closing/retrying/booking-nothing). Module at 100%; `main.py` and `risk_skill.py` hold at 95% / 82%. Suite **984 passing, 0 failing, 72.67%** (floor 69).
     - ⚠️ **`max_hold_hours` now exists TWICE, on opposite sides — do not enable one alone.** `risk.time_exits.max_hold_hours` (new, this gotcha) is **live-only**; `time_based_exits.max_hours` (`backtesting_skill.py:194`, exit at `:398`) is **backtest-only** and was already there. Both default to `0`, so nothing diverges today, but setting either one by itself silently makes live and backtest disagree on hold time. The EOD/Friday *flatten* has no backtest counterpart at all — `max_hours` is the only time exit the backtester models.
     - **`guaranteedStop` is still false on every position**, so an *intraweek* gap (a Wednesday news spike) remains uncapped. The Friday flatten never addressed that; it is a separate decision.
+
+
+52. **Config keys this file named wrong, and one dead function carrying a 100x error. Audited 2026-10-22, docs corrected.** The gotcha-6 lesson generalises: the *substance* of an entry can be right while the *key name* is wrong, and that is the hardest kind to catch because the surrounding explanation reads as authoritative.
+    - **`risk.sl_pips` / `risk.tp_pips` are read by nothing.** The real keys are **`risk.stop_loss_pips` / `risk.take_profit_pips`** — those are the three keys (with `pip_size`) that both propagation copies move into `analysis.sl_tp`: `orchestrator/main.py:118-122` (live) and `run_skills_backtest.py:71` (backtest). All six deployed instrument YAMLs use `stop_loss_pips`; none has `sl_pips`. This file asserted the wrong name in **three** places — the "Config cascade (important)" block, the "Configuration Rules" list, and gotcha 1 — i.e. in both of the sections someone reads first, the same blast radius as the EOD errors.
+      - Why the wrong name was plausible: **`execution_skill.py:49-50` genuinely reads `sl_pips`/`tp_pips`** — but off its own `execution:` section, not `risk:`. The name is real, the section was not. Following the old instruction (`risk.sl_pips: 20`) edits nothing, produces no warning, and leaves you concluding the propagation is broken.
+    - **`risk.max_position_size` is a dead key.** `trading_config.yaml:173` sets `max_position_size: 10.0`; no production code reads it (only a test fixture does). `risk.position_size_pct` *is* read (`risk_skill.py:119`) and validated, but it does not set the order size either — the size the broker receives is `execution_skill.py:51`'s `position_size`, default **0.5**. That is gotcha 26, still live.
+    - **`RiskSkill._calculate_sl_tp` (`risk_skill.py:427`) is dead code hardcoding `pip_value = 0.01` with the comment "For GOLD, 1 pip = 0.01".** GOLD's actual `pip_size` is **1.0** (`GOLD.yaml:99`, gotcha 8) — a **100x** error. Zero callers today, in production *or* tests, so nothing is wrong live; but anyone wiring it up gets GOLD stops 100x too tight. Left in place rather than deleted (removing it is a code change, not a doc fix), flagged here. Same family as gotcha 31's 50x `slippage_cost_usd` typo and gotcha 50's wrong-side-stop guard: a magnitude error sitting in a path no test exercises.
+    - **GOLD's TP was recorded as two different wrong numbers.** "Instruments & Strategy" said 40, the deployed-parameters table said 45; the YAML says **60** (R:R 1:4). Gotcha 35's "baseline SL15/TP60" matches the YAML, so the measured backtests in this file were run on the live geometry and remain valid — only the prose was stale.
+    - **The "Live GOLD Strategy Parameters (as deployed)" table had four wrong rows** (TP, position size, EOD close, plus the stale uncommitted-changes warning above it). It is an Apr-2026 screenshot artefact whose "confirmed live" header outranked, in apparent authority, the later gotchas that corrected it. Corrected in place; **prefer reading `GOLD.yaml` over that table.**
 
 ---
 
