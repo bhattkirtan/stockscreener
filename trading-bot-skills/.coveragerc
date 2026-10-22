@@ -9,33 +9,26 @@ omit =
     */__init__.py
 
 [report]
-# Floor, not a target. The suite measured 71.62% on 2026-10-22 across these
-# four packages (899 tests, 0 failing); this is that minus ~2 points, so an
+# Floor, not a target. The suite measured 74.80% on 2026-10-22 across these
+# four packages (1152 tests, 0 failing); this is that minus ~2.8 points, so an
 # ordinary refactor does not trip it but deleting or bypassing a tested path
 # does.
 #
-# Per-module state at the time it was set:
-#   orchestrator/main.py                      95%
-#   orchestrator/trading_orchestrator.py     100%   (was 15%)
-#   core/sl_tp_engine.py                     100%   (was 44%)
-#   clients/capital_websocket.py              98%
-#   skills/execution/execution_skill.py       93%
-#   skills/analysis/analysis_skill.py         85%
-#   skills/market_data/market_data_skill.py   84%
-#   skills/risk/risk_skill.py                 82%
+# Per-module state is NOT duplicated here — it goes stale and then misleads.
+# The single source of truth is the "Test coverage — status board" section of
+# NEXT_SESSIONS.md. (CLAUDE.md gotcha 44 is the cautionary tale: a per-module
+# table copied into two places kept reporting trading_orchestrator at 15% for
+# three sessions after it reached 100%.)
 #
-# The next real gaps, ranked by uncovered statements on risky paths:
-#   clients/capital_api.py                    19%  (172 — needs HTTP mocking)
-#   clients/firestore_api.py                  12%  (140)
-#   orchestrator/production_orchestrator.py   49%  (119 — not the live path)
-#   skills/backtesting/backtesting_skill.py   59%  (111)
-#   skills/reporting/reporting_skill.py       11%  (209 — low risk)
+# The largest remaining risky gap is clients/capital_api.py at 19% — the broker
+# boundary, 172 uncovered statements, needs HTTP mocking. See NEXT_SESSIONS
+# prompt 5.
 #
 # Raise the floor when the number genuinely rises. Do not raise it to a figure
 # the suite has not actually met. Measure with `--cov` (bare) or
 # `--cov=<package>`, NEVER `--cov=<dotted.module.path>` — see the warning in
 # pytest.ini.
-fail_under = 69
+fail_under = 72
 precision = 0
 show_missing = True
 exclude_lines =

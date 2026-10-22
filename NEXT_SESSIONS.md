@@ -45,8 +45,8 @@ the agent reads `CLAUDE.md` first.
   contracts against an intended 10. Recover with `git show c0fb630` only when
   the edge justifies it (gotcha 26).
 - Test commands (re-measured 2026-10-22, third session):
-  `cd trading-bot-skills && python3 -m pytest` → **984 passing, 0 failing** (~80s)
-  `python3 -m pytest --cov` → **72.67%**, floor `fail_under = 69` (~160s)
+  `cd trading-bot-skills && python3 -m pytest` → **1152 passing, 0 failing** (~80s)
+  `python3 -m pytest --cov` → **74.80%**, floor `fail_under = 72` (~160s)
   Full per-module status: see **Test coverage — status board** below.
   `python3 -m pytest tests/ -q` from repo root (research tools)
   **Never pass `--cov=<dotted.module.path>`** — it reloads numpy and fails ~47
@@ -67,6 +67,7 @@ the agent reads `CLAUDE.md` first.
 | gate-path divergences + candle dedup | **done** — one gate chain, dedup fixed (gotchas 41, 42) |
 | breadth expansion | **done, and it FAILED** — breadth rose 4.9 → 14.1 and *gross* Sharpe fell too (gotchas 46, 47) |
 | nothing force-closes a position | **built, shipped OFF** — mechanism done + tested; the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated first (gotcha 51) |
+| `backtesting_skill.py` coverage (old prompt 4) | **done** — 59% → **100%**; 6 findings, 2 fixed (the PF divide-by-zero guard reporting 100x gross wins, and a docstring that understated dynamic sizing 10x) (gotcha 53) |
 
 Four bugs the coverage work found in the live loop, all fixed, none deployed:
 unconditional position-flag clearing (the real accumulation hole — every reverse
@@ -78,11 +79,11 @@ checking the broker result, and an error handler that raised inside its own
 
 ## Test coverage — status board
 
-**Measured 2026-10-22 (third session), canonically.** Reproduce with exactly:
+**Measured 2026-10-22 (fourth session), canonically.** Reproduce with exactly:
 
 ```bash
 cd trading-bot-skills && python3 -m pytest --cov -o addopts= -q
-# -> 984 passed, TOTAL 72.67%, "Required test coverage of 69.0% reached"
+# -> 1152 passed, TOTAL 74.80%, "Required test coverage of 72.0% reached"
 ```
 
 **Never `--cov=<dotted.module.path>`** — it reloads numpy and fails ~47 unrelated
@@ -100,6 +101,7 @@ below owns it · **LOW** = acknowledged gap, deliberately deprioritised.
 | `core/sl_tp_engine.py` | **100%** | 0 | DONE | `test_sl_tp_engine.py` (61) |
 | `core/time_exits.py` | **100%** | 0 | DONE | `test_time_exits.py` (72) |
 | `orchestrator/trading_orchestrator.py` | **100%** | 0 | DONE | `test_live_orchestrator_loop.py` (83) |
+| `skills/backtesting/backtesting_skill.py` | **100%** | 0 | DONE | `test_backtest_engine.py` (**168**), `test_pip_config` (39), `test_backtesting_skill` (13) |
 | `clients/capital_websocket.py` | 98% | 2 | DONE | `test_live_execution_and_socket.py` (87) |
 | `core/stop_manager.py` | 97% | 3 | DONE | `test_stop_manager.py` (14) |
 | `orchestrator/main.py` | 95% | 22 | DONE | `test_live_poll_loop` (66), `test_live_bootstrap` (63), `test_live_tick_exit` (102) |
@@ -117,7 +119,6 @@ below owns it · **LOW** = acknowledged gap, deliberately deprioritised.
 | `skills/storage/storage_skill.py` | 77% | 35 | PARTIAL | `test_storage_skill` (8), `test_trade_history` (14) |
 | `core/cost_calculator.py` | 67% | 11 | PARTIAL | — |
 | `clients/telegram_api.py` | 63% | 28 | LOW | — |
-| **`skills/backtesting/backtesting_skill.py`** | **59%** | **111** | **OPEN — prompt 4** | `test_backtesting_skill` (13), `test_pip_config` (39) |
 | `skills/alerting/alerting_skill.py` | 54% | 55 | LOW | `test_alerting_skill.py` (10) |
 | `skills/monitoring/monitoring_skill.py` | 51% | 44 | LOW | `test_monitoring_skill.py` (8) |
 | `clients/sqlite_api.py` | 51% | 91 | LOW | — |
@@ -126,7 +127,7 @@ below owns it · **LOW** = acknowledged gap, deliberately deprioritised.
 | **`clients/capital_api.py`** | **19%** | **172** | **OPEN — prompt 5** | `test_activity_parsing.py` (15), partial |
 | `clients/firestore_api.py` | 12% | 140 | LOW — prompt 5 tail | — |
 | `skills/reporting/reporting_skill.py` | 11% | 209 | LOW (lowest risk) | — |
-| **TOTAL** | **72.67%** | 1428 / 5225 | floor `fail_under = 69` | 31 suites, **984 tests** |
+| **TOTAL** | **74.80%** | 1317 / 5227 | floor `fail_under = 72` | 32 suites, **1152 tests** |
 
 **`production_orchestrator.py` is deliberately not worth covering.** The live bot
 never instantiates it (gotcha 19) — it is the only thing that reads `eod_hour`,
@@ -135,9 +136,11 @@ time compared against a UTC config hour, and `hour >= close_hour` true for every
 later hour). Covering it would pin behaviour nobody runs. If it is ever revived,
 **fix those two defects first**, then cover it.
 
-**Two gaps account for 283 of the 1,428 uncovered statements and both are live-
-money paths.** They are prompts 4 and 5 and they are the whole remaining coverage
-story; everything else marked LOW is reporting, alerting and logging.
+**One gap now accounts for the largest remaining risky block: `capital_api.py`
+at 19% (172 uncovered), the broker boundary.** That is prompt 5 and it is the
+whole remaining coverage story; everything else marked LOW is reporting,
+alerting and logging. `backtesting_skill.py` — the other half of this note until
+2026-10-22 — is **done at 100%** (gotcha 53).
 
 ---
 

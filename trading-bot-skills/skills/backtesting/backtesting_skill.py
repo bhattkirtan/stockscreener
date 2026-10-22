@@ -252,8 +252,17 @@ class BacktestingSkill(Skill):
 
         Two modes (set via dynamic_sizing.method):
 
-        'steps'   — fixed ladder: add size_increment for each full scale_every_usd
-                    of profit above initial_capital.  Only scales up, never below base.
+        'steps'   — fixed ladder: size = size_increment for each full
+                    scale_every_usd of TOTAL CAPITAL (not of profit, and not
+                    measured from initial_capital — see below).  Floored at the
+                    base position_size, so it only ever scales up.
+
+                    NOTE: this is keyed off self.capital, so a $10,000 account
+                    with scale_every_usd=1000 is already at 10 steps on its
+                    FIRST trade, at zero profit.  The docstring used to say
+                    "profit above initial_capital", which understates the
+                    starting size by initial_capital/scale_every_usd.  This is
+                    the compounding mechanism behind CLAUDE.md gotcha 25.
 
         'percent' — proportional: size = capital / size_per_capital, so every dollar
                     of capital growth is immediately reflected.  Scales down too if
@@ -491,10 +500,19 @@ class BacktestingSkill(Skill):
         avg_win = sum(t.pnl for t in self.closed_positions if t.pnl > 0) / max(self.winning_trades, 1)
         avg_loss = sum(t.pnl for t in self.closed_positions if t.pnl < 0) / max(self.losing_trades, 1)
         
-        # Profit factor
+        # Profit factor. With zero losing trades it is mathematically undefined,
+        # so report the same 999.0 sentinel that cloud-function/api/live_report.py:54
+        # already uses for this case. It used to divide by a one-cent floor
+        # (`max(total_losses, 0.01)`), which reported 100x the gross win total —
+        # a single $60 win came out as PF 6000.0 — and optimize_params.py:71
+        # RANKS the grid on this number. Identical to the old arithmetic for any
+        # run with at least one cent of losses, i.e. every real run.
         total_wins = sum(t.pnl for t in self.closed_positions if t.pnl > 0)
         total_losses = abs(sum(t.pnl for t in self.closed_positions if t.pnl < 0))
-        profit_factor = total_wins / max(total_losses, 0.01)
+        if total_losses > 0:
+            profit_factor = total_wins / total_losses
+        else:
+            profit_factor = 999.0 if total_wins > 0 else 0.0
         
         # Sharpe ratio — resampled to daily returns to avoid inflation from
         # irregular per-trade sampling (a 3-hour trade is not a daily return).
