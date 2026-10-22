@@ -1,21 +1,25 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Rewritten 2026-10-22 (second session that day), kept current through the fifth.
+Rewritten 2026-10-22 (second session that day), kept current through the sixth.
 Each prompt below is self-contained: paste one as the first message of a fresh
 session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–56** from 2026-10-22.
-  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **all DEPLOYED (55)** — and
-  **25 (56)**. **Still open hazards: 19, 26, 36**, plus the tail of **24/48**:
-  the live volume is now *current* on all six epics but still **25% short on
-  GOLD history inside the 2y window**, so UI GOLD backtests remain wrong until
-  prompt 6 item 2 is done. That is the single highest-value remaining chore. 19 now has a built, tested fix (51) that is deliberately
-  **switched off** — the backtest says flattening removes the only profitable
-  cohort. Prompt 2 is now a decision backed by one more measurement, not a
-  build task. Everything from those sessions is now deployed (gotcha 55); the
-  flatten shipped with it but stays switched off.
+- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–59** from 2026-10-22.
+  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **all DEPLOYED (55)** — plus
+  **25 (56)**, **56's GOLD data gap** and **59** (the zero-P&L rows).
+  **Still open hazards: 19, 26, 36, and the NEW 57.**
+  - **Read gotcha 57 before trusting any backtest number, on any instrument.**
+    Every stored M5 bar, in both DBs, for every instrument, is **mid price at an
+    account-local (UTC+2) label** — except GOLD, now re-based to bid/UTC in both.
+    It is invisible in bar counts, OHLC sanity checks and price ranges; it only
+    shows against the broker. PF and win rate survive it (a constant offset is a
+    no-op for Supertrend) but **everything clock-keyed does not**: `skip_hours`,
+    `time_exits`, and every hour-of-day table in these docs.
+  - 19 has a built, tested fix (51) that is deliberately **switched off** — the
+    backtest says flattening removes the only profitable cohort. Prompt 2 is a
+    decision backed by one more measurement, not a build task.
 - **Standing constraint:** the three live bots (GOLD, ETHUSD, US100) run on a
   **demo** account in `stockscreener-trading-bot-1`. Do not change live config,
   size, or bot state without explicit instruction. Research and tests are free;
@@ -74,6 +78,22 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 ---
 
+## Where to start — open prompts in priority order (as of the sixth session)
+
+| # | prompt | size | why here |
+|---|---|---|---|
+| **11** | Finish the bar-data repair | **small** | One `DELETE` with a measured payoff (16 phantom trades, −$996) and a human is required. Its item 2 also decides whether the other five instruments get re-based — which gates how much of prompt 8's evidence is trustworthy. |
+| **3** | GOLD live/backtest divergence | medium | Still the deepest open question (93 live vs 61 backtest, PF 0.646 vs 1.046). **Now has a third lead** — live runs on ASK candles, backtests on BID (gotcha 57) — and its premise improved: GOLD's data is finally broker-exact. |
+| **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` before the decision is anything but a guess. Unblocked and unchanged; the switch is already in the running image, so enabling it later is config, not a deploy. |
+| **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. **Do prompt 11 item 2 first if you intend to lean on any US100 hour-of-day evidence** — gotcha 57 means those hours are mislabelled. |
+| **9** | Small open items | small | Includes the US100 `--quantity` fragility (gotcha 55) — a bot restarted from the UI without an explicit quantity silently trades 0.5. |
+| **10** | Keep running these bots? | — | Standing question. Prompt 3 is still the prerequisite for answering it with evidence. |
+
+**Closed:** 1 (deploy), 4 and 5 (coverage), 6 (UI backtests + GOLD data), 7 (zero-P&L rows).
+Their prompts are retained below as closed markers so the numbering keeps resolving.
+
+---
+
 ## What the 2026-10-22 sessions closed
 
 | old prompt | outcome |
@@ -89,6 +109,8 @@ session. They assume the agent reads `CLAUDE.md` first.
 | nothing force-closes a position | **built, shipped OFF** — mechanism done + tested; the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated first (gotcha 51) |
 | `backtesting_skill.py` coverage (old prompt 4) | **done** — 59% → **100%**; 6 findings, 2 fixed (the PF divide-by-zero guard reporting 100x gross wins, and a docstring that understated dynamic sizing 10x) (gotcha 53) |
 | `capital_api.py` coverage (old prompt 5) | **done** — 19% → **100%**; `place_order` was at 0%. 2 live bugs fixed: `create_session`'s 429 branch was dead (`Response.__bool__` is `self.ok`), and `get_historical_prices` returned account-local timestamps, putting the live warm-up buffer 2h off the DB bars — which closes half of prompt 3's remaining lead (gotcha 54) |
+| UI backtests lying — stale runner + GOLD data (old prompt 6) | **done** — runner rebuilt (56); GOLD re-based to bid/UTC with a full 199,400-bar re-fetch, volume now matches host on **99.999%** of common bars. The 25%-missing diagnosis was right but **incomplete** — see gotcha **57**. One `DELETE` left for a human (prompt 11) |
+| Aug–Oct zero-P&L `trade_history` (old prompt 7) | **done** — 381/381 matched, 0 unmatched, **−$1,672.63** recovered from rows the dashboard showed as `$0.00`. New `repair_zero_pnl.py`; **not** `backfill_trade_history.py`, which rewrites every field of every row in the window (gotcha 59) |
 
 Four bugs the coverage work found in the live loop, all fixed and now **deployed**
 (gotcha 55):
@@ -700,3 +722,81 @@ bots that are actually trading.
 > salvageable on paper (GOLD) is the one whose backtest we cannot yet trust.
 > Prompt 3 is the prerequisite for answering this question with evidence rather
 > than hope.
+
+---
+
+## 11. Finish the bar-data repair — one `DELETE`, then a scoping decision
+
+> Read `CLAUDE.md` gotchas **57** (the convention defect), **56** (what the GOLD
+> re-fetch did and did not fix), **58** (`--years` is not a calendar window) and
+> **24** (which DB is which).
+>
+> **This is the smallest remaining task with a measured payoff, and item 1 needs a
+> human because it is a `DELETE` against the live trading DB.** The auto-mode
+> classifier blocks it, correctly.
+>
+> ### 1. Delete GOLD's 7,887 phantom bars (cost already measured: 16 trades, −$996)
+> The full re-fetch overwrote every *real* label but `INSERT OR REPLACE` cannot
+> remove legacy labels that have no true UTC counterpart. What survives sits at
+> **hour 21 (4,209 rows) and hour 22 (3,329)** — the +2h tail past GOLD's 21:00
+> UTC close, Friday over-represented (2,088) — i.e. **bars during market closure.**
+>
+> Their cost is not a guess. Joining the post-re-fetch `trades.csv` against the
+> authoritative CSV isolates them exactly: **16 trades entered on timestamps that
+> do not exist in the broker's series, 2 wins / 14 losses, −$996.** Excluding them
+> leaves 494 trades / +$1,686 / 105 winners — the same trade count as the host.
+>
+> The authoritative set is **`/data/GOLD_M5_full_authoritative.csv`** (199,400 rows,
+> written by the re-fetch and still in the volume). Anything in `candles` for
+> GOLD/M5 outside it is an orphan. Back up before deleting — it is bar data and
+> re-fetchable, but the DB is live:
+> ```python
+> # inside a container (/data IS the volume), or on the host with DB_PATH set
+> import csv, sqlite3, json
+> auth = {r['timestamp'] for r in csv.DictReader(open('/data/GOLD_M5_full_authoritative.csv'))}
+> con  = sqlite3.connect('/data/trading.db', timeout=30)
+> rows = con.execute("SELECT timestamp,open,high,low,close,volume FROM candles "
+>                    "WHERE epic='GOLD' AND timeframe='M5'").fetchall()
+> orph = [r for r in rows if r[0] not in auth]
+> json.dump(orph, open('/data/GOLD_M5_orphans_backup.json','w'))   # back up FIRST
+> with con:
+>     con.executemany("DELETE FROM candles WHERE epic='GOLD' AND timeframe='M5' "
+>                     "AND timestamp=?", [(r[0],) for r in orph])
+> ```
+> Expect **199,400** GOLD M5 rows afterwards (plus whatever `bar_updater` has added
+> since). Then re-run the container backtest and expect it to land near
+> **494 trades / +$1,686 / 105 winners**; the residual against the host's
+> 493 / +$3,342 / 107 is the volume's ~10,866 extra bars at the series *start*
+> re-phasing the run (gotcha 58), **not** a defect.
+>
+> ### 2. Decide whether to re-base the other five instruments — a scoping call, not a chore
+> US100, ETHUSD, BTCUSD, EURUSD and SILVER are all still mid/local, in **both** DBs.
+> Re-fetching them is mechanically identical to what GOLD got:
+> ```bash
+> docker exec stockscreener-backtest-runner-1 python3 fetch_data.py \
+>     --epic US100 --timeframe M5 --bars 210000 --output /data/US100_M5_full_authoritative.csv
+> ```
+> **But it moves every documented baseline for them** (gotchas 28, 31, 33, 56), and
+> not in the way you would guess. The PF should barely move — a constant offset is a
+> no-op for Supertrend — while the **session changes**, because `skip_hours` gates on
+> the label. US100's intended 13:00–20:59 UTC session is currently gating
+> **11:00–18:59**, so re-basing it re-runs the strategy on a *different two hours of
+> the day* for the first time.
+> - **Do it one instrument at a time, and re-measure its baseline in the same
+>   session**, updating the gotcha that quotes it. A re-fetch without a re-measure
+>   leaves this file quoting numbers from data that no longer exists.
+> - Expect the orphan tail on each one too — same `INSERT OR REPLACE` limitation,
+>   same authoritative-CSV cleanup.
+> - **US100 is the one worth doing first**, because it is the only instrument with
+>   established backtest↔live parity (gotcha 33), so it is the only place where a
+>   session change can be *checked* against live rather than just observed.
+>
+> ### 3. While you are in here: two latent clock bugs worth one line each
+> - `capital_websocket._handle_ohlc` builds its candle time with
+>   `datetime.fromtimestamp(t / 1000)` — **naive local time.** The container's TZ is
+>   empty so it resolves to UTC today; set a TZ and every live candle silently
+>   shifts. Same family as gotcha 54(b) and `production_orchestrator.EndOfDayClose`.
+> - `risk_skill.py:221`'s rejection message reads `"🚫 Skip hour: {ts_hour:02d}h UTC"`
+>   and asserts UTC on whatever the bar label happens to be. On mid/local data that
+>   message is actively misleading — it is what makes gotcha 57 hard to notice from
+>   logs alone.
