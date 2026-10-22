@@ -34,6 +34,7 @@ Do not redo these; the measurements are in `CLAUDE.md`.
 | old prompt | outcome |
 |---|---|
 | 1. `orchestrator/main.py` coverage | **done** — 13% → 95% (gotcha 44) |
+| 1. `trading_orchestrator.py` coverage | **done** — 15% → 100%; surfaced 3 latent bugs, none fixed (gotchas 49, 50) |
 | 2. `analysis_skill` tick-exit / MTF | **done** — 55% → 85% (gotchas 44, 45) |
 | 3. `execution_skill` / websocket + CI gate | **done** — 45% → 93%, 41% → 98%; `pytest.ini` + `.coveragerc`, `fail_under = 64` |
 | 4. the 20 "`test_pip_config`" failures | **done** — they were 20 across 3 files, 3 causes, one a real production bug (gotcha 40) |
@@ -42,36 +43,21 @@ Do not redo these; the measurements are in `CLAUDE.md`.
 
 ---
 
-## 1. `trading_orchestrator.py` coverage — the live event loop, at 15%
+## 1. `trading_orchestrator.py` coverage — **DONE 2026-10-22**
 
-> Read `CLAUDE.md` gotchas 41, 43 and 44.
+> 15% → **100%** (99 of 116 statements were uncovered; now 0). New suite
+> `tests/unit/test_live_orchestrator_loop.py` — 73 tests on a fake-skill
+> harness, no network, no broker. Secondary target also done:
+> `core/sl_tp_engine.py` 44% → **100%** via `tests/unit/test_sl_tp_engine.py`
+> (58 tests). Suite 768 → **899 passing, 0 failing**; total 69.02% → **71.62%**;
+> `.coveragerc` floor 64 → **69**.
 >
-> `orchestrator/trading_orchestrator.py` is at **15% (99 of 116 statements
-> uncovered)** and is the biggest real risk left. It is the loop
-> `bot_control_api` → `main.py` actually runs (`main.py:767`), and `main.py`'s
-> own 95% does not touch it. It owns:
->
-> - `on_candle` — the whole sequential pipeline: market_data → analysis →
->   reverse-signal close → risk → execution → storage/alerting;
-> - the **reverse-signal close** at line ~131, including the "broker rejected
->   the close, so abort the new entry" branch that is the only thing preventing
->   position accumulation, and the 1.5s settle sleep after it;
-> - `on_position_closed`, which threads realised P&L into the risk breakers —
->   the path gotcha 22 broke for three months;
-> - `warming_up`, which must suppress signals and orders during the historical
->   replay or the bot trades its own warm-up.
->
-> Build a fake-skill harness (each skill is just an object with `execute` /
-> handlers) and drive `on_candle` as a sequence. The pattern is already
-> established in `tests/unit/test_live_poll_loop.py` and
-> `tests/unit/test_live_bootstrap.py` — reuse it rather than inventing another.
->
-> Target ≥85%. Measure with `python3 -m pytest --cov` (bare — see gotcha 43) and
-> raise `fail_under` in `.coveragerc` only to a number the suite actually meets.
->
-> Secondary, if time allows: `core/sl_tp_engine.py` is at 44% with only 30
-> uncovered statements and is pure SL/TP arithmetic — the highest value per line
-> left, and exactly the kind of code where gotcha 31's 50× typo hid.
+> **Three latent bugs were surfaced and deliberately NOT fixed — see gotchas
+> 49 and 50.** The one that matters: the reverse-signal close hardcodes
+> `pnl=0.0`, which is gotcha 22's failure mode still live in that path
+> (verified against the real `RiskSkill`: four consecutive losing reverse exits
+> leave `consecutive_losses` at 0 and the daily-loss accumulator at 0.0).
+> Latent only because all six YAMLs set `reverse_signal_exit: false`.
 
 ---
 
