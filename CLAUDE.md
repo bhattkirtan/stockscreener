@@ -608,7 +608,15 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 
 14. **Backfilling historical trades — `backfill_trade_history.py`:**
     - Joins `/history/transactions` (realised P&L + `dealId`) against `kv_store/active_positions` (entry price, direction, size, SL/TP, `opened_at`) on `dealId`. Rows with no matching position are still written, P&L-only, flagged `partial: true`.
-    - `python backfill_trade_history.py --days 120 [--dry-run] [--instrument GOLD] [--db PATH]`
+    - `cd trading-bot-skills && python3 backfill_trade_history.py --days 120 [--dry-run] [--instrument GOLD] [--db PATH]`
+      — the script lives in **`trading-bot-skills/`**, not the repo root as this line used to imply.
+    - ⚠️ **It is repeatable but NOT safe to re-run blindly — it rewrites EVERY field of EVERY row in the
+      window.** `sqlite_api.save_trade` is `INSERT OR REPLACE` keyed on `deal_id`, and `build_trade`
+      reconstructs each row from the `active_positions` row, so a `--days 120` run rewrites all ~2,580
+      already-correct rows in order to repair the broken ones. Measured 2026-10-22, the damage is narrow
+      (it hardcodes `entry_time_estimated: True`, which the gotcha-13 fix made untrue for rows written
+      after it — 10 rows affected; 17 rows with no position row already carry zeros), but there is no
+      reason to accept it: **to repair only the zero-P&L rows, use `repair_zero_pnl.py` instead** (gotcha 59).
     - Run against the live DB from the host at `/var/lib/docker/volumes/stockscreener_trading_data/_data/trading.db`, or inside a container at `/data/trading.db`.
     - **2026-07-31 run:** 2573 trades over 120 days, 2556 (99.3%) joined to a position row.
 
@@ -1000,9 +1008,84 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
       | host documented (gotcha 54) | 2488 | 25.482% | 0.9733 | −$12,880 | 0 |
       | same container BEFORE | 16,999 | — | — | **+$185,306** | **6,973** |
       −3 trades is the container holding **128 fewer tail bars** (202,979 vs 203,107) — the identical drift mechanism that produced **+3** in gotcha 54, sign flipped. Exits **1851 SL / 634 TP** against gotcha 28's 1849/632.
-    - **⚠️ STILL OPEN — the live volume's GOLD history is sparse, so UI GOLD backtests still produce a wrong number** (thin data now, rather than wrong config). Inside the 2y window: host **141,972** bars vs volume **106,747 — 25% missing.** This is gotcha 29's starvation, **never backfilled**: gotcha 55's `bar_updater` fix keeps the volume *current* (all six epics track to the minute) but does not reach backwards. US100 is unaffected (near-identical depth). Fix with bar-count mode from inside a container, where `/data` is the volume: `docker exec stockscreener-backtest-runner-1 python3 fetch_data.py --epic GOLD --timeframe M5 --bars 50000` (≈173 days, spanning the starved Q2–Q4 2026).
+    - **✅ CLOSED 2026-10-22 — the volume's GOLD history is backfilled AND re-based.** It was reported here as
+      "thin data": inside the 2y window, host **141,972** bars vs volume **106,747 (25% missing)** — gotcha 29's
+      starvation, never backfilled, because gotcha 55's `bar_updater` fix keeps the volume *current* but never
+      reaches backwards. That diagnosis was right but **incomplete**: the bars that WERE present were also on the
+      wrong price side and time base (**gotcha 57**), which no bar count can reveal.
+      - **A 50,000-bar top-up is NOT the fix, and is actively worse than doing nothing.** It writes bid/UTC bars
+        into a mid/local series, leaving GOLD **spliced across two conventions mid-series**. Measured: the spliced
+        series gave **494 trades / PF 0.9664** against the host's **493 / PF 1.0555** on the same bar count.
+      - **The fix is a FULL re-fetch** (the whole series on one convention), which is what was run:
+        ```bash
+        docker exec stockscreener-backtest-runner-1 python3 fetch_data.py \
+            --epic GOLD --timeframe M5 --bars 210000 --output /data/GOLD_M5_full_authoritative.csv
+        ```
+        199,400 bars, 2024-01-01 23:05 → now, ~7 min. The volume's GOLD now matches the host on
+        **188,533 / 188,534 common bars (99.999%)** with **zero host-only bars**; the single mismatch is the
+        host's final bar caught mid-formation, where the volume holds the completed version.
+      - **The re-based series restores the sign of GOLD's edge** (container, `--bars 188534`):
+        | run | trades | WR | PF | P&L | w/l |
+        |---|---|---|---|---|---|
+        | host documented (gotcha 54) | 493 | 21.704% | 1.0555 | +$3,342 | 107 / 386 |
+        | **spliced** (50k top-up only) | 494 | 20.243% | **0.9664** | **−$2,064** | 100 / 394 |
+        | **after full re-fetch** | 510 | 20.980% | **1.0110** | **+$690** | **107** / 403 |
+        The winner count lands back on the host's **107 exactly**. The spliced run is the one to
+        disbelieve, and note it was the *more plausible-looking* number — a tidy 494 trades.
+      - **⚠️ ONE STEP REMAINS: 7,887 phantom bars are still in the volume, and their cost is now measured.**
+        Joining the run's `trades.csv` against the authoritative CSV isolates them exactly: **16 trades were
+        entered on a timestamp that does not exist in the broker's series — all at hours 21 and 22, 2 wins /
+        14 losses, −$996.** Excluding them leaves **494 trades / +$1,686 / 105 winners**, i.e. the same trade
+        count as the host; the residual vs +$3,342 is the volume's ~10,866 extra bars at the series *start*
+        re-phasing the run (gotcha 58), not a data defect. `INSERT OR REPLACE` is keyed on
+        `(epic, timeframe, timestamp)`, so the re-fetch overwrote every *real* label but could not remove legacy
+        labels that have no true UTC counterpart. They are the +2h tail past GOLD's 21:00 UTC close —
+        **4,209 at hour 21 and 3,329 at hour 22**, Friday over-represented (2,088) — i.e. **bars during market
+        closure**, which is precisely what contaminates a Friday-flatten or session-hours analysis (gotcha 51).
+        The authoritative timestamp set is `/data/GOLD_M5_full_authoritative.csv` (199,400 rows); anything in
+        `candles` outside it is an orphan. Deleting them is a `DELETE` against the live trading DB, so it was
+        left for a human to run deliberately rather than done in passing.
+      - US100 is unaffected by the *depth* problem (near-identical counts) but **is** affected by gotcha 57.
     - **`DB_PATH` was already pinned** per-service in `docker-compose.yml` to `/data/trading.db`, so containers were never exposed to gotcha 24 — that trap is **host-run scripts only**, where `.env` sets nothing. **Do not pin `DB_PATH` in `.env` until the GOLD backfill is done:** it would point host runs at the *thinner* GOLD data and make them worse, since the host DB is currently the better one for GOLD (gotcha 53's correction). Order matters.
     - **Operational notes for in-container backtests**, both of which read as failure and are not: a 2y run gets **~15% of a core** because it competes with the three live bots (172s CPU over ~20min wall; the host run took ~4min), and Python **buffers stdout**, so the log looks dead the entire time. Poll for `/data/results/<EPIC>/<run>/report.json` instead of tailing. Results land in **`/data/results/`** (the volume), **not** `/app/results/` — a waiter looking in `/app/results` finds nothing and reports a false failure.
+
+57. **STORED BARS USE A DIFFERENT PRICE SIDE AND TIME BASE THAN THE CODE THAT READS THEM. Measured 2026-10-22 against the live broker; this is the most consequential measurement defect found so far, because it is invisible in every summary statistic.** Every M5 bar in **both** `trading.db` files, for **every instrument**, was written as **mid price at an account-local (UTC+2) timestamp** — except GOLD, whose host copy gotcha 29's repair re-fetched through the corrected path, and whose live-volume copy this session re-fetched (see gotcha 56).
+    - **How it was proved, and why summary stats cannot see it.** A fresh `/api/v1/prices/GOLD` fetch parsed through `fetch_data.parse_candle` matches the **host** GOLD series **bit-for-bit**, but disagrees with the **volume** series on 100% of bars. Both series are internally coherent (each bar's close chains to the next bar's open), so nothing looks broken; bar counts, OHLC sanity checks and price ranges all pass. The defect only appears when you compare against the broker.
+    - **Both offsets are exact, not approximate** (US100, verified to 6 decimals on consecutive bars):
+      | | value |
+      |---|---|
+      | DB bar labelled `T` | holds the UTC `T − 2h` bar |
+      | DB price | `(bid + ask) / 2` — **mid** |
+      | `parse_candle` price | `bid` |
+      | US100 spread | 1.80 → DB is **+0.90** on every OHLC field = exactly half-spread |
+      The raw broker row makes the time half self-evident: `snapshotTime=2025-06-12T13:35:00` vs `snapshotTimeUTC=2025-06-12T11:35:00`.
+    - **Scope, measured per instrument** (host vs volume vs fresh broker, June 2025 window): **ETHUSD and US100 are 100% identical between the two DBs and both differ from the broker** — i.e. both DBs are equally mid/local. **GOLD host == broker** (correct). BTCUSD / EURUSD / SILVER exist only in the volume and are mid/local too. So "host is the good DB" is true **only for GOLD**; for every other instrument the two DBs agree with each other and both disagree with the broker.
+    - **What this does and does not change.** A uniform additive price offset and a uniform label shift leave the OHLC **sequence** untouched, and Supertrend/ATR/EMA are all computed from differences — `Supertrend(series + c) == Supertrend(series) + c`. **So PF, win rate and trade counts are NOT invalidated by the offsets themselves.** What *is* wrong is everything keyed on the clock:
+      - **`skip_hours` gates on the label.** `risk_skill.py:221` is `ts_hour = pd.Timestamp(candle_ts).hour`, and its rejection message reads `"🚫 Skip hour: {ts_hour:02d}h UTC"` — **asserting UTC on a timestamp that is account-local.** US100's `skip_hours: [0..12, 21..23]` is intended as a 13:00–20:59 UTC session; on mid/local bars it actually gates **11:00–18:59 UTC**. The documented US100 PF therefore does not describe the session the config intends, and **gotcha 28's hour-by-hour P&L table is labelled 2h late** (its "hours 13–20 all negative, hour 21 positive" is really UTC 11–18 negative, 19 positive).
+      - `risk.time_exits` (Friday 20:45) and `time_based_exits.max_hours` are likewise label-keyed, so gotcha 51's weekend-carry cohort is 2h off **for US100** (its GOLD half was measured on the host, which is correct).
+      - Any hour-of-day or session analysis on US100/ETHUSD/BTCUSD/EURUSD/SILVER.
+    - **The live bot is on a THIRD convention: ASK.** `capital_websocket._handle_ohlc` is explicit — *"Capital.com sends both BID and ASK/OFR candles for each bar. Only the ASK/OFR candle is passed to on_candle"* — while `parse_candle` stores **bid** and justifies it as *"so that Supertrend and signal logic see the same prices the live bot sees."* **The two comments each claim consistency with the live bot and they cannot both be right:** live runs on ask, backtest on bid. `parse_candle`'s stated goal is not achieved by its own choice. A *constant* spread is a no-op for Supertrend (see above), but spread is **not** constant — it widens at news and rollover — so this is a live-vs-backtest divergence source that **has never been tested**, and a new lead for gotcha 36 alongside the WebSocket-vs-REST bar-boundary question.
+    - **Latent, not yet biting:** `_handle_ohlc` builds its candle time with `datetime.fromtimestamp(t / 1000)` — **naive local time**, the same defect gotcha 51 flags in `production_orchestrator.EndOfDayClose`. The container's TZ is empty (UTC), so it currently resolves to UTC; a container with a TZ set would silently shift every live candle. Same family as gotcha 54(b).
+    - **Deliberately NOT repaired beyond GOLD.** Re-fetching US100/ETHUSD would move every documented baseline for them (gotchas 28/31/33/56) and is a decision with a measurement cost, not a cleanup. **If you do re-fetch an instrument, re-measure its baseline in the same session and update the gotcha that quotes it** — and expect the *session* to change, not the PF.
+    - Verify any instrument in one step: fetch a window via `parse_candle` and compare against the DB at the same label, then at label −2h. Exact match at −2h with a constant offset == this defect.
+
+58. **`--years N` is NOT a calendar window — it is a 24/7 bar-count approximation, so on anything that does not trade 24/7 it silently means "the whole DB".** `run_skills_backtest.py:885` is `args.bars = int((args.years * 365 * 24 * 60) / minutes_per_bar)`, so `--years 2` on M5 requests **210,240 bars**. GOLD trades ~5 days/week, so two calendar years is only ~142,000 M5 bars — the request exceeds the entire series and the run uses everything available.
+    - Consequence: **every "GOLD 2y" figure in this file is really a ~2.65-year run over the full DB**, and two runs of "the same" `--years 2` on DBs of different depth cover different periods. That is not a rounding difference — the trade sequence is path-dependent through position occupancy (an open position blocks new entries), so a different start date re-phases the entire run, not just its edges. Measured here: the same config over 199,865 bars vs 188,534 bars gave **499 vs 493 trades but 102 vs 107 winners** — the outcome mix shifted throughout.
+    - So **`--years` is only comparable between runs on identical data.** To compare across DBs, pass an explicit `--bars N`. There is no `--from/--to` on this script.
+
+59. **The 381 zero-P&L `trade_history` rows are REPAIRED — `repair_zero_pnl.py`, 2026-10-22 (closes NEXT_SESSIONS prompt 7).** These are gotcha 22's residue: between the writer landing (2026-08-01) and the 2026-10-21 deploy, `get_activity()` returned `[]`, so every close was detected only by the 60s REST reconcile calling `_handle_close(deal_id, 0.0, '')`.
+    - **The signature is unambiguous and worth recognising:** all 381 were `pnl: 0.0` **and** `exit_reason: 'SIGNAL'` (the `description=''` → `'SIGNAL'` fallthrough), and 380 of 381 were live-written rather than backfilled. If you see that pair, it is this bug.
+    - **Result: 381/381 matched a `/history/transactions` row, 0 unmatched.** Net P&L the dashboard had been showing as `$0.00`: **−$1,672.63** (us100 −1,481.61 / gold −202.41 / ethusd +11.39 / eurusd 0.00). One row is a **genuine broker break-even** and is reported as `confirmed-breakeven` rather than silently left looking broken — the distinction gotcha 38 introduced. Only 1 zero-P&L row remains, and it is that one.
+    - **Why a separate script instead of re-running `backfill_trade_history.py`:** see the warning added to gotcha 14. This one touches **only** rows whose `pnl` is currently `0.0`, and writes **only** the P&L fields (`pnl`, `pnl_pct`, `pnl_estimated`, plus `exit_price` when it was `0.0` and is recoverable from entry+size+pnl). Every other field is preserved, and each repaired row is stamped `pnl_repaired: true` + `pnl_repaired_at` for provenance. It is a per-row `UPDATE`, not an `INSERT OR REPLACE`.
+    - **`exit_reason` is deliberately NOT repaired and cannot be.** `/history/transactions` carries no exit reason, and `/history/activity` is hard-capped at 24h (gotcha 12), so the real SL/TP reason for an August close is gone for good. Those rows stay `SIGNAL`. **Do not read the repaired rows' exit mix as strategy evidence** — use the post-deploy rows for that.
+    - Usage (**always set `DB_PATH` explicitly** — a bare host run silently uses the 35MB stray DB, gotcha 24):
+      ```bash
+      cd trading-bot-skills
+      DB_PATH=/var/lib/docker/volumes/stockscreener_trading_data/_data/trading.db \
+        python3 repair_zero_pnl.py --dry-run      # then drop --dry-run
+      ```
+      Takes ~6 min: `/history/transactions` is capped at 100 rows per response and rejects `lastPeriod > 86400`, so it reuses `backfill_trade_history.fetch_transactions`'s 12h window chunking (gotcha 15) over the whole span — ~370 windows for the Apr→Oct range.
+    - Idempotent: a second run finds only the genuine break-even row (`pnl` is no longer 0.0 on the repaired ones) and changes nothing. A pre-write backup of all `trade_history` rows is cheap and worth taking — one `SELECT` to JSON.
 
 ---
 

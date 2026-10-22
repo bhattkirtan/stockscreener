@@ -296,8 +296,28 @@ bots that are actually trading.
 > 4. startup-flip suppression — it would make live take **fewer** trades, and
 >    live takes more.
 >
-> **Two untested leads remain. Start with A — it is far cheaper, and it is the
-> one whose failure mode matches the direction of the error.**
+> **NEW LEAD, 2026-10-22 — the live bot and the backtest run on DIFFERENT PRICE
+> SIDES, and each half of the code claims to be the consistent one.** See gotcha 57.
+> `capital_websocket._handle_ohlc` passes **only the ASK/OFR candle** to `on_candle`
+> ("that's the price you pay to BUY"); `fetch_data.parse_candle` stores **bid**
+> ("so that Supertrend and signal logic see the same prices the live bot sees").
+> Both comments assert consistency with live; they cannot both be right, and
+> `parse_candle`'s stated goal is not met by its own choice.
+> - **Why it is not obviously the answer:** a *constant* additive offset is a strict
+>   no-op for Supertrend, since ATR is built from differences —
+>   `Supertrend(series + c) == Supertrend(series) + c`. So a fixed spread changes
+>   nothing at all.
+> - **Why it is still worth testing:** the spread is **not** constant — it widens at
+>   news and at rollover — so the ask series is not the bid series plus a constant,
+>   and flip *timing* can differ exactly when volatility is highest. That is a
+>   mechanism for extra live flips, which matches the direction of the error
+>   (live takes **more** trades, not fewer).
+> - **Cheapest test:** re-fetch a GOLD window with `parse_candle` modified to take
+>   `ask` instead of `bid`, backtest both, and compare trade counts and flip counts.
+>   No deploy, no live risk. If ask-based backtesting moves 61 toward 93, this is it.
+>
+> **Two older untested leads also remain. Start with A — it is far cheaper, and it is
+> the one whose failure mode matches the direction of the error.**
 >
 > **Lead A — the live MA100 bias was computed over starved bars.** MA100 bias is
 > the *only* entry filter on GOLD, and live computes it over whatever the rolling
@@ -459,10 +479,20 @@ bots that are actually trading.
 
 ---
 
-## 6. Make UI backtests stop lying — **rebuild DONE, GOLD data still thin**
+## 6. ~~Make UI backtests stop lying~~ — **DONE 2026-10-22 20:00, one DELETE left for a human**
 
-> **STATUS 2026-10-22 19:30: item 1 CLOSED, item 3 partly done, item 2 is what
-> remains — and it is now the ONLY thing stopping UI GOLD backtests from lying.**
+> **STATUS 2026-10-22 20:00: items 1, 2 and 3 are all CLOSED.** The GOLD backfill
+> turned out to be only half the problem — the bars that were already there were on
+> the wrong price side and time base (**new gotcha 57**), which no bar count reveals.
+> A 50k top-up made it *worse* (a series spliced across two conventions); the fix was
+> a **full 199,400-bar re-fetch**, after which the volume matches the host on
+> **99.999%** of common bars. **One step remains and it needs a human:** 7,887 phantom
+> bars (hours 21–22, past GOLD's 21:00 UTC close) survive the re-fetch because
+> `INSERT OR REPLACE` cannot remove labels with no true counterpart. Removing them is a
+> `DELETE` on the live trading DB — see gotcha 56's closing bullet for the exact
+> authoritative-set recipe.
+>
+> **Historical note — item 1 CLOSED, item 3 partly done, item 2 was the last blocker:**
 > Read `CLAUDE.md` gotchas **25**, **29**, **48**, **24** and **55**.
 >
 > ### ✅ 1. Stale runner — FIXED. `docker compose build backtest-runner && docker compose up -d backtest-runner`.
@@ -533,7 +563,19 @@ bots that are actually trading.
 
 ---
 
-## 7. Repair Aug–Oct `trade_history` — 365 rows of zeros
+## 7. ~~Repair Aug–Oct `trade_history`~~ — **DONE 2026-10-22**
+
+> **CLOSED: 381/381 rows matched a `/history/transactions` row, 0 unmatched.**
+> Net P&L the dashboard had been showing as `$0.00`: **−$1,672.63** (us100 −1,481.61 /
+> gold −202.41 / ethusd +11.39 / eurusd 0.00). One row is a genuine broker break-even
+> and is now flagged as such; it is the only zero left. Done with a new
+> **`trading-bot-skills/repair_zero_pnl.py`**, which touches only zero-P&L rows and
+> only their P&L fields — **not** `backfill_trade_history.py`, which rewrites every
+> field of every row in the window (see the warning now in gotcha 14). `exit_reason`
+> is unrepairable by design: transactions carry no reason and activity is capped at 24h.
+> Read **gotcha 59**.
+>
+> **Historical framing below.**
 
 > Read `CLAUDE.md` gotchas **22** (how the zeros happened), **13** (the writer
 > and its idempotency) and **14** (the backfill tool), plus **15** and **21**
