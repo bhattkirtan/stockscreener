@@ -19,12 +19,16 @@ the agent reads `CLAUDE.md` first.
 - **Nothing in the last three sessions is deployed.** The live bots run baked-in
   image code. See prompt 1 — this is the biggest gap between what the repo says
   and what is actually trading.
-- **Git state:** branch `fix/gate-unification-and-live-path-coverage`, **26
-  commits ahead of `origin/main` and NOT pushed** (no GitHub credentials in the
-  container environment — the human pushes). `origin/main` is at `ed2357f` and
-  lacks `reverse_signal_exit`, the risk breakers, `.coveragerc` and `pytest.ini`
-  entirely, so **the branch is not separable** — cherry-picking individual
-  commits onto `main` was tried and fails on the first one.
+- **Git state:** branch `fix/gate-unification-and-live-path-coverage`, **29
+  commits ahead of `origin/main` and NOT pushed.** Pushing from this container
+  is **confirmed impossible**, not merely untried — `origin` is the HTTPS remote
+  `https://github.com/bhattkirtan/stockscreener.git`, a push fails with
+  `fatal: could not read Username for 'https://github.com'`, and `gh` is not
+  installed. **The human pushes; do not spend a session retrying it.**
+  `origin/main` is at `ed2357f` and lacks `reverse_signal_exit`, the risk
+  breakers, `.coveragerc` and `pytest.ini` entirely, so **the branch is not
+  separable** — cherry-picking individual commits onto `main` was tried and
+  fails on the first one.
 - **`position_size` is settled, don't re-litigate it:** committed as `c0fb630`,
   then deliberately **reverted** by `6a26450`. GOLD therefore still trades 0.5
   contracts against an intended 10. Recover with `git show c0fb630` only when

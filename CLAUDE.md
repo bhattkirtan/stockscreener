@@ -126,7 +126,9 @@ All services share a `trading_data` Docker volume mounted at `/data` (SQLite DB 
 - EMA and SMA(25/30) filters **disabled** — MA100 bias is the only filter
 - Tick exit enabled (Supertrend trail cross closes position in live mode)
 - No reverse-signal exit — SL / TP / tick exit only
-- EOD close at 16:00 UTC
+- **No EOD close — nothing force-closes a live position** (gotcha 19). The old
+  "EOD close at 16:00 UTC" line here was never true of the live bot: exits are
+  SL / TP / tick-exit only. A flatten mechanism now exists but ships **off** (gotcha 51).
 
 **Config cascade (important):**
 ```
@@ -218,7 +220,9 @@ docker compose --profile build run --rm react-builder
 - **Session filter:** `risk.skip_hours: [0,1,...]` — list of UTC hours where **new entries** are blocked (open positions still exit normally). Honored by both live (`risk_skill.py:141`) and backtest (`--skip-hours` CLI flag, or the YAML value directly). Use to avoid low-liquidity sessions.
 - **Consecutive-loss circuit breaker (opt-in, default OFF):** `risk.max_consecutive_losses: N` blocks all new entries after N losing trades in a row for `risk.consecutive_loss_cooldown_minutes` (default 120), then resets; a win resets the counter immediately. `0` = disabled. Backtest with `--set risk.max_consecutive_losses=4 --set risk.consecutive_loss_cooldown_minutes=720`. **Note:** on trend-followers this is a safety rail, not a profit lever — the GOLD/ETH sweep was non-monotonic/path-dependent (pausing can lock you out of the recovery leg), so it's left disabled on both.
 - **Daily-loss limit (opt-in):** `risk.max_daily_loss_usd: X` halts new entries once the current UTC day's realised P&L breaches -X; auto-clears at UTC rollover. `0` = disabled. **Requires real $ P&L** at close — `on_position_closed(pnl=...)` now threads it from both live and backtest. Backtest with `--set risk.max_daily_loss_usd=150`. **Instrument-specific:** enabled on ETHUSD ($150 — improves return+DD+Sharpe there) but left OFF on GOLD, where it worsens results (trend lock-out). Same meta-pattern as the consecutive breaker: helps ETH, hurts GOLD.
-- **EOD close:** `time_based_exits.eod_hour` (UTC)
+- **EOD close / flatten:** `time_based_exits.eod_hour` is **DEAD** — read only by
+  `production_orchestrator.py`, which the live bot does not run (gotcha 19). The live
+  mechanism is `risk.time_exits` (per-instrument, Friday-specific, defaults off) — gotcha 51.
 - **Position size:** `risk.position_size_pct` and `risk.max_position_size`
 - **Bot mode:** `bot.mode: AUTO` (trades) or `SIGNAL_ONLY` (logs only, no orders)
 
@@ -266,6 +270,11 @@ DATA_DIR=/data
 ## Bar Data: What's in the DB, How to Get More
 
 ### What's currently in `/data/trading.db`
+
+> ⚠️ **The block below is from early 2026 and is badly stale — and worse, there are
+> THREE different `trading.db` files. Read gotcha 24 (which DB is which) and gotcha 48
+> (the GOLD bar repair landed in the host *stray* DB, not the live volume) before
+> trusting any bar count or running a backtest.**
 
 ```
 GOLD  M5   150,261 bars  from 2024-02-26  to 2026-04-10
@@ -484,7 +493,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
 
 5. **`bot.mode: AUTO` vs `SIGNAL_ONLY`:** In `SIGNAL_ONLY` mode, no orders are placed. Use this to verify signals before going live.
 
-6. **EOD close default:** EOD close is enabled at 16:00 UTC. Backtests should match — if you disable it in one place, disable in both.
+6. **EOD close default — this entry was WRONG and is corrected here.** EOD close is **not** enabled anywhere that matters: `time_based_exits.eod_hour: 16` is read only by `production_orchestrator.py`, which the live bot does not run, and no backtest path reads it either. The backtester **does** implement one time exit — a max-hold from `time_based_exits.max_hours` (`backtesting_skill.py:398`) — but the base config sets `max_hours: 0`, so it is inert. So live and backtest currently "match" by both carrying positions indefinitely. See gotcha 19 for the confirmed −$153 weekend-gap cost and gotcha 51 for the opt-in replacement (`risk.time_exits`).
 
 7. **Docker volume:** The `trading_data` volume persists between restarts. If the DB is corrupt or you want a clean slate: `docker compose down -v` (destroys all data).
 
@@ -772,7 +781,8 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     | `skills/market_data/market_data_skill.py` | — | 84% |
     | TOTAL (skills+clients+core+orchestrator) | — | **69.0%** |
     `fail_under = 64` (measured minus ~5, since the before/after measurement forms differ). **768 tests passing, 0 failing.** New suites: `test_live_poll_loop.py` (66), `test_live_bootstrap.py` (63), `test_live_tick_exit.py` (102), `test_live_execution_and_socket.py` (87).
-    - **The real remaining gaps, ranked by uncovered statements on risky paths:** `orchestrator/trading_orchestrator.py` **15%** (99 uncovered — this is the *live event loop* `bot_control_api` actually runs, and it owns the reverse-signal close; the biggest real risk left), `clients/capital_api.py` 19% (172, needs HTTP mocking), `clients/firestore_api.py` 12% (140), `skills/reporting/reporting_skill.py` 11% (209, low risk), `core/sl_tp_engine.py` 44% (30 uncovered but it is pure SL/TP arithmetic — high value per line).
+    - ⚠️ **This gotcha's numbers are the 2026-10-22 *morning* snapshot and two of its "remaining gaps" are now CLOSED** — `trading_orchestrator.py` 15% → **100%** (gotcha 49) and `core/sl_tp_engine.py` 44% → **100%** (gotcha 50). Current canonical figures live in gotcha 51: **984 passing, 72.67% total, `fail_under = 69`** (raised from 64 by gotcha 49).
+    - **Gaps that are still real, ranked by uncovered statements on risky paths:** `clients/capital_api.py` **19%** (172 uncovered — the broker boundary, needs HTTP mocking; NEXT_SESSIONS prompt 5), `clients/firestore_api.py` 12% (140), `skills/backtesting/backtesting_skill.py` 59% (111 — every strategy number comes from here; prompt 4), `skills/reporting/reporting_skill.py` 11% (209, low risk).
     - **Testing the infinite poll loop:** `_poll_positions`'s `reconcile_every = max(1, 60 // interval)` means a reconcile is 60 real seconds away at any sane interval, and `60 // 0.01` is huge rather than small. Wall-clock-bounded tests are also flaky under coverage overhead. The working pattern is a `fast_clock` fixture that monkeypatches `asyncio.sleep` to an immediate yield and a runner bounded by **yield count, not elapsed time**; `interval=61` makes `60 // 61 == 0`, so `max(1, 0)` reconciles every cycle.
 
 45. **`DataFrame.asof` returns only rows with NO NaN in ANY column — so every MTF gate silently no-ops during indicator warm-up.** `_check_mtf_confluence` looks its row up with `.asof()`, and `h1_bb_middle` is NaN for the first `h1_bb_period` (20) rows. Any lookup landing in the warm-up window returns an all-NaN row and the gate allows rather than blocks. Each timeframe also subtracts its own offset first (H1 −1h, 4h −4h, daily −24h) to avoid reading a forming bar, so a frame must *start* before `lookup − offset` or asof finds nothing. Both bit the previous tests here. Also note `load_h1_history` does **not** resample — it indexes whatever candles it is handed, so 60 M5 candles become 60 "H1" rows.
@@ -835,6 +845,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - ETHUSD deliberately has no `time_exits` block at all: it trades the weekend, so there is no gap to cap.
     - **Found while wiring it:** `US100.yaml` already had `trading_hours.friday_close_hour: 20` under `trading_hours.enabled: false` — the intent existed and nothing read it. And `production_orchestrator.EndOfDayClose` has two defects if anyone reaches for it: `datetime.now()` (**local time**, compared against a UTC config hour) and `hour >= close_hour`, true for every later hour of every day.
     - Cover: `tests/unit/test_time_exits.py` (72 tests — clock, tz/string parsing, the gate, and the poll loop closing/retrying/booking-nothing). Module at 100%; `main.py` and `risk_skill.py` hold at 95% / 82%. Suite **984 passing, 0 failing, 72.67%** (floor 69).
+    - ⚠️ **`max_hold_hours` now exists TWICE, on opposite sides — do not enable one alone.** `risk.time_exits.max_hold_hours` (new, this gotcha) is **live-only**; `time_based_exits.max_hours` (`backtesting_skill.py:194`, exit at `:398`) is **backtest-only** and was already there. Both default to `0`, so nothing diverges today, but setting either one by itself silently makes live and backtest disagree on hold time. The EOD/Friday *flatten* has no backtest counterpart at all — `max_hours` is the only time exit the backtester models.
     - **`guaranteedStop` is still false on every position**, so an *intraweek* gap (a Wednesday news spike) remains uncapped. The Friday flatten never addressed that; it is a separate decision.
 
 ---
