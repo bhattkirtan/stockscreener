@@ -6,11 +6,12 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–55** from 2026-10-22.
-  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **and all of them are now
-  DEPLOYED (55).** **Still open hazards: 19, 24, 25, 26, 36.** (48 is resolved
-  for the live volume: `bar_updater` works in-container again and all six epics
-  are current — the host/volume split still matters for *backtests*.) 19 now has a built, tested fix (51) that is deliberately
+- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–56** from 2026-10-22.
+  Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **all DEPLOYED (55)** — and
+  **25 (56)**. **Still open hazards: 19, 26, 36**, plus the tail of **24/48**:
+  the live volume is now *current* on all six epics but still **25% short on
+  GOLD history inside the 2y window**, so UI GOLD backtests remain wrong until
+  prompt 6 item 2 is done. That is the single highest-value remaining chore. 19 now has a built, tested fix (51) that is deliberately
   **switched off** — the backtest says flattening removes the only profitable
   cohort. Prompt 2 is now a decision backed by one more measurement, not a
   build task. Everything from those sessions is now deployed (gotcha 55); the
@@ -199,6 +200,14 @@ bots that are actually trading.
 > consecutive-loss breaker off everywhere, flatten off everywhere, **zero
 > ERROR/Traceback lines in any bot log**. Pre-deploy baseline: **0 open
 > positions** (why that window was chosen), rollback image `sha256:6a54ba10a420`.
+>
+> ✅ **End-to-end close verification — completed 19:19 UTC, it PASSED.** This was
+> left open at deploy time because the startup flip gate suppresses entries until
+> the trend flips. The first post-deploy close: **US100 SELL, `pnl=132.3`,
+> `exit_reason='TP_HIT'`**, entry 29095.4 → exit 28946.9 (148.5 pts against a
+> configured TP of 150), `size=1.0`, `pnl_estimated=False`, `pnl_unknown=False`.
+> A real number with a real reason — not `0.0`/`SIGNAL` — and the size confirms
+> US100's `--quantity 1.0` survived the restart. 3h of running, zero errors.
 >
 > **`position_size` did not ride along** — verified in the deployed image, not
 > assumed: GOLD/ETHUSD have it only under `backtesting:`, so the broker still
@@ -450,42 +459,77 @@ bots that are actually trading.
 
 ---
 
-## 6. Make UI backtests stop lying — stale runner, split DBs
+## 6. Make UI backtests stop lying — **rebuild DONE, GOLD data still thin**
 
-> Read `CLAUDE.md` gotchas **25** (stale runner), **48** (split DBs) and **24**
-> (three different `trading.db` files).
+> **STATUS 2026-10-22 19:30: item 1 CLOSED, item 3 partly done, item 2 is what
+> remains — and it is now the ONLY thing stopping UI GOLD backtests from lying.**
+> Read `CLAUDE.md` gotchas **25**, **29**, **48**, **24** and **55**.
 >
-> Three separate problems that compound into "the dashboard's backtests describe
-> a strategy nobody runs":
+> ### ✅ 1. Stale runner — FIXED. `docker compose build backtest-runner && docker compose up -d backtest-runner`.
+> Verified after: `/app/run_skills_backtest.py` **992 lines == host**, and
+> `reverse_signal_exit` present **2×** (was 866 lines / **zero**, calling
+> `close_reverse_positions(...)` unconditionally). Configs now match the live
+> bot on all three traded instruments — GOLD SL15/TP60 + `require_sma_bias` +
+> `tick_exit` (**all three previously absent**), US100 ST(14, 1.5) +
+> `require_h1_bb: false` (was **ST(7, 2.0) + true**), ETHUSD SL25/TP125 (was
+> **45/170**). `check_deployed.py` reports **no drift on any container**.
 >
-> 1. **`stockscreener-backtest-runner-1` has stale baked CODE, not just config.**
->    `/app/run_skills_backtest.py` is 866 lines vs the host's 992 and contains
->    **zero** occurrences of `reverse_signal_exit`, calling
->    `close_reverse_positions(...)` unconditionally. So `docker cp`-ing correct
->    YAML in is **not sufficient** — a run with `reverse_signal_exit: false`
->    correctly loaded still produced 6,973 `Reverse Signal` exits and
->    `+$185,306`. It needs `docker compose build backtest-runner`.
-> 2. **The GOLD bar repair landed in the host stray DB, not the live volume**
->    (188,435 vs 163,867 bars at the time). So anything run inside a container
->    still sees starved GOLD data, and gotcha 24's usual advice *inverts* for
->    GOLD right now. Decide which DB is canonical, sync it, then **pin
->    `DB_PATH`** so a host-run script cannot silently create a third one
->    (`sqlite_api.py:30` defaults it and `:49` creates the parent dir).
->    **Measure the counts, do not quote the ones above** — they drift every day
->    the updater runs (host GOLD was 188,466 on the morning of 2026-10-22 and
->    188,534 by the afternoon). Only the *direction* is stable: host > volume
->    for GOLD. Read both with
->    `python3 -c "import sqlite3; print([r for r in sqlite3.connect(P).execute(\"SELECT epic,COUNT(*),MAX(timestamp) FROM candles WHERE timeframe='M5' GROUP BY epic\")])"`.
-> 3. After the rebuild, **re-run the documented regressions** and compare:
->    GOLD 2y should land near **493 trades / WR 21.70% / PF 1.055** and US100 2y
->    near **2488 / 25.48% / 0.973**. (Latest host-run figures, 2026-10-22 fifth
->    session — gotcha 54. Trade counts creep up by a few as the DB gains tail
->    bars; PF to three decimals is the stable comparison.) A large divergence
->    means the container is still not running what the host runs.
+> ### ⚠️ 2. THE REMAINING WORK — the live volume's GOLD history is still sparse.
+> `DB_PATH` turned out to be **already pinned** per-service in
+> `docker-compose.yml` to `/data/trading.db`, so containers were never at risk;
+> gotcha 24's trap applies only to **host-run** scripts, where `.env` sets
+> nothing. But the depth gap is real and it is the gotcha-29 starvation, never
+> backfilled:
 >
-> Treat any backtest number from that container as an artefact until this is
-> done. `sqlite3` CLI is **not installed** on the host — use
-> `python3 -c "import sqlite3..."`.
+> | | host `/data/trading.db` | live volume (containers) |
+> |---|---|---|
+> | GOLD, all bars | 188,534 | 164,099 |
+> | **GOLD, inside the 2y window** | **141,972** | **106,747 — 25% missing** |
+> | US100 | 203,107 | 202,979 (near-identical) |
+>
+> **The bar-updater fix (gotcha 55) made the volume *current* — all six epics
+> track to the minute now — but it does not backfill history.** So a UI-triggered
+> GOLD backtest still produces a wrong number: thin data instead of wrong
+> config. US100 is fine either way.
+>
+> **Do this:** backfill GOLD into the volume from inside a container, which is
+> where `/data` is the volume, using **bar-count mode** (`--from/--to` is the
+> path that was broken; `--bars N` always worked):
+> ```bash
+> docker exec stockscreener-backtest-runner-1 \
+>   python3 fetch_data.py --epic GOLD --timeframe M5 --bars 50000
+> ```
+> 50,000 M5 bars ≈ 173 days, which spans the starved Q2–Q4 2026 quarters.
+> Re-measure, repeat if the gap persists, then re-run the GOLD regression
+> in-container (item 3).
+>
+> **Only AFTER that, consider pinning `DB_PATH` in `.env`.** Doing it now would
+> point host-run backtests at the *thinner* GOLD data and make them worse — the
+> host DB is currently the better one for GOLD (gotcha 53's correction). The
+> ordering matters.
+>
+> ### ✅ 3. US100 regression — RUN, and it confirms the rebuild.
+> | | trades | WR | PF | P&L | Reverse Signal exits |
+> |---|---|---|---|---|---|
+> | **container, after rebuild** | **2485** | 25.513% | **0.9749** | −$12,100 | **0** |
+> | host documented (gotcha 54) | 2488 | 25.482% | 0.9733 | −$12,880 | 0 |
+> | **same container, BEFORE rebuild** (gotcha 25) | 16,999 | — | — | **+$185,306** | **6,973** |
+>
+> The −3 trades are the container having **128 fewer tail bars** than the host —
+> the same drift mechanism, with the sign flipped, that gave +3 in gotcha 54.
+> Exit mix is **1851 SL / 634 TP**, against gotcha 28's documented 1849/632.
+> **The fantasy numbers are gone.**
+>
+> **GOLD still cannot match** until item 2 is done — on 25% less data it takes
+> fewer trades, and that is **data, not code**. Do not read a GOLD mismatch as a
+> failed rebuild.
+>
+> ⚠️ **A 2y backtest inside the container is slow** — ~15% of a core, because it
+> competes with the three live bots. The host run took ~4 min; in-container took
+> far longer. Python also buffers the output, so the log looks dead while the run
+> is fine: check progress with `test -f /data/results/<EPIC>/<run>/report.json`
+> rather than by tailing the log. Results land in **`/data/results/`** (the
+> volume), not `/app/results/`.
 
 ---
 

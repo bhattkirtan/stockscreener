@@ -115,6 +115,21 @@ An automated trading system that:
 
 All services share a `trading_data` Docker volume mounted at `/data` (SQLite DB + results).
 
+**There are TWO nginxes.** The compose `nginx` container binds **`127.0.0.1:3000` only** — it is not
+reachable from the internet. Public traffic is served by a **host-level nginx** (Ubuntu package,
+`/etc/nginx/sites-enabled/capitalunlimited.de`) which terminates TLS via certbot on `:443` and
+reverse-proxies to `127.0.0.1:3000`. So the public URL is **https://capitalunlimited.de**, and the
+only ports open to the world are 22, 80 (certbot redirect → 443) and 443. Editing compose's nginx
+config does not touch TLS, the domain, or the redirect — those live on the host.
+
+**No PHP, anywhere** (audited 2026-10-22 against the Hetzner CVE-2026-109618/109619 advisory): no
+`php`/`php-fpm` binary, no `php*` dpkg package, no `.php` file in either repo, no PHP in any of the
+six containers, and every `php`/`fastcgi` hit in `/etc/nginx` is commented-out Ubuntu boilerplate
+(`sites-available/default`, `snippets/fastcgi-php.conf`) with no active `fastcgi_pass`. The stack is
+Python + static React only. PHP advisories do not apply to this server — re-run the audit rather
+than re-reading this line if it matters:
+`which php php-fpm; dpkg -l | grep -i php; grep -rn 'fastcgi_pass' /etc/nginx/sites-enabled/`
+
 ---
 
 ## Instruments & Strategy
@@ -666,7 +681,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - `sqlite3` CLI is **not installed** on the host — use `python3 -c "import sqlite3..."`.
     - ⚠️ **The "Host stray" row above is STALE — see gotcha 53's closing correction.** As of 2026-10-22 that DB holds GOLD **188,466** and US100 **202,994** M5 bars, both current to today, so `DB_PATH=/data/trading.db` is now the right choice for **both** instruments' backtests. The warning about *accidentally* creating it by running a script on the host still stands.
 
-25. **`stockscreener-backtest-runner-1` has months-stale baked configs — UI-triggered backtests do NOT test the deployed strategy.** Config is `COPY`d at build time and the service has not been rebuilt since the strategy changed. Diff vs the live bot on 2026-10-21:
+25. **`stockscreener-backtest-runner-1` had months-stale baked configs AND code — UI-triggered backtests did NOT test the deployed strategy. REBUILT AND FIXED 2026-10-22 19:30 (gotcha 56); everything below is historical, except that GOLD's bar depth in the volume is still thin.** Config is `COPY`d at build time and the service has not been rebuilt since the strategy changed. Diff vs the live bot on 2026-10-21:
     | Instrument | Live bot | backtest-runner (stale) |
     |---|---|---|
     | GOLD | `require_sma_bias: true` (MA100), `tick_exit` block | **both absent** |
@@ -974,6 +989,20 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - Post-deploy verification, all passed: three bots restored (`gold_m5_bot`, `ethusd_m5_bot`, `us100_m5_bot` — `_load_bot_state()` filters on `status='running'`, so the two stopped bots stayed stopped) with quantities None/None/1.0; SL/TP as intended (GOLD 15/60, ETHUSD 25/125, US100 50/150); `max_daily_loss_usd` 150 on ETHUSD only; `max_consecutive_losses` 0 everywhere, so that breaker stays off; `time_exits.enabled` False/absent everywhere, so **the flatten is deployed but still off**; and **zero ERROR/Traceback lines in any bot log since the restart**. Pre-deploy baseline: **0 open positions** at the broker (which is why this window was chosen), `trade_history` 2962 rows / 381 zeros.
     - Entries are suppressed after every restart until the trend flips once ("⏳ Startup: recorded initial signal=…, waiting for trend flip"). That is the normal startup gate, which **pre-existed in the old container** — logs show it firing 10-16 through 10-21. What gotcha 41 added was the `risk.startup_flip_gate` opt-out *key*, not the gate.
     - **`backtest-runner` was deliberately NOT rebuilt** — that is prompt 6, with its own verification. It remains stale (gotcha 25), so UI-triggered backtests still do not test the deployed strategy.
+
+56. **`backtest-runner` rebuilt 2026-10-22 19:30 — gotcha 25 closed, and the proof is the exit mix. One real gap remains: GOLD's history in the live volume.**
+    - `docker compose build backtest-runner && docker compose up -d backtest-runner`. `check_deployed.py` now reports **no drift on any container**.
+    - **Verified fixed:** `/app/run_skills_backtest.py` **992 lines == host** with `reverse_signal_exit` present **2×** (was 866 lines and **zero**, calling `close_reverse_positions(...)` unconditionally). Configs match the live bot on all three traded instruments: GOLD SL15/TP60 + `require_sma_bias` + `tick_exit` (**all previously absent**), US100 ST(14, 1.5) + `require_h1_bb: false` (was **ST(7, 2.0) + true**), ETHUSD SL25/TP125 (was **45/170**).
+    - **The regression is the point, and the exit mix is the sharpest part of it:**
+      | | trades | WR | PF | P&L | Reverse Signal exits |
+      |---|---|---|---|---|---|
+      | container after rebuild | **2485** | 25.513% | **0.9749** | −$12,100 | **0** |
+      | host documented (gotcha 54) | 2488 | 25.482% | 0.9733 | −$12,880 | 0 |
+      | same container BEFORE | 16,999 | — | — | **+$185,306** | **6,973** |
+      −3 trades is the container holding **128 fewer tail bars** (202,979 vs 203,107) — the identical drift mechanism that produced **+3** in gotcha 54, sign flipped. Exits **1851 SL / 634 TP** against gotcha 28's 1849/632.
+    - **⚠️ STILL OPEN — the live volume's GOLD history is sparse, so UI GOLD backtests still produce a wrong number** (thin data now, rather than wrong config). Inside the 2y window: host **141,972** bars vs volume **106,747 — 25% missing.** This is gotcha 29's starvation, **never backfilled**: gotcha 55's `bar_updater` fix keeps the volume *current* (all six epics track to the minute) but does not reach backwards. US100 is unaffected (near-identical depth). Fix with bar-count mode from inside a container, where `/data` is the volume: `docker exec stockscreener-backtest-runner-1 python3 fetch_data.py --epic GOLD --timeframe M5 --bars 50000` (≈173 days, spanning the starved Q2–Q4 2026).
+    - **`DB_PATH` was already pinned** per-service in `docker-compose.yml` to `/data/trading.db`, so containers were never exposed to gotcha 24 — that trap is **host-run scripts only**, where `.env` sets nothing. **Do not pin `DB_PATH` in `.env` until the GOLD backfill is done:** it would point host runs at the *thinner* GOLD data and make them worse, since the host DB is currently the better one for GOLD (gotcha 53's correction). Order matters.
+    - **Operational notes for in-container backtests**, both of which read as failure and are not: a 2y run gets **~15% of a core** because it competes with the three live bots (172s CPU over ~20min wall; the host run took ~4min), and Python **buffers stdout**, so the log looks dead the entire time. Poll for `/data/results/<EPIC>/<run>/report.json` instead of tailing. Results land in **`/data/results/`** (the volume), **not** `/app/results/` — a waiter looking in `/app/results` finds nothing and reports a false failure.
 
 ---
 
