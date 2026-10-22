@@ -19,13 +19,24 @@ the agent reads `CLAUDE.md` first.
 - **Nothing in the last three sessions is deployed.** The live bots run baked-in
   image code. See prompt 1 — this is the biggest gap between what the repo says
   and what is actually trading.
-- **Git state:** branch `fix/gate-unification-and-live-path-coverage`, **29
-  commits ahead of `origin/main` and NOT pushed.** Pushing from this container
-  is **confirmed impossible**, not merely untried — `origin` is the HTTPS remote
-  `https://github.com/bhattkirtan/stockscreener.git`, a push fails with
-  `fatal: could not read Username for 'https://github.com'`, and `gh` is not
-  installed. **The human pushes; do not spend a session retrying it.**
-  `origin/main` is at `ed2357f` and lacks `reverse_signal_exit`, the risk
+- **Git state (updated 2026-10-22): the branch IS PUSHED.** `origin/fix/gate-
+  unification-and-live-path-coverage` is at `1145f16`; local is in sync, 0
+  unpushed. It is still **31 commits ahead of `origin/main`** because nothing is
+  merged — **no PR has been opened.** Open one at
+  https://github.com/bhattkirtan/stockscreener/compare/main...fix/gate-unification-and-live-path-coverage
+- **The earlier "pushing is confirmed impossible" note was a missing credential,
+  not a blocked path — and it is now resolved.** Diagnosed properly: egress from
+  this box works (`curl https://github.com` → **200**), there was simply no
+  `credential.helper`, no HTTPS credential, and no SSH key GitHub accepts
+  (`ssh -T git@github.com` → `Permission denied (publickey)`). The human fixed it
+  with `git config credential.helper store` + one interactive push, so **the
+  credential is cached on this box and pushes now work from here.**
+  **But do not push unasked** — the standing constraint below still applies, and
+  a cached credential makes an accidental push easier, not more authorised.
+  `gh` is still not installed, so PRs must be opened in the browser.
+  **Never go hunting for tokens on disk to work around an auth failure** — that
+  stays off-limits regardless of how the push request is phrased.
+- `origin/main` is at `ed2357f` and lacks `reverse_signal_exit`, the risk
   breakers, `.coveragerc` and `pytest.ini` entirely, so **the branch is not
   separable** — cherry-picking individual commits onto `main` was tried and
   fails on the first one.
