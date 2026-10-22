@@ -138,7 +138,7 @@ checking the broker result, and an error handler that raised inside its own
 
 ---
 
-## 3. The GOLD live/backtest divergence — four hypotheses rejected, one left
+## 3. The GOLD live/backtest divergence — four hypotheses rejected, two leads left
 
 > Read `CLAUDE.md` gotcha **36** (the rejected hypotheses), then **41** and **48**.
 >
@@ -158,17 +158,30 @@ checking the broker result, and an error handler that raised inside its own
 > 4. startup-flip suppression — it would make live take **fewer** trades, and
 >    live takes more.
 >
-> **The remaining untested lead:** the live bot builds candles from the WebSocket
+> **Two untested leads remain. Start with A — it is far cheaper, and it is the
+> one whose failure mode matches the direction of the error.**
+>
+> **Lead A — the live MA100 bias was computed over starved bars.** MA100 bias is
+> the *only* entry filter on GOLD, and live computes it over whatever the rolling
+> buffer actually holds — a buffer that was itself starved for the whole Aug–Oct
+> window while gotcha 29 was active (GOLD M5 coverage 6% in Q3/Q4). Sparse bars
+> make MA100 a different number over a far longer wall-clock lookback, so the
+> gate would admit signals the backtest's dense bars reject — which matches the
+> **direction** of the error: live takes **more** trades (93 vs 61), not fewer.
+> Rejected hypotheses 1–4 all predict fewer or equal, so this is the first one
+> that points the right way.
+> **How to check, cheaply:** reconstruct what the 300-bar buffer would have held
+> at each of the 93 live entry timestamps given the bars that actually existed
+> then, compute MA100 on it, and compare against the dense-bar MA100 the
+> backtest used. Entirely a desk exercise against the two existing DBs — no bar
+> capture, no container, no broker calls.
+>
+> **Lead B — WebSocket bars vs REST bars.** The live bot builds candles from the
 > tick stream (`_handle_ohlc`, ASK/OFR only) while the DB bars come from the REST
 > price endpoint. Bar boundaries — and which bars exist at all — may differ.
 > **Count bars per day on each side first**, before comparing OHLC values; a
-> bar-count mismatch and an OHLC mismatch have different causes.
->
-> Second untested lead, cheaper to check: the live MA100 bias is computed over
-> whatever the live buffer actually holds, and that buffer was itself starved
-> while gotcha 29 was active. If live MA100 was being computed on sparse bars,
-> the bias gate would admit signals the backtest's dense bars reject — which
-> matches the direction of the error (live takes **more** trades).
+> bar-count mismatch and an OHLC mismatch have different causes. This one needs
+> live bar capture, so only reach for it if Lead A comes back clean.
 >
 > **Note gotcha 48 before you start:** GOLD's repaired bars are in the HOST
 > stray `/data/trading.db` (188,435 as of 2026-10-22), not the live volume
