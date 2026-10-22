@@ -96,7 +96,6 @@ analysis:
         check_interval_sec: 0
 
 risk:
-  position_size: 10            # 10 oz contracts per trade
   pip_size: 1.0                 # 1 pip = $1.00 price move  (commodity trading convention)
   stop_loss_pips: 15            # 15 pips × $1.00 = $15.00 SL distance per contract
   take_profit_pips: 60          # 60 pips × $1.00 = $60.00 TP distance (1:4 R:R, breakeven WR=20%)
@@ -115,5 +114,4 @@ m1_validation:
 execution:
   instrument: GOLD
   epic: GOLD
-  position_size: 10          # 10 oz contracts per trade
   environment: demo
