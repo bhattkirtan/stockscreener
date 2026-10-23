@@ -5,6 +5,10 @@ Results are in `intraday_results.txt`, `daily_results.txt` and `ibs_robust.txt`.
 Second pass (gotcha 62): IBS as an overlay on a long index position. Variants and tests were
 written in `overlay_prereg.md` before the run; results in `overlay_results.txt`. 12 trials → **66 total**.
 
+Third pass (gotcha 63): items 2 and 3 on the weekly trend book from gotcha 46. Walk-forward
+instrument selection on measured edge, and vol target 15%. Pre-registered in `select_prereg.md`
+(with an addendum on fold B); results in `weekly_select_results.txt`. 2 trials → **68 total**.
+
 ## Re-running
 
 The scripts read `snap.db` and `daily.pkl` from this directory. Both are gitignored, so rebuild them first.
@@ -13,6 +17,13 @@ The scripts read `snap.db` and `daily.pkl` from this directory. Both are gitigno
 rows `WHERE epic IN ('GOLD','US100') AND timeframe='M5'` from
 `/var/lib/docker/volumes/stockscreener_trading_data/_data/trading.db` (open it read-only) into a new
 DB that has the same `candles` schema as `clients/sqlite_api.py`.
+
+**`weekly_cache/`** (gitignored): byte copies of gotcha 46's `/tmp/weekly_hist.pkl`,
+`/tmp/universe_screen.json` and `/tmp/universe_hist.pkl`, taken because `/tmp` does not survive. If
+they are gone, rebuild with `universe.py --discover` then `fetch_weekly.py`; the result will differ
+from these (today's spread snapshot, a later last bar). sha256 of the copies used:
+`f5a1d3c5046c1917ce664f93d5d6a8af58e9a52637b80b51578f85c1fabdc7a4` (weekly_hist.pkl),
+`b7148fd441a288912a86daacc058a1fca74226f98f495d36e50f2bf25b30175f` (universe_screen.json).
 
 **`daily.pkl`**: `dict[epic] -> DataFrame(o, h, l, c, ca)` of DAY bid bars, with `ca` = ask close.
 Fetch `/api/v1/prices/{epic}?resolution=DAY&max=1000`, then page backwards with
@@ -29,6 +40,7 @@ python3 -I ev.py                    # score intraday runs
 python3 -I daily_fam.py 34          # daily families; arg = trials from elsewhere, for the DSR
 python3 -I ibs_robust.py
 python3 -I ibs_overlay.py           # needs daily_rows.pkl from daily_fam.py
+python3 -I weekly_select.py         # needs weekly_cache/
 ```
 
 `bt.py` turns off `_ensure_candles_in_db`, so a run never fetches. A fetch would add tail bars, and

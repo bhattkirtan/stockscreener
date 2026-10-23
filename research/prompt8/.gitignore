@@ -4,3 +4,4 @@ daily_rows.pkl
 res/
 logs/
 !*.txt
+weekly_cache/

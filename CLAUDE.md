@@ -1169,6 +1169,22 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - The incremental leg's PF equals standalone IBS's (1.364 on O1), as it must: PF is scale-invariant. That's a sanity check on the rig, not new evidence.
     - **Don't add overlay variants to chase DSR.** Each one raises the bar. Prompt 8 items 2–3 are the untested levers left.
 
+63. **Prompt 8, third pass (2026-10-23): items 2 and 3 on the weekly trend book. Selecting instruments on measured edge fails, and 15% vol only resizes. 2 trials, running total 68.** Pre-registered in [`research/prompt8/select_prereg.md`](research/prompt8/select_prereg.md) (with an addendum on a flaw in fold B). Script `weekly_select.py`, results `weekly_select_results.txt`.
+    - **The `/tmp` inputs gotcha 46 depended on are now snapshotted** in `research/prompt8/weekly_cache/` (gitignored; sha256 in the README). With them, `trend_portfolio.py --weekly` reproduces gotcha 46 exactly: gross SR 0.37, net 0.30, halves 0.18 / 0.38, B&H 0.34.
+    - **Correction to gotcha 46:** the fully uncapped pool (`--max-n 999 --max-corr 1.0 --class-cap 999`) is **100** names, not 48. Gotcha 46's 48-name row must have used another cap. Also, the "40-year" weekly sample is really one series from 1986. **97 of 100 start in 2006–2011**, so most names have 15–20 years.
+    - **Item 2, walk-forward selection.** Pick names on their net weekly Sharpe before 2016, then score a fresh book on 2016-01 → 2026-10 only. S1 keeps names with SR > 0.10 (35 names); S2 keeps the top 13.
+      | book, test window 2016–2026 | n | net SR | gross SR | PF | vol-targeted B&H SR |
+      |---|---|---|---|---|---|
+      | all eligible | 94 | −0.64 | −0.51 | 0.77 | 0.64 |
+      | baseline-13 (friction screen, ETHUSD not yet live) | 12 | 0.12 | 0.17 | 1.05 | 0.28 |
+      | **S1 selected** | 35 | **−0.41** | −0.31 | 0.84 | 0.66 |
+      | S1 rejected | 59 | −0.70 | −0.58 | 0.76 | 0.52 |
+      | **S2 selected** | 13 | **−0.22** | −0.13 | 0.91 | 0.54 |
+      | S2 rejected | 81 | −0.68 | −0.57 | 0.76 | 0.58 |
+      **The selection carries real cross-sectional information:** selected beats rejected by 0.3–0.5 SR. But weekly trend across this universe lost money *gross* in 2016–2026, so the selected book still loses. It also does worse than the friction-screened baseline it was meant to improve. Fails halves PF, DSR (≈0) and B&H on fold A alone. The reverse fold (select on 2016+, test on 2005–2015) is degenerate (2 eligible names, because most series start after 2005). It was left as run, not redesigned.
+    - **Item 3, vol target 20% → 15%:** SR 0.309 → 0.308, annual return 2.87% → 2.15%, maxDD 42.8% → 32.4%. Pure scaling, as predicted, so it is not a trial. It is the right size *if* this book were traded. But its Sharpe has DSR < 0.95 and loses to B&H, so half-Kelly is sizing an unproven edge. Nothing live uses this book.
+    - **All four prompt 8 levers have now been tried, and none produced a candidate that passes.** 68 trials. The only signal with a robust net edge is daily IBS on US indices (gotchas 61–62), and it cannot clear the DSR bar at this trial count.
+
 ---
 
 ## Conventions
