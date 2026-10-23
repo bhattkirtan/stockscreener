@@ -82,7 +82,7 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **11** | Finish the bar-data repair | **small** | One `DELETE` with a measured payoff (16 phantom trades, −$996) and a human is required. Its item 2 also decides whether the other five instruments get re-based — which gates how much of prompt 8's evidence is trustworthy. |
+| **11** | Finish the bar-data repair | **small** | Item 1 (the `DELETE`) is **DONE 2026-10-23** — container GOLD now reproduces the host bit-for-bit. What is left is item 2, which decides whether the other five instruments get re-based — which gates how much of prompt 8's evidence is trustworthy. |
 | **3** | GOLD live/backtest divergence | medium | Still the deepest open question (93 live vs 61 backtest, PF 0.646 vs 1.046). **Now has a third lead** — live runs on ASK candles, backtests on BID (gotcha 57) — and its premise improved: GOLD's data is finally broker-exact. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` before the decision is anything but a guess. Unblocked and unchanged; the switch is already in the running image, so enabling it later is config, not a deploy. |
 | **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. **Do prompt 11 item 2 first if you intend to lean on any US100 hour-of-day evidence** — gotcha 57 means those hours are mislabelled. |
@@ -501,7 +501,7 @@ bots that are actually trading.
 
 ---
 
-## 6. ~~Make UI backtests stop lying~~ — **DONE 2026-10-22 20:00, one DELETE left for a human**
+## 6. ~~Make UI backtests stop lying~~ — **DONE 2026-10-22 20:00; final DELETE done 2026-10-23**
 
 > **STATUS 2026-10-22 20:00: items 1, 2 and 3 are all CLOSED.** The GOLD backfill
 > turned out to be only half the problem — the bars that were already there were on
@@ -735,7 +735,13 @@ bots that are actually trading.
 > human because it is a `DELETE` against the live trading DB.** The auto-mode
 > classifier blocks it, correctly.
 >
-> ### 1. Delete GOLD's 7,887 phantom bars (cost already measured: 16 trades, −$996)
+> ### 1. ~~Delete GOLD's phantom bars~~ — **DONE 2026-10-23**
+> 7,886 rows deleted (backup `/data/GOLD_M5_orphans_backup.json`); container run at
+> `--bars 188534` = **493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342 / 107 winners**,
+> bit-identical to the host. The "494 / +$1,686 / 105" expectation below was wrong — see
+> CLAUDE.md gotcha 56. The original brief is kept for the record:
+>
+> #### (original) Delete GOLD's 7,887 phantom bars (cost already measured: 16 trades, −$996)
 > The full re-fetch overwrote every *real* label but `INSERT OR REPLACE` cannot
 > remove legacy labels that have no true UTC counterpart. What survives sits at
 > **hour 21 (4,209 rows) and hour 22 (3,329)** — the +2h tail past GOLD's 21:00
@@ -757,14 +763,17 @@ bots that are actually trading.
 > con  = sqlite3.connect('/data/trading.db', timeout=30)
 > rows = con.execute("SELECT timestamp,open,high,low,close,volume FROM candles "
 >                    "WHERE epic='GOLD' AND timeframe='M5'").fetchall()
-> orph = [r for r in rows if r[0] not in auth]
+> # bound by the CSV's last bar: anything later is bar_updater's real data, not an orphan
+> # (82 such bars on 2026-10-23 — the unbounded version deletes them too)
+> mx   = max(auth)
+> orph = [r for r in rows if r[0] not in auth and r[0] <= mx]
 > json.dump(orph, open('/data/GOLD_M5_orphans_backup.json','w'))   # back up FIRST
 > with con:
 >     con.executemany("DELETE FROM candles WHERE epic='GOLD' AND timeframe='M5' "
 >                     "AND timestamp=?", [(r[0],) for r in orph])
 > ```
-> Expect **199,400** GOLD M5 rows afterwards (plus whatever `bar_updater` has added
-> since). Then re-run the container backtest and expect it to land near
+> Expect **199,400** GOLD M5 rows afterwards plus `bar_updater`'s post-CSV bars
+> (measured 2026-10-23: 207,368 rows, **7,886** true orphans, 82 post-CSV bars kept). Then re-run the container backtest and expect it to land near
 > **494 trades / +$1,686 / 105 winners**; the residual against the host's
 > 493 / +$3,342 / 107 is the volume's ~10,866 extra bars at the series *start*
 > re-phasing the run (gotcha 58), **not** a defect.

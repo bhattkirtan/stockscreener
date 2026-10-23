@@ -824,7 +824,7 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - ⚠️ **WAS "not deployed" — now DEPLOYED (gotcha 55).** Measure, do not re-read this line: `docker exec stockscreener-trading-bot-1 grep -c 'status==ACCEPTED' /app/clients/capital_api.py`. A rebuild still bakes in every uncommitted change in `./trading-bot-skills` (gotcha 10), so `git status` first regardless.
 
 39. **Open work is captured as ready-to-paste session prompts in [`NEXT_SESSIONS.md`](NEXT_SESSIONS.md) — rewritten 2026-10-22, kept current through the sixth session that day.** **Read its "Where to start" table first** — it carries the live priority order, and this entry is only an index. Eleven streams; **1, 4, 5, 6 and 7 are CLOSED** (their prompts are retained as closed markers so the numbering keeps resolving).
-    - **Open, in priority order:** **(11) finish the bar-data repair** — one `DELETE` to remove GOLD's 7,887 phantom closure bars (cost measured: 16 fictional trades, −$996) plus the scoping call on re-basing the other five instruments (gotchas 57, 56); **(3) the GOLD live/backtest divergence** (gotcha 36 — four hypotheses rejected, now **three** leads left, the newest being live-on-ASK vs backtest-on-BID per gotcha 57); **(2) the time-based flatten is BUILT but deliberately OFF** (gotchas 51, 19 — the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated in the backtester first); **(8) strategy research direction** — three levers measured and failed, cost-per-unit-of-R the cheapest untested one (gotcha 32); **(9)** small open items; **(10)** the standing keep-running-these-bots question.
+    - **Open, in priority order:** **(11) finish the bar-data repair** — the GOLD phantom-bar `DELETE` is done (2026-10-23, container now bit-identical to the host); what is left is the scoping call on re-basing the other five instruments (gotchas 57, 56); **(3) the GOLD live/backtest divergence** (gotcha 36 — four hypotheses rejected, now **three** leads left, the newest being live-on-ASK vs backtest-on-BID per gotcha 57); **(2) the time-based flatten is BUILT but deliberately OFF** (gotchas 51, 19 — the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated in the backtester first); **(8) strategy research direction** — three levers measured and failed, cost-per-unit-of-R the cheapest untested one (gotcha 32); **(9)** small open items; **(10)** the standing keep-running-these-bots question.
     - **Closed:** (1) deploy the fix stack (gotcha 55); (4) `backtesting_skill.py` coverage, 59% → 100% (gotcha 53); (5) `capital_api.py` coverage, 19% → 100% (gotcha 54); (6) UI backtests — runner rebuilt (56) and GOLD re-based to bid/UTC (57); (7) the zero-P&L `trade_history` rows, 381/381 repaired (gotcha 59).
     - Each prompt names the gotchas carrying its background so nothing has to be re-derived. **Check it before starting new work** — four hypotheses for the GOLD divergence are already tested and rejected there, and the `position_size` question is settled (committed `c0fb630`, reverted `6a26450`).
 
@@ -1035,21 +1035,27 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
         | **after full re-fetch** | 510 | 20.980% | **1.0110** | **+$690** | **107** / 403 |
         The winner count lands back on the host's **107 exactly**. The spliced run is the one to
         disbelieve, and note it was the *more plausible-looking* number — a tidy 494 trades.
-      - **⚠️ ONE STEP REMAINS: 7,887 phantom bars are still in the volume, and their cost is now measured.**
-        Joining the run's `trades.csv` against the authoritative CSV isolates them exactly: **16 trades were
-        entered on a timestamp that does not exist in the broker's series — all at hours 21 and 22, 2 wins /
-        14 losses, −$996.** Excluding them leaves **494 trades / +$1,686 / 105 winners**, i.e. the same trade
-        count as the host; the residual vs +$3,342 is the volume's ~10,866 extra bars at the series *start*
-        re-phasing the run (gotcha 58), not a data defect. `INSERT OR REPLACE` is keyed on
-        `(epic, timeframe, timestamp)`, so the re-fetch overwrote every *real* label but could not remove legacy
-        labels that have no true UTC counterpart. They are the +2h tail past GOLD's 21:00 UTC close —
-        **4,209 at hour 21 and 3,329 at hour 22**, Friday over-represented (2,088) — i.e. **bars during market
-        closure**, which is precisely what contaminates a Friday-flatten or session-hours analysis (gotcha 51).
-        The authoritative timestamp set is `/data/GOLD_M5_full_authoritative.csv` (199,400 rows); anything in
-        `candles` outside it is an orphan. Deleting them is a `DELETE` against the live trading DB, so it was
-        left for a human to run deliberately rather than done in passing.
+      - **✅ The phantom bars are DELETED (2026-10-23) — and the container now reproduces the host bit-for-bit.**
+        `INSERT OR REPLACE` is keyed on `(epic, timeframe, timestamp)`, so the re-fetch overwrote every *real*
+        label but could not remove legacy labels with no true UTC counterpart: **7,886** orphans, mostly the +2h
+        tail past GOLD's 21:00 UTC close (**4,209 at hour 21, 3,329 at hour 22**, plus 339 at hours 17–20; Friday
+        2,088) — **bars during market closure**. They cost 16 fictional trades (2w/14l, −$996) in the run above.
+        Deleted by timestamp against `/data/GOLD_M5_full_authoritative.csv`, **bounded by the CSV's last bar** —
+        an unbounded "not in the CSV" test also deletes `bar_updater`'s post-CSV bars (82–89 of them by then).
+        Backup of the deleted rows: `/data/GOLD_M5_orphans_backup.json` (volume). Volume afterwards: 199,489 rows,
+        0 orphans. Container re-run, `--bars 188534`:
+        | run | trades | WR | PF | P&L | w/l |
+        |---|---|---|---|---|---|
+        | **after orphan delete** | **493** | **21.703853955375255%** | **1.0555001992825828** | **+$3,342** | **107** / 386 |
+        | host documented (gotcha 54) | 493 | 21.703853955375255% | 1.0555001992825828 | +$3,342 | 107 / 386 |
+        **Bit-identical.** This also **refutes the explanation previously written here** — that the residual
+        vs the host was "~10,866 extra bars at the series start re-phasing the run" and "not a data defect". It
+        was the phantoms themselves: `--bars N` takes the last N rows, so 7,886 phantom rows occupied window
+        slots and pushed the start ~7.9k bars later (gotcha 58's mechanism, caused by the defect). The prediction
+        of "~494 / +$1,686 / 105" (simply dropping the 16 trades) was also wrong for the same reason —
+        removing bars re-phases the whole path, it does not subtract trades.
       - US100 is unaffected by the *depth* problem (near-identical counts) but **is** affected by gotcha 57.
-    - **`DB_PATH` was already pinned** per-service in `docker-compose.yml` to `/data/trading.db`, so containers were never exposed to gotcha 24 — that trap is **host-run scripts only**, where `.env` sets nothing. **Do not pin `DB_PATH` in `.env` until the GOLD backfill is done:** it would point host runs at the *thinner* GOLD data and make them worse, since the host DB is currently the better one for GOLD (gotcha 53's correction). Order matters.
+    - **`DB_PATH` was already pinned** per-service in `docker-compose.yml` to `/data/trading.db`, so containers were never exposed to gotcha 24 — that trap is **host-run scripts only**, where `.env` sets nothing. **Do not pin `DB_PATH` in `.env` until the GOLD backfill is done:** it would point host runs at the *thinner* GOLD data and make them worse, since the host DB is currently the better one for GOLD (gotcha 53's correction). Order matters. **Update 2026-10-23: that precondition is now met** — volume GOLD reproduces the host bit-for-bit, and ETHUSD/US100 were already identical between the two DBs (gotcha 57). Pinning `DB_PATH` for host runs to the volume path is now safe; not done yet.
     - **Operational notes for in-container backtests**, both of which read as failure and are not: a 2y run gets **~15% of a core** because it competes with the three live bots (172s CPU over ~20min wall; the host run took ~4min), and Python **buffers stdout**, so the log looks dead the entire time. Poll for `/data/results/<EPIC>/<run>/report.json` instead of tailing. Results land in **`/data/results/`** (the volume), **not** `/app/results/` — a waiter looking in `/app/results` finds nothing and reports a false failure.
 
 57. **STORED BARS USE A DIFFERENT PRICE SIDE AND TIME BASE THAN THE CODE THAT READS THEM. Measured 2026-10-22 against the live broker; this is the most consequential measurement defect found so far, because it is invisible in every summary statistic.** Every M5 bar in **both** `trading.db` files, for **every instrument**, was written as **mid price at an account-local (UTC+2) timestamp** — except GOLD, whose host copy gotcha 29's repair re-fetched through the corrected path, and whose live-volume copy this session re-fetched (see gotcha 56).
