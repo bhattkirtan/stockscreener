@@ -92,7 +92,7 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **3** | **SOLVED 2026-10-23 — now a deploy decision** | small | The divergence was the live bot never applying the MA100 slope gate (CLAUDE.md gotcha 60). Its 105-bar buffer was too short for MA100 + a 20-bar slope, and the fallback made the gate allow everything. Live matches the slope-OFF backtest 82/95 (vs 1/95 for slope-on). **The fix is in the host tree, uncommitted, NOT deployed.** Deploying it changes the live GOLD + ETHUSD strategy to the one the backtests describe, so it's a decision for you. Slope-off is PF 1.0017 over 2y, i.e. no edge. |
+| **3** | **SOLVED + DEPLOYED 2026-10-23 05:42 UTC** | — | The divergence was the live bot never applying the MA100 slope gate (CLAUDE.md gotcha 60). Its 105-bar buffer was too short for MA100 + a 20-bar slope, and the fallback made the gate allow everything. Live matches the slope-OFF backtest 82/95 (vs 1/95 for slope-on). Fix `eb9de2e` deployed. GOLD/ETHUSD now run the slope-on strategy as a demo **forward test**: ~60 GOLD trades, PF > 1.0 or stop (gotcha 60). |
 | **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | Mechanical, and the method is proven twice (GOLD, US100). ETHUSD first because it trades live, so the parity check applies. Needs your **"approve delete"** mid-session. Paste-ready prompt at the top of section 11. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. **US100's weekend-carry cohort (gotcha 51) was measured on mid/local labels**, so re-measure it on the re-based bars as part of this. |
 | **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. US100 hour-of-day evidence is now correctly labelled (gotcha 57); ETHUSD's is not until prompt 11 does it. |
@@ -319,9 +319,8 @@ bots that are actually trading.
 > **82/95 same side, 81 same outcome**, with PF 0.697 vs live 0.685. ETHUSD has the same defect.
 > Leads A/B and the ASK-vs-BID lead below were not needed and are retained as history.
 >
-> **What's left is a decision, not an investigation:** deploy the fix (host tree, tests added,
-> uncommitted) and switch GOLD/ETHUSD to the slope-on strategy the backtests measured, or keep
-> the slope-off strategy actually traded (2y PF 1.0017), or stop the bots (prompt 10). Re-match
+> **Decided and deployed 2026-10-23 05:42 UTC (`eb9de2e`):** GOLD/ETHUSD now run the slope-on
+> strategy as a demo forward test at unchanged size. The bar is ~60 GOLD trades with PF > 1.0, or stop (prompt 10). Re-match
 > ETHUSD after prompt 11 re-bases its bars.
 
 ### History — the search, as written before it was solved

@@ -138,8 +138,8 @@ than re-reading this line if it matters:
 
 **Current GOLD strategy (as deployed in live/demo bot):**
 - Entry: M5 Supertrend(14×1.5) flip + MA100 bias + MA100 slope
-  ⚠️ **The MA100 slope gate has NEVER applied in live** — the live buffer was too short for it (gotcha 60).
-  Fixed in the host tree 2026-10-23, **not deployed**; until it is, live runs Supertrend + MA100 bias only.
+  ⚠️ **Until 2026-10-23 05:42 UTC the MA100 slope gate NEVER applied in live**: the buffer was too short for it (gotcha 60).
+  Fixed and DEPLOYED then. All live GOLD/ETHUSD history before that date is the slope-OFF strategy.
 - SL: **15 pips** ($15/contract) | TP: **60 pips** ($60/contract) — R:R 1:4
   (verified in `GOLD.yaml` 2026-10-22: `risk.stop_loss_pips: 15` / `risk.take_profit_pips: 60`.
   This line said TP 40 and the table below said 45; both were stale. 60 is also what gotcha 35's
@@ -1127,12 +1127,14 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - **The live strategy is therefore the slope-OFF strategy, and that has no edge over 2y:** **773 trades / WR 20.83% / PF 1.0017 / +$162**, against the slope-on 493 / 21.70% / PF 1.0555 / +$3,342. Every GOLD backtest figure in this file describes a strategy that has **never traded live**. The Aug–Oct live loss is what the backtest of the strategy actually running predicts (PF 0.697 vs 0.685).
     - **Residual 13/95 unmatched:** 6 fall while the backtest held a position (occupancy cascades), and several are entries a few seconds late (`:01`, `:07`, `:10` past the bar), likely delayed bar delivery. That's the same order as US100's 16/224.
     - **ETHUSD has the identical defect.** It has the same `bias_slope_bars: 20` and its log shows `Warm-up bars — M5: 105`. Not trade-matched: ETHUSD's bars are still mid/local (gotcha 57), so re-base it first. US100 does not use the bias (buffer 150 there).
-    - **Fix (host tree, 2026-10-23, NOT deployed):**
+    - **Fix, committed `eb9de2e` and DEPLOYED 2026-10-23 05:42 UTC:**
       - `main.py` now includes `sma_bias_period + sma_bias_slope_bars` (when enabled) and `2 × adx_period` (when enabled) in `m5_min_bars`, giving GOLD/ETHUSD **360**. It sets `buffer_size = max(buffer_size, m5_warmup)`, so the buffer is never shrunk.
       - `_extract_indicators` now **fails closed** (`return None`) when the slope gate is on and `sma_bias_prev` is NaN.
       - Tests: `TestMaSlopeGate` in `test_live_analysis_path.py` and four new `TestWarmup` cases in `test_live_bootstrap.py`. The slope gate had **zero** tests before. Suite 1319 → 1328 passing.
       - Backtest regression on GOLD `--bars 188534` (host code, volume DB): **493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342**, bit-identical to gotcha 56. The fail-closed change only affects bars 110–119 of a series, and the backtest path was always applying the gate.
-    - ⚠️ **Deploying it is a strategy change, not a bug-fix rollout.** It switches live GOLD and ETHUSD from the strategy they've actually been trading to the one the backtests describe: fewer trades, and on GOLD the PF-1.0555 variant. That variant's own IS/OOS evidence is thin (gotchas 34, 35). It is also a different strategy from the one that produced the Aug–Oct live record. Decide it deliberately, and run `check_deployed.py` after (add a marker: `sma_bias_slope_bars', 0)` in `orchestrator/main.py`). A rebuild of `./trading-bot-skills` bakes this in whether or not it is committed (gotcha 10).
+    - **Deploy record.** `docker compose build trading-bot bar-updater backtest-runner && docker compose up -d …`. New trading-bot image `sha256:d9924627…`; **rollback target `sha256:19ecb886…`**. Pre-deploy there were 0 open positions at the broker. Verified: `check_deployed.py` shows no drift on any container, with both gotcha-60 markers present. GOLD and ETHUSD logs show `Warm-up bars — M5: 360`; US100 is unchanged at 150. Sizes are unchanged (GOLD 0.5, ETHUSD 0.5, US100 1.0), and there were zero ERROR/Traceback lines after the restart.
+    - **This is now a FORWARD TEST of the slope-on strategy, on demo, at unchanged size.** Success bar, agreed before the results: after ~60 GOLD trades (roughly 2–3 months), PF > 1.0 after costs, or stop. Do not size up before then. Trade-match live against the container backtest periodically with the gotcha-33 method; a fresh mismatch means a new defect.
+    - ⚠️ **It was a strategy change, not a bug-fix rollout.** It switches live GOLD and ETHUSD from the strategy they've actually been trading to the one the backtests describe: fewer trades, and on GOLD the PF-1.0555 variant. That variant's own IS/OOS evidence is thin (gotchas 34, 35). It is also a different strategy from the one that produced the Aug–Oct live record. Decide it deliberately, and run `check_deployed.py` after (add a marker: `sma_bias_slope_bars', 0)` in `orchestrator/main.py`). A rebuild of `./trading-bot-skills` bakes this in whether or not it is committed (gotcha 10).
 
 ---
 
