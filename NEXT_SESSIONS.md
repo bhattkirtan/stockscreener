@@ -1,6 +1,6 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Rewritten 2026-10-22 (second session that day), kept current through the sixth.
+Rewritten 2026-10-22 (second session that day), kept current through the seventh (2026-10-23).
 Each prompt below is self-contained: paste one as the first message of a fresh
 session. They assume the agent reads `CLAUDE.md` first.
 
@@ -8,11 +8,13 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 - `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–59** from 2026-10-22.
   Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **all DEPLOYED (55)** — plus
-  **25 (56)**, **56's GOLD data gap** and **59** (the zero-P&L rows).
+  **25 (56)**, **56's GOLD data gap — now fully closed, phantom bars deleted 2026-10-23** and **59** (the zero-P&L rows).
   **Still open hazards: 19, 26, 36, and the NEW 57.**
   - **Read gotcha 57 before trusting any backtest number, on any instrument.**
     Every stored M5 bar, in both DBs, for every instrument, is **mid price at an
-    account-local (UTC+2) label** — except GOLD, now re-based to bid/UTC in both.
+    account-local (UTC+2) label** — except GOLD, now re-based to bid/UTC in both
+    and, since 2026-10-23, **bit-identical between host and container backtests**
+    (493 / PF 1.0555001992825828 / +$3,342 at `--bars 188534`).
     It is invisible in bar counts, OHLC sanity checks and price ranges; it only
     shows against the broker. PF and win rate survive it (a constant offset is a
     no-op for Supertrend) but **everything clock-keyed does not**: `skip_hours`,
@@ -33,13 +35,16 @@ session. They assume the agent reads `CLAUDE.md` first.
   pnl = 0.0") was false when it was acted on. **Measure instead — one command:**
   `python3 trading-bot-skills/check_deployed.py` (add `--quiet` for drift only;
   exits 1 if any container is behind the host tree).
-- **Git state: the branch IS PUSHED and in sync, and no PR has been opened.**
+- **Git state: as of the end of the seventh session the branch was 4 commits AHEAD of
+  its upstream (`fdd0e7f`, `9bc0ec5`, `5aa7e7c`, plus the commit that wrote this line —
+  the human had not yet said push), and
+  no PR has been opened.**
   **Do not trust a hash quoted here — measure it.** This bullet has gone stale
   twice, the second time because the commit that updated it moved `HEAD` past
   the hash it had just recorded. So read the state instead of the prose:
   ```bash
-  git status -sb                                  # should show no ahead/behind
-  git log --oneline @{u}..HEAD | wc -l            # unpushed commits; expect 0
+  git status -sb                                  # ahead/behind vs upstream
+  git log --oneline @{u}..HEAD | wc -l            # unpushed commits (4 at last handoff)
   git log --oneline origin/main..HEAD | wc -l     # ~40 and growing; nothing merged
   ```
   Open the PR in the browser (`gh` is not installed):
@@ -78,11 +83,11 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 ---
 
-## Where to start — open prompts in priority order (as of the sixth session)
+## Where to start — open prompts in priority order (as of the seventh session, 2026-10-23)
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **11** | Finish the bar-data repair | **small** | Item 1 (the `DELETE`) is **DONE 2026-10-23** — container GOLD now reproduces the host bit-for-bit. What is left is item 2, which decides whether the other five instruments get re-based — which gates how much of prompt 8's evidence is trustworthy. |
+| **11** | Re-base the other instruments (US100 first) | **medium** | Item 1 (GOLD's phantom-bar `DELETE`) is **DONE 2026-10-23** and proved the method end to end: container GOLD now reproduces the host bit-for-bit. What is left is item 2 — re-basing US100 (then ETHUSD/BTCUSD/EURUSD/SILVER) to bid/UTC, with its orphan cleanup and a baseline re-measure. It gates how much of prompt 8's evidence is trustworthy, and US100 is the only instrument where the session shift can be checked against live (gotcha 33). |
 | **3** | GOLD live/backtest divergence | medium | Still the deepest open question (93 live vs 61 backtest, PF 0.646 vs 1.046). **Now has a third lead** — live runs on ASK candles, backtests on BID (gotcha 57) — and its premise improved: GOLD's data is finally broker-exact. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` before the decision is anything but a guess. Unblocked and unchanged; the switch is already in the running image, so enabling it later is config, not a deploy. |
 | **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. **Do prompt 11 item 2 first if you intend to lean on any US100 hour-of-day evidence** — gotcha 57 means those hours are mislabelled. |
@@ -94,7 +99,7 @@ Their prompts are retained below as closed markers so the numbering keeps resolv
 
 ---
 
-## What the 2026-10-22 sessions closed
+## What the 2026-10-22 / 10-23 sessions closed
 
 | old prompt | outcome |
 |---|---|
@@ -109,7 +114,8 @@ Their prompts are retained below as closed markers so the numbering keeps resolv
 | nothing force-closes a position | **built, shipped OFF** — mechanism done + tested; the backtest says the weekend-carry trades hold all the profit, so enabling it needs the flatten simulated first (gotcha 51) |
 | `backtesting_skill.py` coverage (old prompt 4) | **done** — 59% → **100%**; 6 findings, 2 fixed (the PF divide-by-zero guard reporting 100x gross wins, and a docstring that understated dynamic sizing 10x) (gotcha 53) |
 | `capital_api.py` coverage (old prompt 5) | **done** — 19% → **100%**; `place_order` was at 0%. 2 live bugs fixed: `create_session`'s 429 branch was dead (`Response.__bool__` is `self.ok`), and `get_historical_prices` returned account-local timestamps, putting the live warm-up buffer 2h off the DB bars — which closes half of prompt 3's remaining lead (gotcha 54) |
-| UI backtests lying — stale runner + GOLD data (old prompt 6) | **done** — runner rebuilt (56); GOLD re-based to bid/UTC with a full 199,400-bar re-fetch, volume now matches host on **99.999%** of common bars. The 25%-missing diagnosis was right but **incomplete** — see gotcha **57**. One `DELETE` left for a human (prompt 11) |
+| UI backtests lying — stale runner + GOLD data (old prompt 6) | **done** — runner rebuilt (56); GOLD re-based to bid/UTC with a full 199,400-bar re-fetch, volume now matches host on **99.999%** of common bars. The 25%-missing diagnosis was right but **incomplete** — see gotcha **57**. The final `DELETE` ran 2026-10-23 (row below) |
+| GOLD phantom bars (prompt 11 item 1, 2026-10-23) | **done** — 7,886 orphans deleted (backup `/data/GOLD_M5_orphans_backup.json`); container run now **bit-identical** to host: 493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342. Refuted the documented "extra bars at the series start" explanation for the residual — the phantoms were occupying `--bars` window slots (gotcha 56). Also caught a bug in the handoff's own delete snippet that would have removed `bar_updater`'s post-CSV bars |
 | Aug–Oct zero-P&L `trade_history` (old prompt 7) | **done** — 381/381 matched, 0 unmatched, **−$1,672.63** recovered from rows the dashboard showed as `$0.00`. New `repair_zero_pnl.py`; **not** `backfill_trade_history.py`, which rewrites every field of every row in the window (gotcha 59) |
 
 Four bugs the coverage work found in the live loop, all fixed and now **deployed**
@@ -725,15 +731,16 @@ bots that are actually trading.
 
 ---
 
-## 11. Finish the bar-data repair — one `DELETE`, then a scoping decision
+## 11. Finish the bar-data repair — item 1 DONE 2026-10-23; item 2 (re-base US100 first) is the work
 
 > Read `CLAUDE.md` gotchas **57** (the convention defect), **56** (what the GOLD
 > re-fetch did and did not fix), **58** (`--years` is not a calendar window) and
 > **24** (which DB is which).
 >
-> **This is the smallest remaining task with a measured payoff, and item 1 needs a
-> human because it is a `DELETE` against the live trading DB.** The auto-mode
-> classifier blocks it, correctly.
+> **Item 1 is closed.** Lesson for item 2's orphan cleanup: the auto-mode classifier
+> blocks a `DELETE` on the live DB even after a plain "yes"; it passed once the human
+> wrote an explicit **"approve delete"**. Stage the backup + exact command first, then
+> ask for that wording rather than retrying.
 >
 > ### 1. ~~Delete GOLD's phantom bars~~ — **DONE 2026-10-23**
 > 7,886 rows deleted (backup `/data/GOLD_M5_orphans_backup.json`); container run at
@@ -796,6 +803,16 @@ bots that are actually trading.
 >   leaves this file quoting numbers from data that no longer exists.
 > - Expect the orphan tail on each one too — same `INSERT OR REPLACE` limitation,
 >   same authoritative-CSV cleanup.
+>   **Bound the orphan test by the CSV's last timestamp** (`t not in auth and t <= max(auth)`),
+>   or you also delete `bar_updater`'s post-CSV bars — item 1's original snippet had exactly
+>   that bug. Back up the orphans to `/data/<EPIC>_M5_orphans_backup.json` first.
+> - **Orphans contaminate `--bars N` runs in a non-obvious way** (item 1's finding): they
+>   occupy window slots and push the start later, so a run looks merely "re-phased"
+>   when it is actually on defective data. Measure baselines only *after* the cleanup.
+> - Recipe, per instrument: re-fetch → bound+back up+delete orphans (needs the human's
+>   explicit "approve delete") → re-run the baseline with an explicit `--bars N` →
+>   compare against the old documented baseline (gotchas 31/33/56 for US100) and
+>   **report the session change, not just the PF** → update the gotcha that quotes it.
 > - **US100 is the one worth doing first**, because it is the only instrument with
 >   established backtest↔live parity (gotcha 33), so it is the only place where a
 >   session change can be *checked* against live rather than just observed.
