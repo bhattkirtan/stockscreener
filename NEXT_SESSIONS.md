@@ -1,6 +1,6 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Rewritten 2026-10-22 (second session that day), kept current through the seventh (2026-10-23).
+Rewritten 2026-10-22 (second session that day), kept current through the eighth (2026-10-23, US100 re-base).
 Each prompt below is self-contained: paste one as the first message of a fresh
 session. They assume the agent reads `CLAUDE.md` first.
 
@@ -18,6 +18,8 @@ session. They assume the agent reads `CLAUDE.md` first.
     **US100 is also re-based, in the live volume only (2026-10-23)**: container
     `--bars 203260` = 2485 / PF 0.9748576652952666, now gating the true 13–20 UTC session.
     The host stray DB's US100 is still mid/local, so run US100 backtests in the container.
+    **Default for every new session: run backtests inside `stockscreener-backtest-runner-1`.**
+    The volume is now equal or better than the host DB for every instrument.
     It is invisible in bar counts, OHLC sanity checks and price ranges; it only
     shows against the broker. PF and win rate survive it (a constant offset is a
     no-op for Supertrend) but **everything clock-keyed does not**: `skip_hours`,
@@ -86,15 +88,15 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 ---
 
-## Where to start — open prompts in priority order (as of the seventh session, 2026-10-23)
+## Where to start — open prompts in priority order (as of the eighth session, 2026-10-23)
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **11** | Re-base the remaining four (ETHUSD next) | **medium** | Items 1 (GOLD phantoms) and 2's US100 half are **DONE 2026-10-23**. US100 is bid/UTC in the live volume, orphans deleted, and the baseline re-measured. The summary is identical (2485 / PF 0.9749), but it's a different trade set on the correct 13–20 UTC session, and **trade-level parity with live rose from 66% to 93%** (gotcha 33). Left: ETHUSD, BTCUSD, EURUSD, SILVER, plus the host stray DB's US100. ETHUSD next because it trades live. |
-| **3** | GOLD live/backtest divergence | medium | Still the deepest open question (93 live vs 61 backtest, PF 0.646 vs 1.046). **Now has a third lead** — live runs on ASK candles, backtests on BID (gotcha 57) — and its premise improved: GOLD's data is finally broker-exact. |
-| **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` before the decision is anything but a guess. Unblocked and unchanged; the switch is already in the running image, so enabling it later is config, not a deploy. |
-| **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. **Do prompt 11 item 2 first if you intend to lean on any US100 hour-of-day evidence** — gotcha 57 means those hours are mislabelled. |
-| **9** | Small open items | small | Includes the US100 `--quantity` fragility (gotcha 55) — a bot restarted from the UI without an explicit quantity silently trades 0.5. |
+| **3** | GOLD live/backtest divergence | medium | **Now first.** It's the deepest open question, and it has a new, cheap first step: the **trade-level matching** that took US100 parity from 66% to 93% (gotcha 33) has never been run on GOLD. Both DBs' GOLD is now broker-exact, so the data excuse is gone. Matching the ~93 live entries against the backtest names the excess trades directly instead of guessing at causes. |
+| **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | Mechanical, and the method is proven twice (GOLD, US100). ETHUSD first because it trades live, so the parity check applies. Needs your **"approve delete"** mid-session. Paste-ready prompt at the top of section 11. |
+| **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. **US100's weekend-carry cohort (gotcha 51) was measured on mid/local labels**, so re-measure it on the re-based bars as part of this. |
+| **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. US100 hour-of-day evidence is now correctly labelled (gotcha 57); ETHUSD's is not until prompt 11 does it. |
+| **9** | Small open items | small | Includes the US100 `--quantity` fragility (gotcha 55) and the two latent clock bugs from prompt 11 item 3. Fold into any session. |
 | **10** | Keep running these bots? | — | Standing question. Prompt 3 is still the prerequisite for answering it with evidence. |
 
 **Closed:** 1 (deploy), 4 and 5 (coverage), 6 (UI backtests + GOLD data), 7 (zero-P&L rows).
@@ -308,7 +310,21 @@ bots that are actually trading.
 
 ---
 
-## 3. The GOLD live/backtest divergence — four hypotheses rejected, two leads left
+## 3. The GOLD live/backtest divergence — four hypotheses rejected, three leads left, one new cheap first step
+
+> **Paste-ready (2026-10-23):** Read CLAUDE.md gotchas 36, 33 and 57, then this
+> section. Before testing any lead, run the **trade-level match** on GOLD: take
+> live `trade_history` rows (`bot_id='gold_m5_bot'`, 2026-08-01..10-21) and the
+> container backtest's `trades.csv` at `--bars 188534` (or the current row count),
+> and match each live entry to a backtest entry within ±10 min. Report matched,
+> same side and same outcome, then classify the unmatched live trades: the hour,
+> whether the backtest was in a position at the time, and whether the backtest
+> signalled on the same bar but was gated. US100 matched 208/224 that way (gotcha 33).
+> If GOLD matches far fewer, the unmatched set *is* the divergence, and its
+> profile says which lead below to test. Container backtests take ~20 min with
+> buffered output; wait for `/data/results/GOLD/<run>/report.json`. Don't change
+> live config, size or bot state.
+>
 
 > Read `CLAUDE.md` gotcha **36** (the rejected hypotheses), then **41** and **48**.
 >
@@ -387,7 +403,9 @@ bots that are actually trading.
 > the REST bars have the same boundaries, and do the same bars exist on both
 > sides** — which still needs live capture.
 >
-> **Note gotcha 48 before you start:** GOLD's repaired bars are in the HOST
+> **⚠️ Superseded 2026-10-23 — the rest of this paragraph is history.** GOLD is
+> now broker-exact in **both** DBs and the container reproduces the host bit-for-bit
+> (gotcha 56), so run in the container. Original note: GOLD's repaired bars are in the HOST
 > `/data/trading.db`, not the live volume. Pin `DB_PATH` deliberately and say
 > which DB every number came from. **Exact bar counts drift daily — read gotcha
 > 53's closing correction rather than any count quoted here;** as of 2026-10-22
@@ -737,6 +755,26 @@ bots that are actually trading.
 
 ## 11. Finish the bar-data repair — item 1 DONE; item 2's US100 half DONE 2026-10-23; ETHUSD/BTCUSD/EURUSD/SILVER remain
 
+> **Paste-ready for the next session (ETHUSD):** Read CLAUDE.md, then this section
+> and gotchas 57, 56, 58 and 33. Re-base ETHUSD's M5 bars to bid/UTC the way US100 was
+> done on 2026-10-23:
+> (0) back up **all** current ETHUSD M5 rows to `/data/ETHUSD_M5_pre_rebase_backup.json`;
+> (1) `docker exec stockscreener-backtest-runner-1 sh -c 'cd /app && python3 fetch_data.py --epic ETHUSD --timeframe M5 --bars 300000 --output /data/ETHUSD_M5_full_authoritative.csv'`
+> (ETHUSD trades 24/7, so 2 years is ~210k bars; ask for more and let the broker's
+> history depth cap it, then check the date range you got);
+> (2) find orphans (not in the CSV **and** `<=` its last bar), back them up to
+> `/data/ETHUSD_M5_orphans_backup.json`, then STOP and show me the exact DELETE. I'll
+> reply "approve delete";
+> (3) re-run the ETHUSD baseline in the container with an explicit `--bars N`. Diff
+> `trades.csv` against the previous run rather than trusting a summary match;
+> (4) run the trade-level parity check against live `ethusd_m5_bot` trades for
+> 2026-08-01..10-21 (±10 min, same side, same outcome), before and after;
+> (5) update the gotchas that quote ETHUSD numbers (28, 32, 34, 57) and this file, then commit.
+> Volume state at handoff: ETHUSD 220,485 M5 rows, 2024-03-08 → now (BTCUSD 220,480, EURUSD 172,214,
+> SILVER 163,970). ETHUSD has no weekend gap, so expect **fewer** orphans than GOLD/US100. A 24/7 series has no closure hours for the +2h labels to fall into. If it has
+> almost none, say so rather than assuming the method failed. Don't change live
+> config, size or bot state. Don't push unless asked.
+>
 > Read `CLAUDE.md` gotchas **57** (the convention defect), **56** (what the GOLD
 > re-fetch did and did not fix), **58** (`--years` is not a calendar window) and
 > **24** (which DB is which).
