@@ -15,6 +15,9 @@ session. They assume the agent reads `CLAUDE.md` first.
     account-local (UTC+2) label** — except GOLD, now re-based to bid/UTC in both
     and, since 2026-10-23, **bit-identical between host and container backtests**
     (493 / PF 1.0555001992825828 / +$3,342 at `--bars 188534`).
+    **US100 is also re-based, in the live volume only (2026-10-23)**: container
+    `--bars 203260` = 2485 / PF 0.9748576652952666, now gating the true 13–20 UTC session.
+    The host stray DB's US100 is still mid/local, so run US100 backtests in the container.
     It is invisible in bar counts, OHLC sanity checks and price ranges; it only
     shows against the broker. PF and win rate survive it (a constant offset is a
     no-op for Supertrend) but **everything clock-keyed does not**: `skip_hours`,
@@ -87,7 +90,7 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **11** | Re-base the other instruments (US100 first) | **medium** | Item 1 (GOLD's phantom-bar `DELETE`) is **DONE 2026-10-23** and proved the method end to end: container GOLD now reproduces the host bit-for-bit. What is left is item 2 — re-basing US100 (then ETHUSD/BTCUSD/EURUSD/SILVER) to bid/UTC, with its orphan cleanup and a baseline re-measure. It gates how much of prompt 8's evidence is trustworthy, and US100 is the only instrument where the session shift can be checked against live (gotcha 33). |
+| **11** | Re-base the remaining four (ETHUSD next) | **medium** | Items 1 (GOLD phantoms) and 2's US100 half are **DONE 2026-10-23**. US100 is bid/UTC in the live volume, orphans deleted, and the baseline re-measured. The summary is identical (2485 / PF 0.9749), but it's a different trade set on the correct 13–20 UTC session, and **trade-level parity with live rose from 66% to 93%** (gotcha 33). Left: ETHUSD, BTCUSD, EURUSD, SILVER, plus the host stray DB's US100. ETHUSD next because it trades live. |
 | **3** | GOLD live/backtest divergence | medium | Still the deepest open question (93 live vs 61 backtest, PF 0.646 vs 1.046). **Now has a third lead** — live runs on ASK candles, backtests on BID (gotcha 57) — and its premise improved: GOLD's data is finally broker-exact. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` before the decision is anything but a guess. Unblocked and unchanged; the switch is already in the running image, so enabling it later is config, not a deploy. |
 | **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. **Do prompt 11 item 2 first if you intend to lean on any US100 hour-of-day evidence** — gotcha 57 means those hours are mislabelled. |
@@ -116,6 +119,7 @@ Their prompts are retained below as closed markers so the numbering keeps resolv
 | `capital_api.py` coverage (old prompt 5) | **done** — 19% → **100%**; `place_order` was at 0%. 2 live bugs fixed: `create_session`'s 429 branch was dead (`Response.__bool__` is `self.ok`), and `get_historical_prices` returned account-local timestamps, putting the live warm-up buffer 2h off the DB bars — which closes half of prompt 3's remaining lead (gotcha 54) |
 | UI backtests lying — stale runner + GOLD data (old prompt 6) | **done** — runner rebuilt (56); GOLD re-based to bid/UTC with a full 199,400-bar re-fetch, volume now matches host on **99.999%** of common bars. The 25%-missing diagnosis was right but **incomplete** — see gotcha **57**. The final `DELETE` ran 2026-10-23 (row below) |
 | GOLD phantom bars (prompt 11 item 1, 2026-10-23) | **done** — 7,886 orphans deleted (backup `/data/GOLD_M5_orphans_backup.json`); container run now **bit-identical** to host: 493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342. Refuted the documented "extra bars at the series start" explanation for the residual — the phantoms were occupying `--bars` window slots (gotcha 56). Also caught a bug in the handoff's own delete snippet that would have removed `bar_updater`'s post-CSV bars |
+| US100 re-base (prompt 11 item 2, first half, 2026-10-23) | **done** — 203,260-bar re-fetch, 6,848 orphans deleted (backups `/data/US100_M5_orphans_backup.json` + full rollback `/data/US100_M5_pre_rebase_backup.json`). Baseline 2485 / PF 0.9749: the same summary as before by coincidence of fixed sizing, but only 990 of 2485 entries shared. Session moved 11–18 → 13–20 UTC; live entries matched by the backtest went 149 → **208 / 224** (gotchas 33, 57) |
 | Aug–Oct zero-P&L `trade_history` (old prompt 7) | **done** — 381/381 matched, 0 unmatched, **−$1,672.63** recovered from rows the dashboard showed as `$0.00`. New `repair_zero_pnl.py`; **not** `backfill_trade_history.py`, which rewrites every field of every row in the window (gotcha 59) |
 
 Four bugs the coverage work found in the live loop, all fixed and now **deployed**
@@ -731,7 +735,7 @@ bots that are actually trading.
 
 ---
 
-## 11. Finish the bar-data repair — item 1 DONE 2026-10-23; item 2 (re-base US100 first) is the work
+## 11. Finish the bar-data repair — item 1 DONE; item 2's US100 half DONE 2026-10-23; ETHUSD/BTCUSD/EURUSD/SILVER remain
 
 > Read `CLAUDE.md` gotchas **57** (the convention defect), **56** (what the GOLD
 > re-fetch did and did not fix), **58** (`--years` is not a calendar window) and
@@ -786,6 +790,12 @@ bots that are actually trading.
 > re-phasing the run (gotcha 58), **not** a defect.
 >
 > ### 2. Decide whether to re-base the other five instruments — a scoping call, not a chore
+> **US100 DONE 2026-10-23 (live volume only).** Result and method are in CLAUDE.md gotchas 33 and 57. Three things to carry forward:
+> - **Back up the whole series before the re-fetch, not just the orphans.** `INSERT OR REPLACE` overwrites every real bar in place, so the orphan backup alone can't roll you back. US100's full pre-image is `/data/US100_M5_pre_rebase_backup.json`.
+> - **Compare trade sets, not summaries.** On a fixed-size instrument (every trade exactly +TP$ or −SL$), two different runs can match to the last digit. US100 did: 2485 / PF 0.9748576652952666 both times, with only 990 shared entries.
+> - **Re-check parity at trade level** (match live entries to backtest entries within ±10 min). That is what showed the re-base mattered (149 → 208 of 224); the aggregate WR/PF barely moved.
+> Next: **ETHUSD** (live-traded, so the same parity check applies), then BTCUSD/EURUSD/SILVER. Re-fetching the host stray DB's US100 is optional: containers already see the good copy.
+>
 > US100, ETHUSD, BTCUSD, EURUSD and SILVER are all still mid/local, in **both** DBs.
 > Re-fetching them is mechanically identical to what GOLD got:
 > ```bash
