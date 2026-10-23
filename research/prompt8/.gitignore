@@ -1,0 +1,6 @@
+snap.db
+daily.pkl
+daily_rows.pkl
+res/
+logs/
+!*.txt

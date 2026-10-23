@@ -102,7 +102,7 @@ real gain has to come from a different signal (prompt 8).**
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **8** | **Strategy research: find a signal with an edge** | large | **Start here.** It's the only prompt that can make this profitable. Paste-ready block at the top of section 8. It runs alongside the forward test, without waiting on it. |
+| **8** | **Strategy research: find a signal with an edge** | large | **Still first, but narrower.** First pass done 2026-10-23 (gotcha 61): cost-per-R is refuted, and daily IBS on US indices has a real net edge but fails DSR and the post-2010 buy-and-hold bar. Next: IBS as an overlay on a long index position, vs B&H at matched vol. Paste-ready block at the top of section 8. |
 | **12** | Forward-test check (GOLD/ETHUSD slope-on, deployed 2026-10-23) | small | Run every ~2 weeks. Trade-match live vs a fresh container backtest with `trade_match.py`. The bar is ~60 GOLD trades with PF > 1.0, or stop. Paste-ready block in section 12. **First useful run: early-to-mid November.** |
 | **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | ETHUSD first: it's in the forward test, and its trades can't be matched until its bars are bid/UTC. Needs your **"approve delete"** mid-session. Paste-ready block at the top of section 11. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. Re-measure the weekend-carry cohort (gotcha 51) on the slope-on strategy and the re-based bars. |
@@ -732,6 +732,22 @@ bots that are actually trading.
 > universe is screened on *today's* spread snapshot then backtested over 21–40
 > years (selection bias), these are CFD proxies not futures, spreads are assumed
 > constant, and the weekly sample is closes only.
+
+
+### Result of the first pass (2026-10-23): 54 trials, none passes all four bars. Detail in CLAUDE.md gotcha 61
+
+- **Item 1, cost per unit of R, is closed: REFUTED.** 22 intraday variants (M5/M15/M30/H1 × 1×/2×/4× stop, constant $ risk). Cost fell as predicted, but gross PF moved more than cost did, so the premise of a fixed gross edge was wrong. A few GOLD H1/M30 variants are stable on 38–63 trades. None transfers to US100, and none beats buy-and-hold Sharpe.
+- **Item 4, second signal family, is opened.** Daily bars page back to the 1970s (the `fetch_weekly.py` "~3.2 years" note was wrong), so daily rules can now be tested on 20+ years. I tested four pre-registered rules on five instruments. **IBS < 0.2 on US100/US500**: net PF 1.36, both halves > 1, survives 3× costs, positive in every 5-year block, uncorrelated with the Supertrend bots. **Fails:** DSR 0.59/0.66 (< 0.95), and buy-and-hold beats it in most blocks since 2010.
+- Items 2 and 3 are untouched.
+
+> **Paste-ready, next pass:** Read CLAUDE.md gotchas 46, 60 and 61 and `research/prompt8/README.md`.
+> Pre-register (write down before running) a small set of **IBS overlay** variants on US100 daily
+> since 2000: buy-and-hold plus IBS<0.2 extra exposure, compared with plain buy-and-hold at
+> **matched volatility**, net of the same spread + funding model as `daily_fam.py`. Report the
+> trial count, starting from 54. The pass bar is the same four tests. "Beat buy-and-hold" means a
+> higher Sharpe than vol-matched B&H **in 2010–2026 alone**, not only over the full sample. Do not
+> re-tune IBS's threshold. Neighbours 0.15–0.30 were already checked. Research only: no change to
+> live config, size or bot state.
 
 ---
 

@@ -2,8 +2,9 @@
 """
 Fetch long weekly history for the friction-screened universe.
 
-Capital.com caps DAY resolution at ~1000 bars (~3.2 years) but WEEK resolution
-also returns 1000 bars — which reaches back to 2007. That buys the one thing
+A single DAY request returns at most 1000 bars (~3.2 years), and so does WEEK —
+which reaches back to 2007. (Paging DAY backwards with `to` reaches the 1970s;
+see CLAUDE.md gotcha 61.) That buys the one thing
 the daily sample could not provide: the 2008 GFC, 2011, 2015, 2020 and 2022.
 A weekly trend horizon is also where the premium is documented to survive
 (the 50-day/10-week signal retained Sharpe 0.40 post-2009, vs 0.12 for 5-day).
