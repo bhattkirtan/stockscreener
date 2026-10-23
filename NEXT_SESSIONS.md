@@ -1,15 +1,19 @@
 # Handoff — ready-to-paste prompts for new sessions
 
-Rewritten 2026-10-22 (second session that day), kept current through the eighth (2026-10-23, US100 re-base).
+Rewritten 2026-10-22 (second session that day), kept current through the ninth (2026-10-23, prompt 3 solved + deployed).
 Each prompt below is self-contained: paste one as the first message of a fresh
 session. They assume the agent reads `CLAUDE.md` first.
 
 **Read before starting any of these:**
 
-- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–59** from 2026-10-22.
+- `CLAUDE.md` gotchas **22–38** are from 2026-10-21; **40–59** from 2026-10-22; **60** from 2026-10-23.
+  - **Read gotcha 60 first.** Until 2026-10-23 05:42 UTC live GOLD/ETHUSD never applied the MA100
+    slope gate, so **every live GOLD/ETHUSD result before that is the slope-OFF strategy** (2y backtest
+    PF 1.0017), not the slope-on one every backtest in these docs describes. Fixed and deployed; it is
+    now a demo forward test (prompt 12).
   Fixed: 22, 29, 31, 40, 41, 42, 49, 50, 51, 53, 54 — **all DEPLOYED (55)** — plus
   **25 (56)**, **56's GOLD data gap — now fully closed, phantom bars deleted 2026-10-23** and **59** (the zero-P&L rows).
-  **Still open hazards: 19, 26, 36, and the NEW 57.**
+  **Still open hazards: 19, 26, 57.** (36 is solved by 60.)
   - **Read gotcha 57 before trusting any backtest number, on any instrument.**
     Every stored M5 bar, in both DBs, for every instrument, is **mid price at an
     account-local (UTC+2) label** — except GOLD, now re-based to bid/UTC in both
@@ -88,18 +92,24 @@ session. They assume the agent reads `CLAUDE.md` first.
 
 ---
 
-## Where to start — open prompts in priority order (as of the eighth session, 2026-10-23)
+## Where to start — open prompts in priority order (as of the ninth session, 2026-10-23)
+
+**The situation in one paragraph.** The measurement rig is now trustworthy: the backtester reproduces
+live trade for trade on GOLD (82/95 once gotcha 60 is accounted for) and US100 (208/224). What it
+measures is a strategy with a thin-to-zero edge: GOLD slope-on PF 1.0555 (the version now running as a
+forward test), slope-off 1.0017, US100 0.975, all over 2y. **Better plumbing can't fix that. The next
+real gain has to come from a different signal (prompt 8).**
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **3** | **SOLVED + DEPLOYED 2026-10-23 05:42 UTC** | — | The divergence was the live bot never applying the MA100 slope gate (CLAUDE.md gotcha 60). Its 105-bar buffer was too short for MA100 + a 20-bar slope, and the fallback made the gate allow everything. Live matches the slope-OFF backtest 82/95 (vs 1/95 for slope-on). Fix `eb9de2e` deployed. GOLD/ETHUSD now run the slope-on strategy as a demo **forward test**: ~60 GOLD trades, PF > 1.0 or stop (gotcha 60). |
-| **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | Mechanical, and the method is proven twice (GOLD, US100). ETHUSD first because it trades live, so the parity check applies. Needs your **"approve delete"** mid-session. Paste-ready prompt at the top of section 11. |
-| **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. **US100's weekend-carry cohort (gotcha 51) was measured on mid/local labels**, so re-measure it on the re-based bars as part of this. |
-| **8** | Strategy research direction | large | Three levers measured and failed. Cost-per-unit-of-R is the cheapest untested one. US100 hour-of-day evidence is now correctly labelled (gotcha 57); ETHUSD's is not until prompt 11 does it. |
-| **9** | Small open items | small | Includes the US100 `--quantity` fragility (gotcha 55) and the two latent clock bugs from prompt 11 item 3. Fold into any session. |
-| **10** | Keep running these bots? | — | Standing question. Prompt 3 is still the prerequisite for answering it with evidence. |
+| **8** | **Strategy research: find a signal with an edge** | large | **Start here.** It's the only prompt that can make this profitable. Paste-ready block at the top of section 8. It runs alongside the forward test, without waiting on it. |
+| **12** | Forward-test check (GOLD/ETHUSD slope-on, deployed 2026-10-23) | small | Run every ~2 weeks. Trade-match live vs a fresh container backtest with `trade_match.py`. The bar is ~60 GOLD trades with PF > 1.0, or stop. Paste-ready block in section 12. **First useful run: early-to-mid November.** |
+| **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | ETHUSD first: it's in the forward test, and its trades can't be matched until its bars are bid/UTC. Needs your **"approve delete"** mid-session. Paste-ready block at the top of section 11. |
+| **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. Re-measure the weekend-carry cohort (gotcha 51) on the slope-on strategy and the re-based bars. |
+| **9** | Small open items | small | US100 `--quantity` fragility (gotcha 55), two latent clock bugs (prompt 11 item 3). Fold into any session. |
+| **10** | Keep running these bots? | — | Now answered by prompt 12's bar, not by more investigation. US100 has no measured edge (PF 0.975) and is the biggest live loser. Stopping it is the open call. |
 
-**Closed:** 1 (deploy), 4 and 5 (coverage), 6 (UI backtests + GOLD data), 7 (zero-P&L rows).
+**Closed:** 1 (deploy), 3 (GOLD divergence — gotcha 60), 4 and 5 (coverage), 6 (UI backtests + GOLD data), 7 (zero-P&L rows).
 Their prompts are retained below as closed markers so the numbering keeps resolving.
 
 ---
@@ -122,6 +132,7 @@ Their prompts are retained below as closed markers so the numbering keeps resolv
 | UI backtests lying — stale runner + GOLD data (old prompt 6) | **done** — runner rebuilt (56); GOLD re-based to bid/UTC with a full 199,400-bar re-fetch, volume now matches host on **99.999%** of common bars. The 25%-missing diagnosis was right but **incomplete** — see gotcha **57**. The final `DELETE` ran 2026-10-23 (row below) |
 | GOLD phantom bars (prompt 11 item 1, 2026-10-23) | **done** — 7,886 orphans deleted (backup `/data/GOLD_M5_orphans_backup.json`); container run now **bit-identical** to host: 493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342. Refuted the documented "extra bars at the series start" explanation for the residual — the phantoms were occupying `--bars` window slots (gotcha 56). Also caught a bug in the handoff's own delete snippet that would have removed `bar_updater`'s post-CSV bars |
 | US100 re-base (prompt 11 item 2, first half, 2026-10-23) | **done** — 203,260-bar re-fetch, 6,848 orphans deleted (backups `/data/US100_M5_orphans_backup.json` + full rollback `/data/US100_M5_pre_rebase_backup.json`). Baseline 2485 / PF 0.9749: the same summary as before by coincidence of fixed sizing, but only 990 of 2485 entries shared. Session moved 11–18 → 13–20 UTC; live entries matched by the backtest went 149 → **208 / 224** (gotchas 33, 57) |
+| GOLD live/backtest divergence (prompt 3, 2026-10-23) | **solved + deployed** — live never applied the MA100 slope gate: the 105-bar buffer was too short and the NaN fallback allowed both directions. Live matched the slope-OFF backtest **82/95** (81 same outcome) vs **1/95** slope-on. Fix `eb9de2e`, deployed 05:42 UTC; GOLD/ETHUSD warm-up 105 → 360. New `trade_match.py` at repo root (gotcha 60) |
 | Aug–Oct zero-P&L `trade_history` (old prompt 7) | **done** — 381/381 matched, 0 unmatched, **−$1,672.63** recovered from rows the dashboard showed as `$0.00`. New `repair_zero_pnl.py`; **not** `backfill_trade_history.py`, which rewrites every field of every row in the window (gotcha 59) |
 
 Four bugs the coverage work found in the live loop, all fixed and now **deployed**
@@ -671,6 +682,19 @@ bots that are actually trading.
 
 ## 8. Where to take the strategy research — three levers are now closed off
 
+> **Paste-ready (2026-10-23):** Read CLAUDE.md gotchas 32, 34, 37, 46, 47 and 60, then this
+> section. Goal: find **one** signal with a real, transferable edge. Don't tune the current
+> Supertrend; that lever is measured and dead (gotcha 34). Start with the cheapest untested lever,
+> **cost per unit of R** (item 1 below): on GOLD and US100, sweep a wider stop with the same R:R and/or
+> a slower timeframe (M15/M30/H1 via `market_data.resample_to`) and report gross vs net PF.
+> Then, if time allows, a second uncorrelated signal family on H4/daily (item 4). Every
+> candidate must pass all four of these before it counts: both IS and OOS halves PF > 1.0
+> (`sweep_eval.py`), transfer to a second instrument, a trial-count-deflated Sharpe (DSR), and
+> beat buy-and-hold. Count every variant you try and report the count. Run backtests in
+> `stockscreener-backtest-runner-1` with an explicit `--bars N`, not `--years` (gotcha 58). Use
+> GOLD/US100 only, since other instruments' bars are still mid/local (gotcha 57). Don't change live
+> config, size or bot state: GOLD/ETHUSD are mid forward test (prompt 12).
+
 > Read `CLAUDE.md` gotchas **32**, **34**, **37**, **46** and **47** **before
 > proposing anything.** Three levers have been measured and all three failed,
 > and the failures are informative:
@@ -746,6 +770,11 @@ bots that are actually trading.
 ---
 
 ## 10. The standing question — keep running these bots?
+
+> **Update 2026-10-23:** prompt 3 is solved (gotcha 60), so the parity prerequisite below is met.
+> GOLD/ETHUSD now have an explicit stop rule, prompt 12's forward-test bar. **US100 doesn't**: it
+> has trade-level parity, a 2y PF of 0.975 and the largest live loss. Deciding to stop it needs no
+> further measurement. The text below is the pre-solution framing, kept for history.
 
 > Measured live Aug 1 – Oct 21 (demo, EUR): **−€2,004** total (−€1,664 of it
 > US100, plus −€184 of swap). Max cumulative drawdown −€2,588. Every instrument
@@ -887,3 +916,30 @@ bots that are actually trading.
 >   and asserts UTC on whatever the bar label happens to be. On mid/local data that
 >   message is actively misleading — it is what makes gotcha 57 hard to notice from
 >   logs alone.
+
+---
+
+## 12. Forward-test check — GOLD/ETHUSD slope-on strategy (deployed 2026-10-23 05:42 UTC)
+
+> **Paste-ready:** Read CLAUDE.md gotchas 60, 33 and 58, then this section. The fix `eb9de2e`
+> made live GOLD/ETHUSD apply the MA100 slope gate for the first time on 2026-10-23 05:42 UTC.
+> This is a forward test of that strategy at unchanged demo size. Do three things:
+> 1. Run `python3 trading-bot-skills/check_deployed.py --quiet` and confirm both gotcha-60
+>    markers are present and every bot's log shows `Warm-up bars — M5: 360`.
+> 2. Run a fresh container GOLD backtest with an explicit `--bars N` covering the forward window,
+>    then `python3 trade_match.py --bot gold_m5_bot --run results/GOLD/<run> --from
+>    2026-10-23T05:42 --to <today>`. Report matched / same side / same outcome. Anything far
+>    below ~85% means a new defect: classify the unmatched trades before reading any P&L.
+> 3. Report live GOLD n, WR and PF since 05:42 UTC on 10-23, against the bar: **after ~60 trades,
+>    PF > 1.0 after costs, or stop the GOLD bot.** Don't size up, retune, or move the bar
+>    because of an early result; at n < 30 the PF is noise. ETHUSD: report the numbers, but
+>    trade-match it only after prompt 11 has re-based its bars.
+>
+> Don't change live config, size or bot state. Stopping a bot at the bar is the user's call:
+> recommend it, don't do it.
+
+Context: before the fix, live ran slope-OFF (2y backtest PF 1.0017; Aug–Oct live PF 0.685).
+The slope-on strategy backtests at 493 trades / PF 1.0555 over 2y, which is about 15 trades a month
+on GOLD, so ~60 trades is roughly 4 months, not 2–3. The trade-level match method and its
+residual (13/95 unmatched, mostly position-occupancy cascades and late bar delivery) are in gotcha 60.
+
