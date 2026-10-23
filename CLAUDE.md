@@ -1155,6 +1155,20 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
       - Other families: RSI(2) works on US indices too (PF 1.6, SR 0.33–0.38, below B&H) and fails on metals. Turn-of-month is positive on GOLD (PF 1.38, SR 0.38 vs B&H 0.55). SMA200 trend has the highest PFs (1.7–2.9) but on 37–89 trades, with SR at or below B&H on 4 of 5.
     - **Where this leaves the research.** No standalone signal beats buy-and-hold here. The defensible next experiment is **IBS as an overlay on a long index position** (B&H plus extra exposure on IBS days), scored against B&H at matched volatility. That is a portfolio question, not a new signal, and it would need its own pre-registered trial count. Don't re-tune IBS's threshold: neighbours were checked, and selecting among them is exactly what the DSR penalises.
 
+62. **Prompt 8, second pass (2026-10-23): IBS as an overlay on a long index position fixes the buy-and-hold problem but fails DSR. 12 trials, running total 66, none passes all four tests.** Variants and tests were written in [`research/prompt8/overlay_prereg.md`](research/prompt8/overlay_prereg.md) before any run. Script: `ibs_overlay.py`. Results: `overlay_results.txt`.
+    - **Rebuilding `daily.pkl` per the README reproduces `daily_results.txt` byte-for-byte**, so the rig is stable across re-fetches. Today's partial bar drops out via `dropna`.
+    - Exposure is `w = b + k·IBS<0.2` from 2000 on. Costs follow `daily_fam.py`: 1.5× spread on every exposure *increase*, plus funding at FF+2.5% on exposure **above 1.0 only**. The 1.0 base is unfunded, as `daily_fam`'s B&H benchmark is, and the vol-matched B&H pays the same funding on `λ − 1`.
+      | US100 | b + k | incPF IS/OOS | SR | vol-matched B&H SR | SR 2010+ | VM-B&H 2010+ | active SR | DSR (active) |
+      |---|---|---|---|---|---|---|---|---|
+      | O1 | 1 + 0.5 | 1.33 / 1.43 | 0.49 | 0.39 | 0.89 | 0.85 | 0.50 | 0.41 |
+      | O2 | 1 + 1.0 | 1.33 / 1.43 | 0.53 | 0.37 | 0.88 | 0.82 | 0.48 | 0.37 |
+      | O3 | 0.8 + 0.8 | 1.34 / 1.44 | 0.53 | 0.40 | 0.89 | 0.86 | 0.41 | 0.24 |
+      | O4 | 1 + 1·(c>SMA200) | 1.09 / 1.38 | 0.47 | 0.40 | 0.89 | 0.85 | 0.32 | 0.13 |
+    - **Tests 1 and 4 pass on every variant.** Unlike standalone IBS, the overlay beats vol-matched B&H in 2010–2026, but only by 0.03–0.06 Sharpe. O1–O3 also pass transfer. DE40 transfer is marginal, though: full-sample SR 0.32 vs 0.30, and **DE40 loses to vol-matched B&H after 2010 on all four**. O4 fails transfer (DE40 OOS PF 0.86).
+    - **Test 3 fails everywhere: active-return DSR 0.12–0.41, against 0.95.** I used the DSR of the *active* return (overlay − vol-matched B&H), as pre-registered. The raw overlay's DSR (0.36–0.54) mostly certifies equity beta. An active Sharpe of ~0.5 over 26 years is t ≈ 2.6 before deflation, which isn't enough after 66 trials.
+    - The incremental leg's PF equals standalone IBS's (1.364 on O1), as it must: PF is scale-invariant. That's a sanity check on the rig, not new evidence.
+    - **Don't add overlay variants to chase DSR.** Each one raises the bar. Prompt 8 items 2–3 are the untested levers left.
+
 ---
 
 ## Conventions

@@ -102,7 +102,7 @@ real gain has to come from a different signal (prompt 8).**
 
 | # | prompt | size | why here |
 |---|---|---|---|
-| **8** | **Strategy research: find a signal with an edge** | large | **Still first, but narrower.** First pass done 2026-10-23 (gotcha 61): cost-per-R is refuted, and daily IBS on US indices has a real net edge but fails DSR and the post-2010 buy-and-hold bar. Next: IBS as an overlay on a long index position, vs B&H at matched vol. Paste-ready block at the top of section 8. |
+| **8** | **Strategy research: find a signal with an edge** | large | **Still first, but narrower.** First pass done 2026-10-23 (gotcha 61): cost-per-R is refuted, and daily IBS on US indices has a real net edge but fails DSR and the post-2010 buy-and-hold bar. Second pass (IBS overlay on long index, 12 trials → **66**) also fails: every variant passes halves PF and the 2010+ vol-matched Sharpe bar, but DSR on the active return is 0.12–0.41. Items 2–3 untouched; see gotcha 62. |
 | **12** | Forward-test check (GOLD/ETHUSD slope-on, deployed 2026-10-23) | small | Run every ~2 weeks. Trade-match live vs a fresh container backtest with `trade_match.py`. The bar is ~60 GOLD trades with PF > 1.0, or stop. Paste-ready block in section 12. **First useful run: early-to-mid November.** |
 | **11** | Re-base ETHUSD (then BTCUSD/EURUSD/SILVER) | medium | ETHUSD first: it's in the forward test, and its trades can't be matched until its bars are bid/UTC. Needs your **"approve delete"** mid-session. Paste-ready block at the top of section 11. |
 | **2** | Decide the flatten | medium | Needs the flatten simulated in `run_skills_backtest.py` first. Re-measure the weekend-carry cohort (gotcha 51) on the slope-on strategy and the re-based bars. |
@@ -748,6 +748,11 @@ bots that are actually trading.
 > higher Sharpe than vol-matched B&H **in 2010–2026 alone**, not only over the full sample. Do not
 > re-tune IBS's threshold. Neighbours 0.15–0.30 were already checked. Research only: no change to
 > live config, size or bot state.
+
+### Result of the second pass (2026-10-23): IBS overlay, 12 trials → 66 total, none passes. Detail in CLAUDE.md gotcha 62
+
+- All four pre-registered overlays (`overlay_prereg.md`) pass halves PF and beat vol-matched B&H in 2010–2026 on US100; O1–O3 also transfer. **All fail DSR** (active-return DSR 0.12–0.41 vs 0.95). The overlay fixes standalone IBS's post-2010 B&H problem but the edge over B&H (active SR ≈ 0.4–0.5) is not distinguishable from the best of 66 trials.
+- Don't add more overlay variants: each one raises the DSR bar. Remaining untouched levers are items 2 and 3.
 
 ---
 
