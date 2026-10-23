@@ -46,6 +46,8 @@ MARKERS = [
     ('_run_skill',            'orchestrator/trading_orchestrator.py',    '49  skill error wrapper'),
     ('TimeBasedFlatten',      'core/time_exits.py',                      '51  time-based flatten'),
     ('_norm_ts',              'fetch_data.py',                           '29  bar_updater date filter'),
+    ("'sma_bias_slope_bars', 0)", 'orchestrator/main.py',               '60  warm-up covers MA bias + slope'),
+    ('wait for the slope look-back', 'skills/analysis/analysis_skill.py', '60  slope gate fails closed'),
 ]
 
 # Which markers each container is expected to carry. backtest-runner is

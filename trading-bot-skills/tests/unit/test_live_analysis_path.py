@@ -384,3 +384,84 @@ class TestFiltersLive:
             signal_rules={'require_sma_bias': True})
         await feed(skill, md, ramp(150))
         assert 'SELL' not in rec.signals
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# MA100 slope gate on the rolling buffer — CLAUDE.md gotcha 60
+# ──────────────────────────────────────────────────────────────────────────
+def fall_then_spike(n_down=200, n_up=6, start=4200.0, down=1.0, up=15.0):
+    """
+    A long decline, then a short sharp rally. The rally lifts price above
+    MA100 and flips Supertrend up, but MA100 is still FALLING over the last
+    20 bars — exactly the BUY the slope gate exists to refuse.
+    """
+    base = datetime(2026, 10, 21)
+    out, px = [], start
+    for i in range(n_down):
+        out.append(candle(base + timedelta(minutes=5 * i), px))
+        px -= down
+    for j in range(n_up):
+        px += up
+        out.append(candle(base + timedelta(minutes=5 * (n_down + j)), px))
+    return out
+
+
+class TestMaSlopeGate:
+    """
+    GOLD and ETHUSD run require_sma_bias with bias_slope_bars: 20. Live sized
+    its buffer at 105 bars, which leaves sma_bias_prev (MA100 shifted 20) NaN on
+    every bar; the old fallback set prev = current, making ma_rising and
+    ma_falling both True. The gate never applied in live: matched trade for
+    trade, live GOLD Aug–Oct was the slope-OFF backtest (82/95 entries), not the
+    slope-ON one (1/95).
+    """
+
+    @staticmethod
+    async def run(slope, buffer_size):
+        bus = EventBus(fast_mode=True)
+        md = FakeMarketData(buffer_size)
+        rec = SignalRecorder(bus)
+        skill = build_skill(bus, md, indicators={
+            'sma': {'fast_period': 25, 'slow_period': 30, 'bias_period': 100,
+                    'bias_enabled': True, 'bias_slope_bars': slope}},
+            signal_rules={'require_sma_bias': True})
+        await feed(skill, md, fall_then_spike())
+        return rec.signals
+
+    @pytest.mark.asyncio
+    async def test_without_the_slope_gate_the_rally_signals_buy(self):
+        assert await self.run(slope=0, buffer_size=360) == ['SELL', 'BUY']
+
+    @pytest.mark.asyncio
+    async def test_the_slope_gate_refuses_a_buy_under_a_falling_ma(self):
+        assert await self.run(slope=20, buffer_size=360) == ['SELL']
+
+    @pytest.mark.asyncio
+    async def test_a_buffer_too_short_for_the_slope_fails_closed(self):
+        """
+        105 bars is the old live size. It must emit nothing rather than the
+        slope-off ['SELL', 'BUY'] it used to produce.
+        """
+        assert await self.run(slope=20, buffer_size=105) == []
+
+    def test_missing_prev_ma_returns_none_not_the_current_ma(self):
+        import numpy as np
+        import pandas as pd
+        skill = AnalysisSkill(analysis_config(indicators={
+            'sma': {'fast_period': 25, 'slow_period': 30, 'bias_period': 100,
+                    'bias_enabled': True, 'bias_slope_bars': 20}}))
+        df = skill._compute_indicators(
+            pd.DataFrame(ramp(110)).set_index('timestamp'))
+        assert not np.isnan(df['sma_bias'].iloc[-1])
+        assert np.isnan(df['sma_bias_prev'].iloc[-1])
+        assert skill._extract_indicators(df, df.iloc[-1], df.iloc[-2]) is None
+
+    def test_a_warmed_prev_ma_is_passed_through(self):
+        import pandas as pd
+        skill = AnalysisSkill(analysis_config(indicators={
+            'sma': {'fast_period': 25, 'slow_period': 30, 'bias_period': 100,
+                    'bias_enabled': True, 'bias_slope_bars': 20}}))
+        df = skill._compute_indicators(
+            pd.DataFrame(ramp(130)).set_index('timestamp'))
+        ind = skill._extract_indicators(df, df.iloc[-1], df.iloc[-2])
+        assert ind['sma_bias_prev'] == float(df['sma_bias'].iloc[-21])

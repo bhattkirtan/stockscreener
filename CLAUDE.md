@@ -138,6 +138,8 @@ than re-reading this line if it matters:
 
 **Current GOLD strategy (as deployed in live/demo bot):**
 - Entry: M5 Supertrend(14×1.5) flip + MA100 bias + MA100 slope
+  ⚠️ **The MA100 slope gate has NEVER applied in live** — the live buffer was too short for it (gotcha 60).
+  Fixed in the host tree 2026-10-23, **not deployed**; until it is, live runs Supertrend + MA100 bias only.
 - SL: **15 pips** ($15/contract) | TP: **60 pips** ($60/contract) — R:R 1:4
   (verified in `GOLD.yaml` 2026-10-22: `risk.stop_loss_pips: 15` / `risk.take_profit_pips: 60`.
   This line said TP 40 and the table below said 45; both were stale. 60 is also what gotcha 35's
@@ -803,14 +805,14 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
     - The earlier "GOLD PF 0.973, no edge" was measured on data **94% absent after 2026Q1**. Quarterly PF on repaired data: 2026Q2 **1.38**, Q3 0.97, Q4 **2.04** (vs 1.38/0.97 previously unmeasurable).
     - `m20_adx25` is no longer needed to make GOLD stable — the plain baseline is. Prefer the baseline (fewer fitted knobs, 491 vs 290 trades).
 
-36. **GOLD live takes ~50% more trades than the backtest and wins less — cause still UNKNOWN. Three plausible explanations were tested and all REJECTED (2026-10-21).** Live window 2026-08-01..10-21:
+36. **✅ SOLVED 2026-10-23 — see gotcha 60: the live bot never applied the MA100 slope gate.** The rest of this entry is the history of the search. **GOLD live takes ~50% more trades than the backtest and wins less — cause was UNKNOWN. Three plausible explanations were tested and all REJECTED (2026-10-21).** Live window 2026-08-01..10-21:
     | | n | WR | PF |
     |---|---|---|---|
     | backtest (repaired data) | 61 | 21.31% | 1.046 |
     | **live actual** | **93** | **13.98%** | **0.646** |
     - **Rejected — broken SL/TP cooldowns (gotcha 22).** `sl_cooldown_minutes=0` / `60` / `30` all produce **exactly 61 trades** with identical PF. The cooldown gate only blocks *same-direction* re-entry, and `edge_detection` means the next signal is usually the opposite direction, so it almost never binds. The cooldown bug is real but costs nothing here.
     - **Rejected — daily 21:00 restart resetting `last_signal_state`.** The 31 excess live trades are spread across hours 8–20 (hour 12 is +11); **hour 21 has 0 live entries**. No restart signature.
-    - **Rejected — Supertrend path-dependence on the live rolling buffer.** Live computes ST on a `max_indicator_period × 3 = 300`-bar buffer; the backtest precomputes over the full series. Measured over 1,100 GOLD M5 bars: **100.00% direction agreement, 85 vs 85 flips.** ST band memory resets at every flip (~1 per 13 bars), so 300 bars is ample. Not a divergence source — and this also retires the general worry about truncated-buffer indicators.
+    - **Rejected — Supertrend path-dependence on the live rolling buffer.** Live computes ST on a rolling buffer (this said 300 bars; it is actually **105** — gotcha 60); the backtest precomputes over the full series. Measured over 1,100 GOLD M5 bars: **100.00% direction agreement, 85 vs 85 flips.** ST band memory resets at every flip (~1 per 13 bars), so 300 bars is ample. Not a divergence source — and this also retires the general worry about truncated-buffer indicators.
     - **Still open:** the live bot builds candles from the WebSocket tick stream while the DB bars come from the REST price endpoint — bar boundaries/incomplete bars may differ; and the live MA100 bias is computed over whatever the live buffer actually contains (which was itself starved while gotcha 29 was active).
     - ✅ **The "check live candle timestamps against DB bars" half of that lead is now CLOSED — and it was a real defect.** `get_historical_prices` returned **account-local** timestamps (UTC+2) while `fetch_data.parse_candle` stored UTC, so the live warm-up buffer was two hours off the DB bars from the same endpoint. Fixed 2026-10-22 (gotcha 54b). It does **not** explain the excess live trades by itself — warm-up bars generate no signals — so the WebSocket-vs-REST bar-boundary question remains the live lead.
     - **Consequence:** US100 backtest↔live parity is good (gotcha 33) but **GOLD parity is not established.** Do not size up GOLD on backtest evidence alone.
@@ -1112,6 +1114,25 @@ Tests use real logic — no mocked backtester. SQLite-backed tests hit a real DB
       ```
       Takes ~6 min: `/history/transactions` is capped at 100 rows per response and rejects `lastPeriod > 86400`, so it reuses `backfill_trade_history.fetch_transactions`'s 12h window chunking (gotcha 15) over the whole span — ~370 windows for the Apr→Oct range.
     - Idempotent: a second run finds only the genuine break-even row (`pnl` is no longer 0.0 on the repaired ones) and changes nothing. A pre-write backup of all `trade_history` rows is cheap and worth taking — one `SELECT` to JSON.
+
+60. **The live bot NEVER applied GOLD's or ETHUSD's MA100 slope gate — this is gotcha 36's divergence, closed at trade level (2026-10-23).**
+    - **The defect.** `main.py`'s warm-up sizing is `max(sma_slow, bb, st, macd_slow+signal, rsi, stoch) × 3` and **omitted the MA bias**, so it came to `35 × 3 = 105` bars. It then *assigned* that to `market_data.buffer_size`, **shrinking** it from 300. Every log since April says `M5 warm-up complete — 105 candles buffered`. On a 105-bar buffer MA100 itself is valid (last 6 rows), but `sma_bias_prev = sma_bias.shift(20)` needs row ≥ 119 and is **always NaN**. `_extract_indicators` then fell back to `prev = current`, which makes `ma_rising` and `ma_falling` both True. So `bias_slope_bars: 20` was a no-op in live, while the backtest (full-series precompute) applied it. Silent, like gotchas 22 and 50: a guard fallback that turns a missing input into "allow".
+    - **Trade-level proof** (live `trade_history` `gold_m5_bot`, 2026-08-01..10-21, 95 rows; container runs at `--bars 188534`; matched ±10 min, the gotcha-33 method):
+      | backtest | trades in window | WR | PF | matched / 95 | same side | same outcome |
+      |---|---|---|---|---|---|---|
+      | canonical (`results/GOLD/20261023_041717`, slope 20) | 62 | 22.6% | 1.111 | **1** | 1 | 1 |
+      | **slope off** (`results/GOLD/noslope_188534`, `--set analysis.indicators.sma.bias_slope_bars=0`) | **97** | **15.5%** | **0.697** | **82** | **82** | **81** |
+      | live | 95 | 14.7% | 0.685 | — | — | — |
+      No constant clock offset rescues the canonical match: the best shift found 5/95. **Signal-level proof:** regenerating signals from DB bars with the skill's own `_compute_indicators`/`_evaluate_signal` gives the *identical* 484-signal set for "105-bar buffer, slope 20" and "full series, slope off", recalling **480 of the 541** `📊 Signal:` lines in `gold_m5_bot.log`. The full-series slope-20 run recalls 24. The ~57 extra live signals are about one per trading day, consistent with the 21:00 restart resetting `last_signal_state`. It also follows that **Supertrend truncation at 105 bars is harmless**, which extends gotcha 36's rejection #3 from 300 bars down to 105.
+    - **The live strategy is therefore the slope-OFF strategy, and that has no edge over 2y:** **773 trades / WR 20.83% / PF 1.0017 / +$162**, against the slope-on 493 / 21.70% / PF 1.0555 / +$3,342. Every GOLD backtest figure in this file describes a strategy that has **never traded live**. The Aug–Oct live loss is what the backtest of the strategy actually running predicts (PF 0.697 vs 0.685).
+    - **Residual 13/95 unmatched:** 6 fall while the backtest held a position (occupancy cascades), and several are entries a few seconds late (`:01`, `:07`, `:10` past the bar), likely delayed bar delivery. That's the same order as US100's 16/224.
+    - **ETHUSD has the identical defect.** It has the same `bias_slope_bars: 20` and its log shows `Warm-up bars — M5: 105`. Not trade-matched: ETHUSD's bars are still mid/local (gotcha 57), so re-base it first. US100 does not use the bias (buffer 150 there).
+    - **Fix (host tree, 2026-10-23, NOT deployed):**
+      - `main.py` now includes `sma_bias_period + sma_bias_slope_bars` (when enabled) and `2 × adx_period` (when enabled) in `m5_min_bars`, giving GOLD/ETHUSD **360**. It sets `buffer_size = max(buffer_size, m5_warmup)`, so the buffer is never shrunk.
+      - `_extract_indicators` now **fails closed** (`return None`) when the slope gate is on and `sma_bias_prev` is NaN.
+      - Tests: `TestMaSlopeGate` in `test_live_analysis_path.py` and four new `TestWarmup` cases in `test_live_bootstrap.py`. The slope gate had **zero** tests before. Suite 1319 → 1328 passing.
+      - Backtest regression on GOLD `--bars 188534` (host code, volume DB): **493 / 21.703853955375255% / PF 1.0555001992825828 / +$3,342**, bit-identical to gotcha 56. The fail-closed change only affects bars 110–119 of a series, and the backtest path was always applying the gate.
+    - ⚠️ **Deploying it is a strategy change, not a bug-fix rollout.** It switches live GOLD and ETHUSD from the strategy they've actually been trading to the one the backtests describe: fewer trades, and on GOLD the PF-1.0555 variant. That variant's own IS/OOS evidence is thin (gotchas 34, 35). It is also a different strategy from the one that produced the Aug–Oct live record. Decide it deliberately, and run `check_deployed.py` after (add a marker: `sma_bias_slope_bars', 0)` in `orchestrator/main.py`). A rebuild of `./trading-bot-skills` bakes this in whether or not it is committed (gotcha 10).
 
 ---
 

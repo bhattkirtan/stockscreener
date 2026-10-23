@@ -647,7 +647,11 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
         a = orchestrator.skills['analysis']
 
         # M5: largest period across all enabled indicators × WARMUP_MULTIPLIER
-        # macd_slow + macd_signal_period covers the longest MACD lookback
+        # macd_slow + macd_signal_period covers the longest MACD lookback.
+        # The MA bias needs bias_period bars for the MA plus bias_slope_bars more
+        # for the slope comparison. Leaving it out sized GOLD/ETHUSD's buffer at
+        # 105 bars, so the 20-bar MA100 slope gate never had data and never applied
+        # in live (CLAUDE.md gotcha 60).
         m5_min_bars = max(
             a.sma_slow_period,
             a.bb_period,
@@ -655,6 +659,9 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
             a.macd_slow + a.macd_signal_period,
             a.rsi_period,
             a.stoch_k_period,
+            (getattr(a, 'sma_bias_period', 0) + getattr(a, 'sma_bias_slope_bars', 0))
+            if getattr(a, 'sma_bias_enabled', False) else 0,
+            getattr(a, 'adx_period', 0) * 2 if getattr(a, 'adx_enabled', False) else 0,
         )
         m5_warmup = min(m5_min_bars * WARMUP_MULTIPLIER, 1000)  # Capital.com max = 1000
 
@@ -670,9 +677,11 @@ async def run_live_mode(config: dict, orchestrator: TradingOrchestrator, environ
             f"📐 Warm-up bars — M5: {m5_warmup}  H1: {h1_warmup}  Daily: {daily_warmup}"
         )
 
-    # Keep market_data buffer large enough to hold all warm-up candles
+    # Keep market_data buffer large enough to hold all warm-up candles — grow it,
+    # never shrink it below the configured size.
     if 'market_data' in orchestrator.skills:
-        orchestrator.skills['market_data'].buffer_size = m5_warmup
+        md = orchestrator.skills['market_data']
+        md.buffer_size = max(md.buffer_size, m5_warmup)
 
     # ── 2b. M5 warm-up (buffers candles only — no signals/orders) ────────────
     orchestrator.warming_up = True

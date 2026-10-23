@@ -733,7 +733,12 @@ class AnalysisSkill(Skill):
             ind['sma_bias'] = float(latest['sma_bias'])
             if self.sma_bias_slope_bars > 0 and 'sma_bias_prev' in df.columns:
                 prev_val = latest.get('sma_bias_prev')
-                ind['sma_bias_prev'] = float(prev_val) if not pd.isna(prev_val) else ind['sma_bias']
+                # Fail closed: substituting the current MA for a missing prev makes
+                # ma_rising and ma_falling both True, i.e. silently disables the
+                # slope gate. That is what live ran on a 105-bar buffer (gotcha 60).
+                if pd.isna(prev_val):
+                    return None  # wait for the slope look-back to warm up
+                ind['sma_bias_prev'] = float(prev_val)
 
         if self.vwap_enabled and 'vwap' in df.columns:
             ind['vwap'] = float(latest['vwap']) if not pd.isna(latest['vwap']) else None

@@ -473,6 +473,42 @@ class TestWarmup:
         assert m5[0]['max_bars'] == 105
 
     @pytest.mark.asyncio
+    async def test_m5_warmup_covers_the_ma_bias_and_its_slope(self, broker):
+        """
+        GOLD/ETHUSD: MA100 + a 20-bar slope = 120, x 3 = 360. Leaving the bias
+        out sized the buffer at 105 and silently disabled the slope gate in
+        live (CLAUDE.md gotcha 60).
+        """
+        a = FakeAnalysis()
+        a.sma_bias_enabled, a.sma_bias_period, a.sma_bias_slope_bars = True, 100, 20
+        orch = FakeOrchestrator({'analysis': a}, running=False)
+        await run_live_mode(base_config(), orch, 'demo')
+        m5 = [c for c in FakeCapital.instances[0].price_calls
+              if c['resolution'] == 'MINUTE_5']
+        assert m5[0]['max_bars'] == 360
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_ma_bias_does_not_grow_the_warmup(self, broker):
+        a = FakeAnalysis()
+        a.sma_bias_enabled, a.sma_bias_period, a.sma_bias_slope_bars = False, 100, 20
+        orch = FakeOrchestrator({'analysis': a}, running=False)
+        await run_live_mode(base_config(), orch, 'demo')
+        m5 = [c for c in FakeCapital.instances[0].price_calls
+              if c['resolution'] == 'MINUTE_5']
+        assert m5[0]['max_bars'] == 105
+
+    @pytest.mark.asyncio
+    async def test_m5_warmup_covers_adx(self, broker):
+        """ADX smooths twice over its period, so it needs 2 x period bars."""
+        a = FakeAnalysis()
+        a.adx_enabled, a.adx_period = True, 30
+        orch = FakeOrchestrator({'analysis': a}, running=False)
+        await run_live_mode(base_config(), orch, 'demo')
+        m5 = [c for c in FakeCapital.instances[0].price_calls
+              if c['resolution'] == 'MINUTE_5']
+        assert m5[0]['max_bars'] == 180
+
+    @pytest.mark.asyncio
     async def test_m5_warmup_is_capped_at_the_api_maximum(self, broker):
         """Capital.com returns at most 1000 bars per request."""
         a = FakeAnalysis()
@@ -499,6 +535,19 @@ class TestWarmup:
                                 running=False)
         await run_live_mode(base_config(), orch, 'demo')
         assert md.buffer_size == 105
+
+    @pytest.mark.asyncio
+    async def test_the_market_data_buffer_is_never_shrunk(self, broker):
+        """
+        The live MarketDataSkill starts at 300. Assigning the warm-up size
+        outright cut it to 105, the other half of gotcha 60.
+        """
+        md = FakeMarketData()
+        md.buffer_size = 300
+        orch = FakeOrchestrator({'analysis': FakeAnalysis(), 'market_data': md},
+                                running=False)
+        await run_live_mode(base_config(), orch, 'demo')
+        assert md.buffer_size == 300
 
     @pytest.mark.asyncio
     async def test_history_is_replayed_with_warming_up_set(self, broker):
